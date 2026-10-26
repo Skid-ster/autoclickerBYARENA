@@ -43,9 +43,10 @@ Three integration test binaries run platform-independent logic:
 - `humanize_tests` — Box-Muller determinism, seeded RNG reproducibility,
   Gaussian mean/sigma over 50,000 samples, zero-sigma exactness and clamp
   guarantees.
-- `telemetry_tests` — SPSC ring FIFO, slot wrapping, oldest-overwrite and
-  dropped counters, telemetry store counters, statistics moments and
-  histogram totals.
+- `telemetry_tests` — SPSC ring FIFO, slot wrapping, drop-newest back
+  pressure with `try_push`, dropped counters, real two-thread
+  producer/consumer traffic (including a `Send + Sync` compile-time check),
+  telemetry store counters, statistics moments and histogram totals.
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance and the
   atomic configuration snapshot round trip.

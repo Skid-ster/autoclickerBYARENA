@@ -1,3 +1,7 @@
+// The path-included modules form a standalone test crate, so items only used
+// by the Windows application modules appear dead in this narrow inclusion.
+#![allow(dead_code)]
+
 #[path = "../src/config.rs"]
 mod config;
 #[path = "../src/humanize.rs"]

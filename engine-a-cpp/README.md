@@ -42,8 +42,9 @@ Three CTest entries are registered:
 
 - `test_humanize` — Box-Muller Gaussian bounds, clamped ranges, measured
   mean/sigma over 50,000 samples, zero-sigma determinism.
-- `test_ring_buffer` — SPSC ring FIFO, power-of-two wrap, oldest-overwrite,
-  dropped counter, telemetry counters, statistics moments.
+- `test_ring_buffer` — SPSC ring FIFO, power-of-two wrap, drop-newest back
+  pressure and `try_push`, dropped counter, telemetry counters, statistics
+  moments.
 - `test_config` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance.
 

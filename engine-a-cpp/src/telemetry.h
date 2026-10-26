@@ -41,8 +41,11 @@ struct TelemetryStats {
 // The click worker is the only producer (push) and the UI thread is the only
 // consumer (pop). head_ is written by the producer and tail_ by the consumer;
 // the opposite side only reads with acquire ordering. Cache lines are padded
-// so the two indices never false-share. When full, push overwrites the oldest
-// record and bumps an internal dropped-sample counter instead of blocking.
+// so the two indices never false-share. When full, push drops the newest
+// record and bumps an internal dropped-sample counter instead of blocking:
+// the producer never mutates the consumer-owned tail index, so accounting
+// (popped + dropped == pushed) stays exact under every interleaving and no
+// slot can be touched by both threads at once.
 template <typename T, std::size_t N>
 class SpscRingBuffer {
     static_assert(N >= 2 && (N & (N - 1)) == 0, "N must be a power of two >= 2");
@@ -52,19 +55,30 @@ public:
     SpscRingBuffer(const SpscRingBuffer&) = delete;
     SpscRingBuffer& operator=(const SpscRingBuffer&) = delete;
 
-    // Producer only. Returns false when the buffer was full and the oldest
-    // element had to be overwritten.
+    // Producer only. Returns false when the buffer was full; the newest
+    // element is then dropped and the dropped-sample counter increments.
     bool push(const T& value) {
         const std::size_t head = head_.load(std::memory_order_relaxed);
         const std::size_t tail = tail_.load(std::memory_order_acquire);
-        const bool full = (head - tail) >= N;
-        slots_[head & kMask] = value;
-        head_.store(head + 1, std::memory_order_release);
-        if (full) {
+        if ((head - tail) >= N) {
             dropped_.fetch_add(1, std::memory_order_relaxed);
-            tail_.store(tail + 1, std::memory_order_release);
             return false;
         }
+        slots_[head & kMask] = value;
+        head_.store(head + 1, std::memory_order_release);
+        return true;
+    }
+
+    // Producer only, back-pressured variant of push: returns false without
+    // counting a dropped sample so the caller can retry after a pop.
+    bool try_push(const T& value) {
+        const std::size_t head = head_.load(std::memory_order_relaxed);
+        const std::size_t tail = tail_.load(std::memory_order_acquire);
+        if ((head - tail) >= N) {
+            return false;
+        }
+        slots_[head & kMask] = value;
+        head_.store(head + 1, std::memory_order_release);
         return true;
     }
 
