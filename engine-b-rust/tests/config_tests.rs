@@ -1,0 +1,123 @@
+#[path = "../src/config.rs"]
+mod config;
+
+use config::{AtomicConfigSnapshot, CoordinateMode, EngineConfig, InputMode};
+
+#[test]
+fn default_config_validates() {
+    let config = EngineConfig::default();
+    assert!(config.validate().is_ok());
+    assert!((config.target_cps() - 10.0).abs() < 1e-9);
+    assert!((config.effective_interval_sigma_ms() - 5.0).abs() < 1e-9);
+}
+
+#[test]
+fn invalid_intervals_rejected() {
+    let mut config = EngineConfig::default();
+    config.base_interval_ms = 0.0;
+    assert!(config.validate().is_err());
+    config.base_interval_ms = -1.0;
+    assert!(config.validate().is_err());
+    config.base_interval_ms = f64::NAN;
+    assert!(config.validate().is_err());
+    config.base_interval_ms = f64::INFINITY;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn negative_sigma_rejected() {
+    let mut config = EngineConfig::default();
+    config.sigma_ms = -0.1;
+    assert!(config.validate().is_err());
+    config.sigma_ms = 5.0;
+    config.sigma_percent = -2.0;
+    assert!(config.validate().is_err());
+    config.sigma_percent = 2.0;
+    config.hold_sigma_ms = -1.0;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn inverted_clamps_rejected() {
+    let mut config = EngineConfig::default();
+    config.min_interval_ms = 200.0;
+    config.max_interval_ms = 50.0;
+    assert!(config.validate().is_err());
+
+    config.min_interval_ms = 1.0;
+    config.max_interval_ms = 1000.0;
+    config.base_interval_ms = 5000.0;
+    assert!(config.validate().is_err());
+
+    config.base_interval_ms = 100.0;
+    config.hold_min_ms = 200.0;
+    config.hold_max_ms = 100.0;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn hold_range_validation() {
+    let mut config = EngineConfig::default();
+    config.hold_min_ms = 10.0;
+    config.hold_max_ms = 20.0;
+    config.hold_mean_ms = 50.0;
+    assert!(config.validate().is_err());
+    config.hold_mean_ms = 15.0;
+    assert!(config.validate().is_ok());
+    config.hold_min_ms = -1.0;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn background_requires_hwnd() {
+    let mut config = EngineConfig::default();
+    config.input_mode = InputMode::BackgroundHwnd;
+    config.target_hwnd = 0;
+    assert!(config.validate().is_err());
+    config.target_hwnd = 0x1234;
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn negative_client_coordinates_rejected() {
+    let mut config = EngineConfig::default();
+    config.client_x = -5;
+    assert!(config.validate().is_err());
+    config.client_x = 10;
+    config.client_y = -1;
+    assert!(config.validate().is_err());
+}
+
+#[test]
+fn sub_millisecond_interval_accepted() {
+    let mut config = EngineConfig::default();
+    config.base_interval_ms = 0.25;
+    config.min_interval_ms = 0.05;
+    config.max_interval_ms = 5.0;
+    config.sigma_ms = 0.02;
+    assert!(config.validate().is_ok());
+    assert!((config.target_cps() - 4000.0).abs() < 1e-9);
+}
+
+#[test]
+fn atomic_snapshot_round_trip() {
+    let mut config = EngineConfig::default();
+    config.base_interval_ms = 12.5;
+    config.sigma_ms = 1.25;
+    config.coordinate_mode = CoordinateMode::WindowClient;
+    config.fixed_x = -640;
+    config.client_y = 250;
+    config.max_clicks = 42;
+    config.humanize_enabled = false;
+
+    let snapshot = AtomicConfigSnapshot::default();
+    snapshot.store(&config);
+    let restored = snapshot.load();
+    assert!((restored.base_interval_ms - 12.5).abs() < 1e-12);
+    assert!((restored.sigma_ms - 1.25).abs() < 1e-12);
+    assert_eq!(restored.coordinate_mode, CoordinateMode::WindowClient);
+    assert_eq!(restored.fixed_x, -640);
+    assert_eq!(restored.client_y, 250);
+    assert_eq!(restored.max_clicks, 42);
+    assert!(!restored.humanize_enabled);
+}
