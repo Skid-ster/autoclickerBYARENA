@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use egui::{Align, Color32, FontId, Grid, Sense, Stroke, Vec2};
+use egui::{Color32, FontId, Grid, Sense, Stroke, Vec2};
 
 use crate::config::{CoordinateMode, EngineConfig, InputMode};
 use crate::engine::{ClickEngine, STATE_PANIC, STATE_RUNNING, STATE_STOPPING};
@@ -529,7 +529,7 @@ impl EngineBApp {
         }
         painter.text(
             rect.left_top() + Vec2::new(8.0, 4.0),
-            Align::LEFT_TOP,
+            egui::Align2::LEFT_TOP,
             "REAL-TIME CPS",
             FontId::proportional(12.0),
             COLOR_DIM,
@@ -561,7 +561,7 @@ impl EngineBApp {
         }
         painter.text(
             rect.left_top() + Vec2::new(8.0, 4.0),
-            Align::LEFT_TOP,
+            egui::Align2::LEFT_TOP,
             "INTERVAL HISTOGRAM (ms)",
             FontId::proportional(12.0),
             COLOR_DIM,

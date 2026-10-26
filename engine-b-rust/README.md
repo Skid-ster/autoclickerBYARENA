@@ -65,7 +65,7 @@ Windows-only.
 | `src/timing.rs` | QPC wrappers, `timeBeginPeriod(1)` RAII guard, `spin_loop` spin wait (no sleep) |
 | `src/win32.rs` | Narrow FFI wrappers for `SendInput`, `PostMessageW`, `SendMessageTimeoutW`, `EnumWindows`, `IsWindow`, `GetClientRect`, `ClientToScreen`, thread priority, events and QPC; each unsafe block has a SAFETY comment |
 | `src/humanize.rs` | Thread-local SplitMix64 PRNG (OS/QPC entropy), Box-Muller Gaussian samples with clamping |
-| `src/telemetry.rs` | Lock-free SPSC ring buffer over `Cell` slots, atomic counters, sliding-window statistics |
+| `src/telemetry.rs` | Lock-free SPSC ring buffer over atomic `Atom` slots (`Send + Sync`, no `unsafe`), drop-newest back pressure, atomic counters, sliding-window statistics |
 | `src/config.rs` | Configuration struct, validation and the all-atomic runtime snapshot |
 
 ### Timing and threading rules

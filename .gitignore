@@ -1,0 +1,20 @@
+# Build artifacts — Engine A (CMake)
+engine-a-cpp/build/
+engine-a-cpp/cmake-build-*/
+*.obj
+*.pdb
+*.ilk
+*.exe
+*.idb
+
+# Build artifacts — Engine B (Cargo)
+engine-b-rust/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

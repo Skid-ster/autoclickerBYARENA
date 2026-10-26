@@ -49,3 +49,9 @@ covered by tests that also compile on non-Windows runners. The GUI, input
 injection and worker threads are Windows-specific and must be acceptance
 tested on Windows 10 21H2+ or Windows 11 x64; see each workspace README for
 the full manual checklist.
+
+## Verification evidence
+
+Exact commands, toolchain versions, results and known limitations from the
+off-Windows verification runs (including ThreadSanitizer and real-cargo test
+runs) are recorded in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
