@@ -390,6 +390,50 @@ files also compile standalone with zero warnings. Pixel-level visual
 acceptance remains a Windows-only manual step and is not claimed from the
 Linux harness.
 
+## Global-hotkey heartbeat fix + status-strip visibility fix
+
+User-reported defect: "F6 doesn't work at all, but pressing Start in the
+app works." Root cause confirmed by reading the code and reproduced
+headlessly: the global F6/F8 hotkeys are polled with `GetAsyncKeyState`
+once per UI frame inside `update()`, but egui is event-driven and the app
+only requested continuous repaints while a session was already running
+(or during capture/pick). An idle, unfocused app therefore produced no
+frames at all — the idle repaint delay measured through the real egui
+pipeline was literally `Duration::MAX` — so the hotkey poll never
+executed and F6 appeared dead unless the window was being interacted
+with.
+
+- **Fix: unconditional heartbeat.** Every frame now re-arms a repaint —
+  16 ms while running/capturing/picking (unchanged responsiveness), 50 ms
+  while idle — so the poll runs continuously at ~20 Hz in the background
+  for negligible CPU, and a hotkey press from inside any other
+  application is noticed within one poll interval.
+- **Second defect found and fixed while verifying:** the status strip
+  skipped painting whenever `status_kind == Ready`, which silently hid
+  every Ready-kind message — "Session complete: N clicks delivered.",
+  "Factory defaults restored.", "Hotkey assignment cancelled.", and the
+  MogClicker completion line. The painter now always draws; a fresh start
+  shows the theme's idle line ("Ready." / "Ready to mog. Aura fully
+  charged.") instead of a dead blank.
+- **New headless probe (`verify_heartbeat`).** Ran FAILING before the fix
+  (idle repaint delay `Duration::MAX` in all six themes) and green after:
+  (1) four fully idle frames per theme must each re-arm the repaint
+  within 50 ms; (2) end-to-end Ready-kind visibility — real injected
+  clicks open the Advanced window, scroll its content to the bottom,
+  press "Reset all settings to factory defaults", and the probe requires
+  the Ready-kind confirmation text to be visibly painted in the status
+  strip (classic and mog).
+- The engine, scheduler, dispatch and telemetry code paths are untouched;
+  the fix is two frame-pacing lines and the status painter.
+
+Verification for this round on rustc 1.88.0 against the offline real-egui
+harness: `rustfmt --check` clean, `cargo clippy -- -D warnings` clean,
+**51/51 tests pass**, all six test files compile standalone with zero
+warnings, and all five probes are green (layout still exactly
+548.50 x 439.25 in all six themes; style, secondary-surface and
+scale/title/icon probes unchanged). The actual unfocused-F6 experience
+requires a real Windows desktop and is listed in the manual checklist.
+
 ## MogClicker accent round (presentation-only)
 
 User-requested follow-up: make the MogClicker meme theme the "absolute
@@ -606,7 +650,9 @@ cargo test --release
 cargo run --release
 ```
 
-Then follow the fourteen-step manual checklist in `autoclicker/README.md`:
+Then follow the fourteen-step manual checklist in `autoclicker/README.md`
+(step 7 now explicitly includes pressing the hotkey while another
+application has focus):
 dashboard rendering, interval and random-offset behavior, right/middle and
 double/triple bursts, picked fixed coordinates, repeat-count auto-stop,
 hotkey remap and F8 reservation, settings persistence across restarts,

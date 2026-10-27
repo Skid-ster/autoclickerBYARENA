@@ -61,7 +61,11 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
 - Hours/Mins/Secs/Milliseconds interval fields plus 4.1's uniform
   **Random offset ± ms**, with optional expert Gaussian humanization behind
   the Advanced window.
-- Remappable global start/stop hotkey (default **F6**) with an assignment
+- Remappable global start/stop hotkey (default **F6**) that works from
+  anywhere — the app keeps a light 20 Hz background heartbeat alive even
+  while idle and unfocused, so pressing the hotkey inside a game or any
+  other app starts and stops clicking (while running, the poll tightens
+  to every 16 ms) — with an assignment
   dialog; **F8** is a permanently reserved panic stop.
 - Pick location captures the live cursor (`GetCursorPos`); settings persist
   to `%APPDATA%\op-auto-clicker\settings.conf` and reload on launch.
