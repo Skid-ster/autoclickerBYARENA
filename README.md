@@ -32,7 +32,12 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
   and Click repeat, Cursor position with a real Pick location button
   (click the button, then click anywhere on screen; Esc cancels), and a
   2x2 Start/Stop/Hotkey setting/Advanced button grid. Start refuses invalid
-  configurations and Stop stays greyed until a session is running.
+  configurations and Stop stays greyed until a session is running. The
+  560x442 viewport hugs the content; the group-box titles sit on the face
+  color and break the top border like the native control, and every numeric
+  field and dropdown stays white with dark text in all states. (The native
+  OS title bar follows the Windows app mode and may stay dark on Windows 11;
+  eframe/egui 0.27 cannot recolor native window chrome.)
 - Left, right and middle mouse buttons; single, double and triple click
   types (multi-clicks use QPC-spun gaps, never sleeps).
 - Hours/Mins/Secs/Milliseconds interval fields plus 4.1's uniform

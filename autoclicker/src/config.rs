@@ -67,6 +67,10 @@ impl MouseButton {
         }
     }
 
+    // Consumed by the Windows-only dashboard (app.rs); the path-included
+    // standalone test builds omit that module, so the narrow allow keeps
+    // their `cargo test` output warning-free without weakening anything.
+    #[allow(dead_code)]
     pub fn all() -> [MouseButton; 3] {
         [MouseButton::Left, MouseButton::Right, MouseButton::Middle]
     }
@@ -95,6 +99,10 @@ impl ClickType {
         self as usize
     }
 
+    // Consumed by the Windows-only dashboard (app.rs); the path-included
+    // standalone test builds omit that module, so the narrow allow keeps
+    // their `cargo test` output warning-free without weakening anything.
+    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             ClickType::Single => "Single",
@@ -103,6 +111,7 @@ impl ClickType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn all() -> [ClickType; 3] {
         [ClickType::Single, ClickType::Double, ClickType::Triple]
     }

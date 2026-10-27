@@ -35,6 +35,9 @@ const COLOR_FACE: Color32 = Color32::from_rgb(240, 240, 240);
 const COLOR_BUTTON: Color32 = Color32::from_rgb(236, 236, 236);
 const COLOR_BUTTON_DISABLED: Color32 = Color32::from_rgb(245, 245, 245);
 const COLOR_BUTTON_BORDER: Color32 = Color32::from_rgb(173, 173, 173);
+const COLOR_HOVER_FILL: Color32 = Color32::from_rgb(229, 241, 251);
+const COLOR_PRESSED_FILL: Color32 = Color32::from_rgb(204, 228, 247);
+const COLOR_INPUT_DISABLED: Color32 = Color32::from_rgb(250, 250, 250);
 const COLOR_GROUP_BORDER: Color32 = Color32::from_rgb(166, 166, 166);
 const COLOR_INPUT_BORDER: Color32 = Color32::from_rgb(122, 122, 122);
 const COLOR_TEXT: Color32 = Color32::from_rgb(28, 28, 28);
@@ -295,19 +298,38 @@ impl OpAutoClickerApp {
         style.visuals.dark_mode = false;
         style.visuals.panel_fill = COLOR_FACE;
         style.visuals.window_fill = COLOR_FACE;
+        // DragValue's keyboard-edit mode is a TextEdit, which paints
+        // `extreme_bg_color`; it must stay white like the button mode below.
         style.visuals.extreme_bg_color = Color32::WHITE;
         style.visuals.window_stroke = Stroke::new(1.0_f32, COLOR_GROUP_BORDER);
+        // Fill-less buttons (DragValue's button mode) and ComboBoxes paint
+        // `weak_bg_fill`, not `bg_fill`, so every widget state needs both set
+        // explicitly or the dark-theme default (gray 60) bleeds through as a
+        // charcoal box with unreadable text.
         style.visuals.widgets.noninteractive.bg_fill = COLOR_FACE;
+        style.visuals.widgets.noninteractive.weak_bg_fill = COLOR_INPUT_DISABLED;
+        style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, COLOR_BUTTON_BORDER);
         style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
         style.visuals.widgets.inactive.bg_fill = Color32::WHITE;
+        style.visuals.widgets.inactive.weak_bg_fill = Color32::WHITE;
         style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
         style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, COLOR_INPUT_BORDER);
-        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(229, 241, 251);
-        style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+        style.visuals.widgets.hovered.bg_fill = COLOR_HOVER_FILL;
+        style.visuals.widgets.hovered.weak_bg_fill = COLOR_HOVER_FILL;
+        style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
         style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
-        style.visuals.widgets.active.bg_fill = Color32::from_rgb(204, 228, 247);
-        style.visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+        style.visuals.widgets.active.bg_fill = COLOR_PRESSED_FILL;
+        style.visuals.widgets.active.weak_bg_fill = COLOR_PRESSED_FILL;
+        style.visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
+        style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+        // `open` drives an expanded ComboBox button; its popup list inherits
+        // the light window fill, so the whole dropdown stays classic white.
+        style.visuals.widgets.open.bg_fill = Color32::WHITE;
+        style.visuals.widgets.open.weak_bg_fill = Color32::WHITE;
+        style.visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
+        style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, COLOR_INPUT_BORDER);
         style.visuals.selection.bg_fill = Color32::from_rgba_premultiplied(0, 103, 192, 60);
+        style.visuals.selection.stroke = Stroke::new(1.0_f32, COLOR_TEXT);
         style.visuals.hyperlink_color = COLOR_ACCENT;
         let rounding = Rounding::same(2.5_f32);
         style.visuals.widgets.noninteractive.rounding = rounding;
@@ -612,7 +634,7 @@ impl OpAutoClickerApp {
         let response = Frame::none()
             .fill(COLOR_FACE)
             .stroke(Stroke::new(1.0_f32, COLOR_GROUP_BORDER))
-            .rounding(Rounding::same(3.0_f32))
+            .rounding(Rounding::same(2.0_f32))
             .inner_margin(Margin {
                 left: 11.0_f32,
                 right: 11.0_f32,
@@ -621,13 +643,19 @@ impl OpAutoClickerApp {
             })
             .show(ui, add);
         let rect = response.response.rect;
-        let painter = ui.painter_at(rect);
+        // The title rides the top border, half of it above rect.top().
+        // `painter_at` clips to the given rect, so painting through a clip
+        // region expanded upward is what keeps the glyphs whole; the frame's
+        // own stroke was already painted by `Frame::show` above.
+        let painter = ui.painter_at(rect.expand2(Vec2::new(12.0_f32, 16.0_f32)));
         let font = FontId::proportional(13.0_f32);
         let galley = painter.layout_no_wrap(title.to_string(), font.clone(), COLOR_TEXT);
         let text_pos = rect.left_top() + Vec2::new(9.0_f32, -galley.size().y / 2.0_f32);
+        // The face-colored backdrop must cover the 1 px border line entirely
+        // so the title cleanly breaks it like a native BS_GROUPBOX caption.
         let backdrop = egui::Rect::from_min_size(
             text_pos - Vec2::new(4.0_f32, 1.0_f32),
-            galley.size() + Vec2::new(8.0_f32, 0.0_f32),
+            galley.size() + Vec2::new(8.0_f32, 2.0_f32),
         );
         painter.rect_filled(backdrop, 0.0_f32, COLOR_FACE);
         painter.text(text_pos, Align2::LEFT_TOP, title, font, COLOR_TEXT);
@@ -1298,13 +1326,16 @@ impl eframe::App for OpAutoClickerApp {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
 
-        // Single fixed-size screen: no ScrollArea, everything fits.
+        // Single fixed-size screen: no ScrollArea, everything fits. The top
+        // margin leaves room for the first group title, which rides half
+        // above its frame's top border.
         egui::CentralPanel::default()
-            .frame(
-                Frame::none()
-                    .fill(COLOR_FACE)
-                    .inner_margin(Margin::symmetric(12.0_f32, 10.0_f32)),
-            )
+            .frame(Frame::none().fill(COLOR_FACE).inner_margin(Margin {
+                left: 12.0_f32,
+                right: 12.0_f32,
+                top: 14.0_f32,
+                bottom: 10.0_f32,
+            }))
             .show(ctx, |ui| {
                 ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
                     self.draw_interval_group(ui);
