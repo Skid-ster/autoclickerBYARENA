@@ -16,6 +16,14 @@ const BG_B: u8 = 22;
 const ACCENT_R: u8 = 76;
 const ACCENT_G: u8 = 141;
 const ACCENT_B: u8 = 255;
+// MogClicker-theme icon colors: the hot-pink accent on the deep-purple
+// face used by the in-app MOG palette, so the taskbar mogs along.
+const MOG_ACCENT_R: u8 = 255;
+const MOG_ACCENT_G: u8 = 46;
+const MOG_ACCENT_B: u8 = 136;
+const MOG_BG_R: u8 = 24;
+const MOG_BG_G: u8 = 16;
+const MOG_BG_B: u8 = 32;
 const CORNER_RADIUS: f64 = 7.0;
 const OUTER_RING_RADIUS: f64 = 12.0;
 const INNER_RING_RADIUS: f64 = 7.0;
@@ -62,8 +70,23 @@ fn tick_coverage(x: f64, y: f64) -> f64 {
 }
 
 /// Builds the 32x32 icon as unmultiplied RGBA bytes (4 bytes per pixel,
-/// row-major from the top-left corner).
+/// row-major from the top-left corner) in the default blue-on-dark colors.
 pub fn app_icon_rgba() -> (Vec<u8>, u32, u32) {
+    themed_icon_rgba([ACCENT_R, ACCENT_G, ACCENT_B], [BG_R, BG_G, BG_B])
+}
+
+/// The same crosshair icon in MogClicker colors (hot pink on deep purple),
+/// swapped in at runtime while the meme theme is active.
+pub fn mog_icon_rgba() -> (Vec<u8>, u32, u32) {
+    themed_icon_rgba(
+        [MOG_ACCENT_R, MOG_ACCENT_G, MOG_ACCENT_B],
+        [MOG_BG_R, MOG_BG_G, MOG_BG_B],
+    )
+}
+
+/// Shared pixel math: identical geometry for every color way, so all icon
+/// invariants (shape, symmetry, transparency) hold for each variant.
+fn themed_icon_rgba(accent_rgb: [u8; 3], bg_rgb: [u8; 3]) -> (Vec<u8>, u32, u32) {
     let mut rgba = Vec::with_capacity((ICON_SIZE * ICON_SIZE * 4) as usize);
     let center = (ICON_SIZE as f64 - 1.0) / 2.0;
 
@@ -84,9 +107,9 @@ pub fn app_icon_rgba() -> (Vec<u8>, u32, u32) {
             // Composite the accent over the dark background inside the
             // rounded square; pixels outside the square stay transparent.
             let alpha = background.max(accent);
-            let mix_r = ACCENT_R as f64 * accent + BG_R as f64 * (1.0 - accent);
-            let mix_g = ACCENT_G as f64 * accent + BG_G as f64 * (1.0 - accent);
-            let mix_b = ACCENT_B as f64 * accent + BG_B as f64 * (1.0 - accent);
+            let mix_r = accent_rgb[0] as f64 * accent + bg_rgb[0] as f64 * (1.0 - accent);
+            let mix_g = accent_rgb[1] as f64 * accent + bg_rgb[1] as f64 * (1.0 - accent);
+            let mix_b = accent_rgb[2] as f64 * accent + bg_rgb[2] as f64 * (1.0 - accent);
 
             rgba.push((mix_r * alpha).round() as u8);
             rgba.push((mix_g * alpha).round() as u8);

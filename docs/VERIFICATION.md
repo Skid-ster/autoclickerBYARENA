@@ -390,6 +390,53 @@ files also compile standalone with zero warnings. Pixel-level visual
 acceptance remains a Windows-only manual step and is not claimed from the
 Linux harness.
 
+## MogClicker accent round (presentation-only)
+
+User-requested follow-up: make the MogClicker meme theme the "absolute
+best" with real mog accents. Wording was grounded in the actual slang
+(Merriam-Webster: "mog — to look or perform far better than someone
+else"; meme-culture staples "aura", "looksmaxxing" and "brutally
+frame-mogged"). No engine, scheduling, dispatch, telemetry or validation
+code path changed; no new preference fields.
+
+- **Hot-pink group captions.** The `Palette` gained a `group_title` slot;
+  the five non-meme themes bind it to their normal text color
+  (byte-identical rendering), while MogClicker paints the four group-box
+  captions in its hot-pink accent (255, 46, 136).
+- **Themed window/taskbar icon.** `icon.rs` was refactored so the
+  procedural crosshair generator takes its accent/background colors as
+  parameters; `app_icon_rgba()` is pixel-identical to before, and a new
+  `mog_icon_rgba()` renders the same geometry in hot pink on deep purple.
+  While the Mog theme is active the app swaps the live window icon via
+  `ViewportCommand::Icon` (handled by egui-winit 0.27), sent once per
+  theme-family change. Two new icon tests pin the variant: identical
+  alpha-channel geometry, exact (255, 46, 136) center dot, and at least
+  200 visibly recolored pixels.
+- **More meme wording** (all status-strip/log strings, zero layout
+  impact): running status appends "+1000 aura per click.", stopping shows
+  "Aura cooling down…", natural completion reports "Mogging complete —
+  everyone brutally frame-mogged: N clicks delivered.", the activity log
+  opens with "Mogging session started — looksmaxxing at … CPS.", and the
+  Settings-window hint calls the theme a certified aura mogger. The
+  strings moved into the `ThemeText` table (classic wording is unchanged
+  verbatim for every other theme).
+- **Headless proof (real egui 0.27.2).** All four probes re-ran green:
+  layout still exactly 548.50 x 439.25 in all six themes (the new accents
+  change zero metrics); style fills + text clipping clean across all six;
+  injected-click secondary surfaces fine in classic/dark/mog; and the
+  scale/title probe now additionally asserts that the Mog theme emits
+  exactly one 32x32 `Icon` command whose center pixel is (255, 46, 136),
+  that title/icon commands do not repeat, and that the default
+  configuration sends neither resize nor icon commands.
+
+Verification for this round on rustc 1.88.0 against the offline real-egui
+harness: `rustfmt --check` clean, `cargo clippy -- -D warnings` clean,
+**51/51 tests pass** (config 13, humanize 9, telemetry 8, settings 8,
+hotkey 7, icon 6), and all six test files also compile standalone with
+zero warnings. The real taskbar-icon swap and on-screen appearance remain
+Windows-only manual acceptance items and are not claimed from the Linux
+harness.
+
 ## Theme gallery + Settings window + UI scaling round (presentation-only)
 
 User-requested follow-up: a Settings entry point inside the app, a gallery
@@ -559,13 +606,14 @@ cargo test --release
 cargo run --release
 ```
 
-Then follow the thirteen-step manual checklist in `autoclicker/README.md`:
+Then follow the fourteen-step manual checklist in `autoclicker/README.md`:
 dashboard rendering, interval and random-offset behavior, right/middle and
 double/triple bursts, picked fixed coordinates, repeat-count auto-stop,
 hotkey remap and F8 reservation, settings persistence across restarts,
 unfocused and minimized background targets, F8 panic stop (button must never
-stick), the six-theme switch (including the MogClicker retitle), the
-window-scale resize, and clean shutdown with no leaked handles.
+stick), the six-theme switch (including the MogClicker retitle, hot-pink
+icon swap and meme status lines), the window-scale resize, and clean
+shutdown with no leaked handles.
 
 The repository's GitHub Actions workflow performs an additional, genuinely
 Windows-native gate on every push and pull request: `cargo fmt --check`,

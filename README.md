@@ -41,10 +41,13 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
 - **Six themes + window scaling** — a **Settings…** button in the
   bottom-right corner opens a Settings window with a theme picker (Classic
   light, Dark, Midnight OLED, Terminal green, Vaporwave, and the
-  **MogClicker** meme theme, which retitles the window "MogClicker" and
-  re-skins the labels: the Start button becomes **Mog**, Stop becomes
-  **It's over**, and the groups become "Mogging interval" / "Mog options" /
-  "Mog repeat" / "Aura position") and a window-scale picker (75–200 %):
+  **MogClicker** meme theme, which retitles the window "MogClicker", swaps
+  the window/taskbar icon to a hot-pink edition, paints the group captions
+  hot pink and re-skins the labels: the Start button becomes **Mog**, Stop
+  becomes **It's over**, the groups become "Mogging interval" / "Mog
+  options" / "Mog repeat" / "Aura position", and the status lines speak
+  fluent meme — "+1000 aura per click", "Aura cooling down…", "everyone
+  brutally frame-mogged") and a window-scale picker (75–200 %):
   the whole UI zooms and the window resizes itself so every control stays
   visible. Both choices restyle every window (main screen, Hotkey dialog,
   Advanced window and its charts), are remembered across restarts, and all

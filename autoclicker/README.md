@@ -39,7 +39,7 @@ cargo run --release
 cargo test --release
 ```
 
-Six integration test binaries run platform-independent logic (49 tests):
+Six integration test binaries run platform-independent logic (51 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -60,7 +60,9 @@ Six integration test binaries run platform-independent logic (49 tests):
   and `ui_scale` clamping.
 - `icon_tests` — dimensions, transparent rounded corners, solid accent
   center, two-axis symmetry and the presence of both accent and background
-  pixels in the procedurally generated 32x32 application icon.
+  pixels in the procedurally generated 32x32 application icon, plus the
+  MogClicker color way: identical alpha geometry, exact hot-pink center
+  and a clearly recolored pixel count.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
@@ -84,13 +86,22 @@ Settings window with two persisted choices:
 - **Midnight OLED** — a pure-black variant of Dark for OLED screens.
 - **Terminal green** — green-on-black phosphor-terminal colors.
 - **Vaporwave** — pastel pink/purple light colors with a hot-pink accent.
-- **MogClicker** — the meme theme. The OS window retitles itself
-  "MogClicker", the Start button becomes **Mog**, Stop becomes **It's
-  over**, the group boxes become "Mogging interval" / "Mog options" /
-  "Mog repeat" / "Aura position", the footer reads "F6 to mog · F8 when
-  it's over", and the running status reports "Mogging at … CPS" — all on a
-  deep-purple face with a hot-pink accent. Only colors and those labels
-  change; every control keeps its normal meaning and position.
+- **MogClicker** — the meme theme, wording sourced from the actual slang
+  ("to mog" = to outclass someone, per Merriam-Webster; "aura", "brutally
+  frame-mogged" and "looksmaxxing" from the surrounding meme culture). The
+  OS window retitles itself "MogClicker" **and swaps its window/taskbar
+  icon to a hot-pink color way of the crosshair logo**, the group-box
+  captions turn hot pink, the Start button becomes **Mog**, Stop becomes
+  **It's over**, the group boxes become "Mogging interval" / "Mog
+  options" / "Mog repeat" / "Aura position", and the footer reads "F6 to
+  mog · F8 when it's over". The status strip joins in: running reports
+  "Mogging at … CPS — … +1000 aura per click.", stopping shows "Aura
+  cooling down…", a completed repeat count reports "Mogging complete —
+  everyone brutally frame-mogged: N clicks delivered.", and the activity
+  log opens sessions with "Mogging session started — looksmaxxing at …
+  CPS." — all on a deep-purple face with a hot-pink accent. Only colors
+  and those strings change; every control keeps its normal meaning and
+  position.
 
 **Window scale** — 75 / 100 / 125 / 150 / 175 / 200 %. The UI zoom factor
 follows the percentage and the app then re-applies its fixed logical size,
@@ -251,10 +262,15 @@ previous session is never reused.
     red and no mouse button remains stuck.
 11. Open Settings…, pick each theme in turn: every window restyles in
     place and nothing moves; with MogClicker active the title bar reads
-    "MogClicker", the buttons read "Mog"/"It's over" and the footer reads
-    "F6 to mog · F8 when it's over".
-12. Still in Settings…, set Window scale to 150 %: the window grows and
+    "MogClicker", the window/taskbar icon turns hot pink, the group
+    captions turn hot pink, the buttons read "Mog"/"It's over" and the
+    footer reads "F6 to mog · F8 when it's over".
+12. Still in MogClicker, start and stop a session: the status strip shows
+    "Mogging at … +1000 aura per click.", then "Aura cooling down…"; a
+    25-click repeat run ends with "Mogging complete — everyone brutally
+    frame-mogged: 25 clicks delivered."
+13. Still in Settings…, set Window scale to 150 %: the window grows and
     every control stays fully visible; set it back to 100 % and the window
     returns to its original size; both choices survive a restart.
-13. Close the window: the worker is signaled, joined and its event handle
+14. Close the window: the worker is signaled, joined and its event handle
     closed cleanly.
