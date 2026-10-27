@@ -1,9 +1,33 @@
 # Verification record
 
-This document records exactly how the suite was verified outside Windows, what
-was executed, and what remains to be run on a Windows 10 21H2+/11 x64 machine.
-Both engines target Windows only; the Linux sandbox used for development has no
-Windows SDK, DirectX runtime, display server, or access to crates.io.
+This document records exactly how the application was verified outside
+Windows, what was executed, and what remains to be run on a Windows
+10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
+for development has no Windows SDK, display server, or access to crates.io.
+
+## Consolidation to a single engine
+
+The project originally shipped two feature-parallel implementations
+(`engine-a-cpp`, C++20/ImGui/DirectX 11, and `engine-b-rust`, Rust/egui).
+The C++ engine was retired and the Rust engine was promoted to the single
+shipped application, now in `autoclicker/` (binary `op_auto_clicker.exe`).
+Decision factors:
+
+- **Build reliability for the end user.** The C++ path required Visual Studio
+  instance discovery, the C++ workload, CMake generator selection, Ninja and
+  vcvars setup, which produced multiple rounds of machine-specific failures.
+  A single `cargo build --release` invokes the MSVC linker automatically once
+  the standard Rust toolchain is installed.
+- **Safety of the concurrent core.** The worker thread, atomic config
+  snapshot and lock-free SPSC telemetry are expressed directly in Rust's
+  ownership model; the class of data-race and lifetime bugs fixed during
+  development is not expressible in safe Rust.
+- **Dependency and test surface.** One pinned toolchain (egui/eframe 0.27.2,
+  windows-sys 0.52.0) and one set of 23 integration tests cover all
+  platform-independent logic.
+
+The historical engine-A evidence below is retained as the record of work
+performed before consolidation; those sources no longer exist in the tree.
 
 ## Toolchains used in the Linux sandbox
 
@@ -207,7 +231,9 @@ construction instead. The C++ portable translation units were rebuilt
 directly with `g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror`: all three
 test binaries pass.
 
-## Static policy audits (grep-verified on both engines)
+## Static policy audits (grep-verified, current single engine)
+
+Re-run after consolidation against `autoclicker/`:
 
 - No placeholder markers (the banned marker list from the build prompt,
   including unimplemented/todo macros and ellipsis stubs) appear in any
@@ -215,43 +241,35 @@ test binaries pass.
 - No `mouse_event` / `keybd_event` call sites (comments mentioning the
   prohibition only).
 - No sleep call in any click path (idle waiting uses a kernel event, active
-  waiting uses QPC plus `_mm_pause` / `std::hint::spin_loop`); the only
-  textual mentions are comments stating the prohibition.
-- `timeBeginPeriod(1)` paired with `timeEndPeriod(1)` via RAII in both.
+  waiting uses QPC plus `std::hint::spin_loop`); the only textual mentions
+  are comments stating the prohibition.
+- `timeBeginPeriod(1)` paired with `timeEndPeriod(1)` via RAII.
 - F8 panic flag sampled before every click and inside every hold spin.
 - Global dispatch uses arrayed `SendInput`; background dispatch uses
   `PostMessageW` / `SendMessageTimeoutW` with `MK_LBUTTON` and
   `MAKELPARAM` client coordinates.
 
+The consolidated tree was re-verified in the offline harness after the
+rename: `cargo check` reports zero diagnostics in the `autoclicker/`
+sources against real egui 0.27.2, the 23 integration tests pass, and a
+negative-control type error was rejected as expected. All f32 geometry
+literals carry explicit `_f32` suffixes for rustc 1.99's
+`float_literal_f32_fallback` lint.
+
 ## Required Windows acceptance run
 
-On Windows 10 21H2+ or Windows 11 x64, with VS 2022 (C++20 + Windows SDK) and
-stable Rust. When the Visual Studio generator cannot enumerate the installed
-instances (observed on a machine with several partial VS installs where
-vswhere returned no VC toolset despite the Build Tools toolset being present),
-the Ninja generator driven from an initialized developer environment is the
-reliable route:
+On Windows 10 21H2+ or Windows 11 x64 with a stable Rust toolchain (the
+MSVC target reuses the Visual Studio Build Tools linker automatically; no
+CMake, Ninja or vcvars step is needed):
 
 ```
-call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-cmake -S engine-a-cpp -B engine-a-cpp/build-ninja -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build engine-a-cpp/build-ninja
-ctest --test-dir engine-a-cpp/build-ninja --output-on-failure
-
-cargo build --release --manifest-path engine-b-rust/Cargo.toml
-cargo test  --release --manifest-path engine-b-rust/Cargo.toml
+cd autoclicker
+cargo build --release
+cargo test --release
+cargo run --release
 ```
 
-The Visual Studio generator workflow remains equivalent on a cleanly
-registered installation:
-
-```
-cmake -S engine-a-cpp -B engine-a-cpp/build -G "Visual Studio 17 2022" -A x64
-cmake --build engine-a-cpp/build --config Release --parallel
-ctest --test-dir engine-a-cpp/build --build-config Release --output-on-failure
-```
-
-Then follow the nine-step manual checklist in each workspace README:
+Then follow the nine-step manual checklist in `autoclicker/README.md`:
 dashboard rendering, global clicks, live Gaussian stats, invalid-config
 rejection, unfocused and minimized background targets, F8 panic stop (button
 must never stick), sub-millisecond missed-deadline accounting, and clean

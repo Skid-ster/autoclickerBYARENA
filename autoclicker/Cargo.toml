@@ -1,8 +1,8 @@
 [package]
-name = "autoclicker_engine_b"
+name = "op_auto_clicker"
 version = "1.0.0"
 edition = "2021"
-description = "OP 4.1 Killer Engine B - Rust/egui dual-mode auto-clicker"
+description = "Modern Rust/egui Windows auto-clicker with global and background click modes"
 
 [dependencies]
 eframe = "=0.27.2"

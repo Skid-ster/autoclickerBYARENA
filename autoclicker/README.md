@@ -1,4 +1,4 @@
-# OP 4.1 Killer — Engine B (Rust / eframe egui / windows-sys)
+# OP Auto Clicker (Rust / eframe egui / windows-sys)
 
 Windows x64 auto-clicker written in stable Rust with an egui dashboard, a
 dedicated QPC spin-scheduled worker thread, Gaussian humanization, global
@@ -12,9 +12,11 @@ dedicated QPC spin-scheduled worker thread, Gaussian humanization, global
 
 Dependencies are pinned exactly in `Cargo.toml`: `eframe = "=0.27.2"`,
 `egui = "=0.27.2"` and `windows-sys = "=0.52.0"` with the
-`Win32_Foundation`, `Win32_UI_WindowsAndMessaging`,
+`Win32_Foundation`, `Win32_Security`,
+`Win32_UI_WindowsAndMessaging`,
 `Win32_UI_Input_KeyboardAndMouse`, `Win32_System_Threading`,
-`Win32_System_Performance`, `Win32_Media` and `Win32_Graphics_Gdi` features.
+`Win32_System_Performance`, `Win32_Media` and `Win32_Graphics_Gdi`
+features.
 
 ## Build commands
 
@@ -24,7 +26,7 @@ cargo build --release
 
 The release profile is fixed to `opt-level = 3`, `lto = true`,
 `codegen-units = 1` and `panic = "abort"`. The binary is
-`target/release/autoclicker_engine_b.exe`.
+`target/release/op_auto_clicker.exe`.
 
 ## Run
 
@@ -55,12 +57,31 @@ The tests include `config.rs`, `humanize.rs` and `telemetry.rs` by path, so
 they compile and pass on any platform even though the full binary is
 Windows-only.
 
+## Interface
+
+A single-screen dark dashboard split into a control column and a live
+analytics column:
+
+- **Click rate** — one CPS slider as the single source of truth; the
+  millisecond interval is derived and shown underneath.
+- **Click options** — global `SendInput` or background window-message mode,
+  with only the coordinate controls the selected mode uses; background mode
+  includes a refreshable target-window picker.
+- **Repeat** — run until stopped, or stop after a fixed number of clicks.
+- **Humanization** — Gaussian timing on/off, with every expert parameter
+  (sigmas, clamps, hold durations, raw interval) behind one collapsing
+  section.
+- **Analytics** — live CPS sparkline, interval histogram, consistency and
+  missed-deadline metrics, plus a recent-activity log.
+- **Footer** — solid Start, outline Stop and red Panic (F8) controls; a
+  colored status pill (Idle/Running/Stopping/Panic) sits in the header.
+
 ## Architecture
 
 | File | Responsibility |
 | --- | --- |
 | `src/main.rs` | `eframe::run_native` entry point, viewport setup, platform gating |
-| `src/app.rs` | egui modern dark dashboard, tabbed target picker, controls, painter-drawn CPS graph and histogram, F8 polling |
+| `src/app.rs` | Single-screen egui dashboard, controls, target picker, painter-drawn CPS graph and histogram, F8 polling |
 | `src/engine.rs` | Dedicated worker thread, atomic config snapshot, time-critical priority, RAII timer resolution, QPC spin loop, panic checks |
 | `src/timing.rs` | QPC wrappers, `timeBeginPeriod(1)` RAII guard, `spin_loop` spin wait (no sleep) |
 | `src/win32.rs` | Narrow FFI wrappers for `SendInput`, `PostMessageW`, `SendMessageTimeoutW`, `EnumWindows`, `IsWindow`, `GetClientRect`, `ClientToScreen`, thread priority, events and QPC; each unsafe block has a SAFETY comment |
@@ -102,19 +123,20 @@ Windows-only.
 
 ## Manual acceptance checklist
 
-1. Run `cargo run --release`; the modern dark dashboard appears and stays
+1. Run `cargo run --release`; the dark dashboard appears and stays
    responsive while idle without continuous repainting.
 2. Set 10 CPS, global mode, current cursor, Start: clicks register in a text
    editor; actual CPS, mean, sigma and the live graph update.
-3. Increase sigma while running: the histogram widens immediately because the
-   atomic config snapshot is reloaded each click.
+3. Increase sigma from the Advanced section while running: the histogram
+   widens immediately because the atomic config snapshot is reloaded each
+   click.
 4. Enter an invalid value such as a zero interval: Start is rejected with the
    validation message.
 5. Switch to background mode, Refresh, select an unfocused Notepad window:
    client-coordinate clicks land while Notepad remains unfocused.
 6. Minimize the target and run again: clicks continue via the cached client
    rectangle; an invalidated HWND produces a visible target-loss error.
-7. Press F8 mid-run: the session stops within one interval, the state banner
+7. Press F8 mid-run: the session stops within one interval, the status pill
    turns red and no mouse button remains stuck.
 8. Configure a sub-millisecond interval: missed deadlines are counted
    honestly when the machine cannot keep up.

@@ -1,16 +1,5 @@
-# Build artifacts — Engine A (CMake)
-engine-a-cpp/build/
-engine-a-cpp/build-ninja/
-engine-a-cpp/build-nmake/
-engine-a-cpp/cmake-build-*/
-*.obj
-*.pdb
-*.ilk
-*.exe
-*.idb
-
-# Build artifacts — Engine B (Cargo)
-engine-b-rust/target/
+# Build artifacts — Cargo
+/autoclicker/target/
 **/*.rs.bk
 Cargo.lock.bak
 

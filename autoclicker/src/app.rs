@@ -1,4 +1,4 @@
-//! Modern dark egui dashboard for Engine B.
+//! Single-screen dark dashboard for the OP Auto Clicker.
 //!
 //! All worker interaction goes through atomics and the lock-free telemetry
 //! store. The update thread never blocks on the worker and only requests
@@ -19,45 +19,33 @@ use crate::telemetry::{
 };
 use crate::win32::{self, WindowInfo};
 
-// Modern dark design system, mirrored from the C++ engine's theme.cpp.
-const COLOR_BG: Color32 = Color32::from_rgb(13, 17, 23);
+// Modern dark palette. Opaque colors use the const `from_rgb`; translucent
+// ones use the const-capable premultiplied constructor.
+const COLOR_BG: Color32 = Color32::from_rgb(14, 17, 22);
 const COLOR_CARD: Color32 = Color32::from_rgb(22, 27, 34);
 const COLOR_INPUT: Color32 = Color32::from_rgb(28, 35, 48);
-const COLOR_BORDER: Color32 = Color32::from_rgb(48, 58, 76);
+const COLOR_BORDER: Color32 = Color32::from_rgb(43, 53, 70);
 const COLOR_ACCENT: Color32 = Color32::from_rgb(76, 141, 255);
-const COLOR_ACCENT_SOFT: Color32 = Color32::from_rgba_premultiplied(76, 141, 255, 46);
 const COLOR_SUCCESS: Color32 = Color32::from_rgb(63, 185, 80);
-const COLOR_SUCCESS_SOFT: Color32 =
-    Color32::from_rgba_premultiplied(63, 185, 80, 42);
 const COLOR_DANGER: Color32 = Color32::from_rgb(248, 81, 73);
-const COLOR_DANGER_SOFT: Color32 =
-    Color32::from_rgba_premultiplied(248, 81, 73, 42);
 const COLOR_WARNING: Color32 = Color32::from_rgb(210, 153, 34);
-const COLOR_WARNING_SOFT: Color32 =
-    Color32::from_rgba_premultiplied(210, 153, 34, 42);
 const COLOR_TEXT: Color32 = Color32::from_rgb(230, 237, 243);
 const COLOR_TEXT_DIM: Color32 = Color32::from_rgb(139, 148, 158);
 const COLOR_CHART_GRID: Color32 =
     Color32::from_rgba_premultiplied(48, 58, 76, 90);
 const COLOR_CHART_BAR_ALT: Color32 =
     Color32::from_rgba_premultiplied(76, 141, 255, 110);
+const COLOR_PILL_IDLE: Color32 =
+    Color32::from_rgba_premultiplied(139, 148, 158, 40);
 
 const LOG_LIMIT: usize = 200;
 const CPS_MIN: f64 = 0.1;
 const CPS_MAX: f64 = 50.0;
-
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum Tab {
-    Clicker,
-    Target,
-    Analytics,
-    Activity,
-}
+const SIDE_PANEL_WIDTH: f32 = 372.0_f32;
 
 pub struct EngineBApp {
     engine: ClickEngine,
     config: EngineConfig,
-    tab: Tab,
     repeat_limited: bool,
     cps_editor: f64,
     windows: Vec<WindowInfo>,
@@ -87,13 +75,12 @@ impl EngineBApp {
         Self {
             engine: ClickEngine::new(),
             config,
-            tab: Tab::Clicker,
             repeat_limited: false,
             cps_editor,
             windows: Vec::new(),
             selected_window: None,
             logs: vec![
-                "OP Auto Clicker (Engine B) initialized. F8 is the panic stop key."
+                "OP Auto Clicker initialized. F8 is the panic stop key."
                     .to_string(),
             ],
             last_seen_error: None,
@@ -137,14 +124,16 @@ impl EngineBApp {
             Color32::from_rgb(46, 57, 78);
         style.visuals.widgets.active.fg_stroke =
             Stroke::new(1.0_f32, COLOR_ACCENT);
-        style.visuals.selection.bg_fill = COLOR_ACCENT_SOFT;
+        style.visuals.selection.bg_fill =
+            Color32::from_rgba_premultiplied(76, 141, 255, 70);
         style.visuals.hyperlink_color = COLOR_ACCENT;
-        style.visuals.widgets.noninteractive.rounding = Rounding::same(10.0_f32);
+        style.visuals.widgets.noninteractive.rounding =
+            Rounding::same(10.0_f32);
         style.visuals.widgets.inactive.rounding = Rounding::same(8.0_f32);
         style.visuals.widgets.hovered.rounding = Rounding::same(8.0_f32);
         style.visuals.widgets.active.rounding = Rounding::same(8.0_f32);
-        style.spacing.item_spacing = Vec2::new(10.0_f32, 11.0_f32);
-        style.spacing.button_padding = Vec2::new(12.0_f32, 8.0_f32);
+        style.spacing.item_spacing = Vec2::new(9.0_f32, 9.0_f32);
+        style.spacing.button_padding = Vec2::new(12.0_f32, 7.0_f32);
         ctx.set_style(style);
     }
 
@@ -240,132 +229,121 @@ impl EngineBApp {
             .fill(COLOR_CARD)
             .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
             .rounding(Rounding::same(10.0_f32))
-            .inner_margin(Margin::same(14.0_f32))
+            .inner_margin(Margin::same(13.0_f32))
             .show(ui, add)
             .inner
     }
 
-    fn card_title(ui: &mut egui::Ui, title: &str) {
-        ui.label(egui::RichText::new(title).color(COLOR_TEXT_DIM).strong());
-        ui.add_space(6.0_f32);
+    fn section_title(ui: &mut egui::Ui, title: &str) {
+        ui.label(
+            egui::RichText::new(title)
+                .color(COLOR_TEXT_DIM)
+                .strong()
+                .size(12.5_f32),
+        );
+        ui.add_space(5.0_f32);
     }
 
     fn hint(ui: &mut egui::Ui, text: &str) {
-        ui.add_space(4.0_f32);
-        ui.label(egui::RichText::new(text).color(COLOR_TEXT_DIM).small());
+        ui.add_space(3.0_f32);
+        ui.label(
+            egui::RichText::new(text)
+                .color(COLOR_TEXT_DIM)
+                .small(),
+        );
     }
 
-    fn draw_status_pill(
-        ui: &mut egui::Ui,
-        text: &str,
-        color: Color32,
-        soft: Color32,
-    ) {
-        let font = FontId::proportional(14.0_f32);
-        let galley =
-            ui.painter().layout_no_wrap(text.to_string(), font, color);
-        let size = galley.size() + Vec2::new(28.0_f32, 12.0_f32);
+    fn status_pill(ui: &mut egui::Ui, text: &str, color: Color32, soft: Color32) {
+        let font = FontId::proportional(13.5_f32);
+        let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
+        let size = galley.size() + Vec2::new(26.0_f32, 10.0_f32);
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 9.0_f32, soft);
         painter.rect_stroke(rect, 9.0_f32, Stroke::new(1.0_f32, color));
         painter.text(
-            rect.min + Vec2::new(14.0_f32, 6.0_f32),
+            rect.min + Vec2::new(13.0_f32, 5.0_f32),
             Align2::LEFT_TOP,
             text,
-            FontId::proportional(14.0_f32),
+            FontId::proportional(13.5_f32),
             color,
         );
     }
 
+    // ------------------------------------------------------------------ header
+
     fn draw_header(&mut self, ui: &mut egui::Ui) {
         let (text, color, soft) = match self.engine.state() {
-            STATE_RUNNING => ("RUNNING", COLOR_SUCCESS, COLOR_SUCCESS_SOFT),
-            STATE_STOPPING => ("STOPPING", COLOR_WARNING, COLOR_WARNING_SOFT),
-            STATE_PANIC => ("PANIC STOP", COLOR_DANGER, COLOR_DANGER_SOFT),
-            _ => ("IDLE", COLOR_TEXT_DIM, COLOR_INPUT),
+            STATE_RUNNING => (
+                "RUNNING",
+                COLOR_SUCCESS,
+                Color32::from_rgba_premultiplied(63, 185, 80, 42),
+            ),
+            STATE_STOPPING => (
+                "STOPPING",
+                COLOR_WARNING,
+                Color32::from_rgba_premultiplied(210, 153, 34, 42),
+            ),
+            STATE_PANIC => (
+                "PANIC STOP",
+                COLOR_DANGER,
+                Color32::from_rgba_premultiplied(248, 81, 73, 42),
+            ),
+            _ => ("IDLE", COLOR_TEXT_DIM, COLOR_PILL_IDLE),
         };
         ui.horizontal(|ui| {
-            ui.heading(
-                egui::RichText::new("OP Auto Clicker")
-                    .color(COLOR_TEXT)
-                    .size(22.0_f32),
-            );
-            ui.label(
-                egui::RichText::new("Engine B · Rust / egui")
-                    .color(COLOR_TEXT_DIM)
-                    .small(),
-            );
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new("OP Auto Clicker")
+                        .color(COLOR_TEXT)
+                        .size(21.0_f32)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new("Rust edition")
+                        .color(COLOR_TEXT_DIM)
+                        .small(),
+                );
+            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                Self::draw_status_pill(ui, text, color, soft);
+                Self::status_pill(ui, text, color, soft);
             });
         });
-        ui.add_space(4.0_f32);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "Clicks: {}    Elapsed: {:.2} s    Actual CPS: {:.2}    Missed: {}",
-                    self.engine.click_count(),
-                    self.engine.elapsed_ms() / 1000.0,
-                    self.stats.actual_cps,
-                    self.engine.missed_count()
-                ))
-                .color(COLOR_TEXT_DIM),
-            );
+        ui.add_space(6.0_f32);
+        ui.horizontal_wrapped(|ui| {
+            let counters = [
+                format!("Clicks: {}", self.engine.click_count()),
+                format!("Elapsed: {:.2} s", self.engine.elapsed_ms() / 1000.0),
+                format!("Actual CPS: {:.2}", self.stats.actual_cps),
+                format!("Missed: {}", self.engine.missed_count()),
+            ];
+            for (i, counter) in counters.iter().enumerate() {
+                if i > 0 {
+                    ui.add_space(14.0_f32);
+                }
+                ui.label(
+                    egui::RichText::new(counter).color(COLOR_TEXT_DIM),
+                );
+            }
         });
         if self.engine.priority_denied() {
+            ui.add_space(3.0_f32);
             ui.label(
                 egui::RichText::new(
                     "Warning: THREAD_PRIORITY_TIME_CRITICAL was denied by the OS.",
                 )
-                .color(COLOR_WARNING),
+                .color(COLOR_WARNING)
+                .small(),
             );
         }
-        ui.add_space(8.0_f32);
     }
 
-    fn draw_tab_bar(&mut self, ui: &mut egui::Ui) {
-        let tabs = [
-            (Tab::Clicker, "Clicker"),
-            (Tab::Target, "Target"),
-            (Tab::Analytics, "Analytics"),
-            (Tab::Activity, "Activity"),
-        ];
-        ui.horizontal(|ui| {
-            for (tab, label) in tabs {
-                if ui
-                    .selectable_label(self.tab == tab, label)
-                    .clicked()
-                {
-                    self.tab = tab;
-                }
-            }
-        });
-        ui.add_space(8.0_f32);
-    }
+    // ------------------------------------------------------------- left column
 
-    fn draw_validation_line(&self, ui: &mut egui::Ui) {
-        match self.config.validate() {
-            Ok(()) => ui.label(
-                egui::RichText::new(format!(
-                    "Configuration valid. Effective interval sigma: {:.3} ms",
-                    self.config.effective_interval_sigma_ms()
-                ))
-                .color(COLOR_SUCCESS)
-                .small(),
-            ),
-            Err(error) => ui.label(
-                egui::RichText::new(format!("Configuration issue: {error}"))
-                    .color(COLOR_WARNING)
-                    .small(),
-            ),
-        };
-    }
-
-    fn draw_clicker_tab(&mut self, ui: &mut egui::Ui) {
-        // --- Click rate ----------------------------------------------------
+    fn draw_controls(&mut self, ui: &mut egui::Ui) {
+        // Click rate.
         Self::card(ui, |ui| {
-            Self::card_title(ui, "CLICK RATE");
+            Self::section_title(ui, "CLICK RATE");
             if ui
                 .add(
                     Slider::new(&mut self.cps_editor, CPS_MIN..=CPS_MAX)
@@ -379,30 +357,153 @@ impl EngineBApp {
             }
             ui.label(
                 egui::RichText::new(format!(
-                    "One click every {:.2} ms",
+                    "{:.2} ms between clicks",
                     self.config.base_interval_ms
                 ))
                 .color(COLOR_TEXT_DIM)
                 .small(),
             );
         });
-        ui.add_space(10.0_f32);
+        ui.add_space(9.0_f32);
 
-        // --- Repeat --------------------------------------------------------
+        // Click options.
         Self::card(ui, |ui| {
-            Self::card_title(ui, "REPEAT");
+            Self::section_title(ui, "CLICK OPTIONS");
             ui.horizontal(|ui| {
                 ui.radio_value(
-                    &mut self.repeat_limited,
-                    false,
-                    "Run until stopped",
+                    &mut self.config.input_mode,
+                    InputMode::GlobalSendInput,
+                    "Global (SendInput)",
                 );
                 ui.radio_value(
-                    &mut self.repeat_limited,
-                    true,
-                    "Stop after a number of clicks",
+                    &mut self.config.input_mode,
+                    InputMode::BackgroundHwnd,
+                    "Background (window)",
                 );
             });
+            ui.add_space(4.0_f32);
+
+            if self.config.input_mode == InputMode::GlobalSendInput {
+                let fixed =
+                    self.config.coordinate_mode == CoordinateMode::FixedScreen;
+                egui::ComboBox::from_label("Position")
+                    .selected_text(if fixed {
+                        "Fixed screen coordinates"
+                    } else {
+                        "Current cursor position"
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.config.coordinate_mode,
+                            CoordinateMode::CurrentCursor,
+                            "Current cursor position",
+                        );
+                        ui.selectable_value(
+                            &mut self.config.coordinate_mode,
+                            CoordinateMode::FixedScreen,
+                            "Fixed screen coordinates",
+                        );
+                    });
+                if fixed {
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::DragValue::new(&mut self.config.fixed_x)
+                                .clamp_range(-100000..=100000)
+                                .prefix("X: "),
+                        );
+                        ui.add(
+                            egui::DragValue::new(&mut self.config.fixed_y)
+                                .clamp_range(-100000..=100000)
+                                .prefix("Y: "),
+                        );
+                    });
+                }
+                Self::hint(
+                    ui,
+                    "Hardware-level input that works in any application.",
+                );
+            } else {
+                ui.horizontal(|ui| {
+                    let selected = self
+                        .selected_window
+                        .and_then(|i| self.windows.get(i))
+                        .map(|w| format!("{} [PID {}]", w.title, w.process_id))
+                        .unwrap_or_else(|| "No window selected".to_string());
+                    egui::ComboBox::from_id_source("target_combo")
+                        .selected_text(selected)
+                        .show_ui(ui, |ui| {
+                            if self.windows.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "List is empty — press Refresh",
+                                    )
+                                    .color(COLOR_TEXT_DIM),
+                                );
+                            }
+                            for (index, info) in self.windows.iter().enumerate() {
+                                let label = format!(
+                                    "{} [PID {}]{}",
+                                    info.title,
+                                    info.process_id,
+                                    if info.minimized { " (minimized)" } else { "" }
+                                );
+                                if ui
+                                    .selectable_label(
+                                        self.selected_window == Some(index),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    self.selected_window = Some(index);
+                                    self.config.target_hwnd = info.hwnd;
+                                }
+                            }
+                        });
+                    if ui.button("Refresh").clicked() {
+                        self.windows = win32::enumerate_windows();
+                        if self.selected_window.unwrap_or(0) >= self.windows.len() {
+                            self.selected_window = None;
+                            self.config.target_hwnd = 0;
+                        }
+                        self.log(format!(
+                            "Target window list refreshed: {} candidates.",
+                            self.windows.len()
+                        ));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.client_x)
+                            .clamp_range(0..=100000)
+                            .prefix("Client X: "),
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.client_y)
+                            .clamp_range(0..=100000)
+                            .prefix("Client Y: "),
+                    );
+                });
+                ui.checkbox(
+                    &mut self.config.background_synchronous,
+                    "Synchronous delivery (SendMessageTimeoutW)",
+                );
+                Self::hint(
+                    ui,
+                    "Clicks land in unfocused or minimized windows via posted WM_MOUSE messages.",
+                );
+            }
+        });
+        ui.add_space(9.0_f32);
+
+        // Repeat.
+        Self::card(ui, |ui| {
+            Self::section_title(ui, "REPEAT");
+            ui.radio_value(&mut self.repeat_limited, false, "Until stopped");
+            ui.radio_value(
+                &mut self.repeat_limited,
+                true,
+                "Stop after a number of clicks",
+            );
             if self.repeat_limited {
                 if self.config.max_clicks == 0 {
                     self.config.max_clicks = 100;
@@ -416,16 +517,17 @@ impl EngineBApp {
                 self.config.max_clicks = 0;
             }
         });
-        ui.add_space(10.0_f32);
+        ui.add_space(9.0_f32);
 
-        // --- Humanization --------------------------------------------------
+        // Humanization with advanced fields behind one disclosure.
         Self::card(ui, |ui| {
-            Self::card_title(ui, "HUMANIZATION");
+            Self::section_title(ui, "HUMANIZATION");
             ui.checkbox(
                 &mut self.config.humanize_enabled,
                 "Enable Gaussian humanization",
             );
             ui.collapsing("Advanced timing & humanization", |ui| {
+                ui.add_space(3.0_f32);
                 ui.add(
                     egui::DragValue::new(&mut self.config.base_interval_ms)
                         .speed(0.5)
@@ -491,201 +593,41 @@ impl EngineBApp {
                         .suffix(" ms hold max"),
                 );
                 ui.add_space(6.0_f32);
-                self.draw_validation_line(ui);
-            });
-        });
-        ui.add_space(10.0_f32);
-
-        // --- Input dispatch ------------------------------------------------
-        Self::card(ui, |ui| {
-            Self::card_title(ui, "INPUT DISPATCH");
-            ui.horizontal(|ui| {
-                ui.radio_value(
-                    &mut self.config.input_mode,
-                    InputMode::GlobalSendInput,
-                    "Global (SendInput)",
-                );
-                ui.radio_value(
-                    &mut self.config.input_mode,
-                    InputMode::BackgroundHwnd,
-                    "Background (window messages)",
-                );
-            });
-            ui.add_space(4.0_f32);
-
-            if self.config.input_mode == InputMode::GlobalSendInput {
-                let fixed =
-                    self.config.coordinate_mode == CoordinateMode::FixedScreen;
-                egui::ComboBox::from_label("##coord_mode")
-                    .selected_text(if fixed {
-                        "Fixed screen coordinates"
-                    } else {
-                        "Current cursor position"
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.config.coordinate_mode,
-                            CoordinateMode::CurrentCursor,
-                            "Current cursor position",
-                        );
-                        ui.selectable_value(
-                            &mut self.config.coordinate_mode,
-                            CoordinateMode::FixedScreen,
-                            "Fixed screen coordinates",
-                        );
-                    });
-                if fixed {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.config.fixed_x)
-                                .clamp_range(-100000..=100000)
-                                .prefix("Fixed screen X: "),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut self.config.fixed_y)
-                                .clamp_range(-100000..=100000)
-                                .prefix("Fixed screen Y: "),
-                        );
-                    });
+                match self.config.validate() {
+                    Ok(()) => ui.label(
+                        egui::RichText::new(format!(
+                            "Valid. Effective sigma: {:.3} ms",
+                            self.config.effective_interval_sigma_ms()
+                        ))
+                        .color(COLOR_SUCCESS)
+                        .small(),
+                    ),
+                    Err(error) => ui.label(
+                        egui::RichText::new(format!("Configuration issue: {error}"))
+                            .color(COLOR_WARNING)
+                            .small(),
+                    ),
                 }
-                Self::hint(
-                    ui,
-                    "Global mode injects hardware-level input with arrayed SendInput and works in any application.",
-                );
-            } else {
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.config.client_x)
-                            .clamp_range(0..=100000)
-                            .prefix("Client X: "),
-                    );
-                    ui.add(
-                        egui::DragValue::new(&mut self.config.client_y)
-                            .clamp_range(0..=100000)
-                            .prefix("Client Y: "),
-                    );
-                });
-                ui.checkbox(
-                    &mut self.config.background_synchronous,
-                    "Use SendMessageTimeoutW (synchronous delivery)",
-                );
-                if self.selected_window.is_none()
-                    || self.selected_window.unwrap_or(0) >= self.windows.len()
-                {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                "Pick a target window on the Target tab",
-                            )
-                            .fill(COLOR_ACCENT_SOFT)
-                            .min_size(Vec2::new(380.0_f32, 30.0_f32)),
-                        )
-                        .clicked()
-                    {
-                        self.tab = Tab::Target;
-                    }
-                }
-                Self::hint(
-                    ui,
-                    "Background mode posts WM_MOUSE messages and can click unfocused or minimized windows.",
-                );
-            }
+            });
         });
     }
 
-    fn draw_target_tab(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::card_title(ui, "BACKGROUND TARGET WINDOW");
-            ui.horizontal(|ui| {
-                if ui.button("Refresh window list").clicked() {
-                    self.windows = win32::enumerate_windows();
-                    if self.selected_window.unwrap_or(0) >= self.windows.len() {
-                        self.selected_window = None;
-                        self.config.target_hwnd = 0;
-                    }
-                    self.log(format!(
-                        "Target window list refreshed: {} candidates.",
-                        self.windows.len()
-                    ));
-                }
-                if ui.button("Validate selected HWND").clicked() {
-                    match self
-                        .selected_window
-                        .and_then(|i| self.windows.get(i))
-                    {
-                        Some(info) if win32::is_valid_window(info.hwnd) => {
-                            self.log("Selected HWND is valid.")
-                        }
-                        _ => self.log("Selected HWND is invalid."),
-                    }
-                }
-            });
-        });
-        ui.add_space(10.0_f32);
-
-        Self::card(ui, |ui| {
-            if self.windows.is_empty() {
-                Self::hint(
-                    ui,
-                    "No windows enumerated yet. Press \"Refresh window list\" to list visible top-level windows.",
-                );
-            } else {
-                egui::ScrollArea::vertical()
-                    .max_height(340.0_f32)
-                    .show(ui, |ui| {
-                        for (index, info) in self.windows.iter().enumerate() {
-                            let label = format!(
-                                "{}  [PID {}]{}{}",
-                                info.title,
-                                info.process_id,
-                                if info.minimized { "  (minimized)" } else { "" },
-                                if info.client_width > 0 {
-                                    format!(
-                                        "  {}x{}",
-                                        info.client_width, info.client_height
-                                    )
-                                } else {
-                                    String::new()
-                                }
-                            );
-                            if ui
-                                .selectable_label(
-                                    self.selected_window == Some(index),
-                                    label,
-                                )
-                                .clicked()
-                            {
-                                self.selected_window = Some(index);
-                                self.config.target_hwnd = info.hwnd;
-                            }
-                        }
-                    });
-            }
-        });
-        ui.add_space(10.0_f32);
-
-        Self::card(ui, |ui| {
-            Self::hint(
-                ui,
-                "Only needed for Background mode. The selected window's client rectangle is cached so clicks keep landing while the target is minimized. Global mode ignores this list.",
-            );
-        });
-    }
+    // ------------------------------------------------------------ right column
 
     fn draw_cps_graph(&self, ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), 150.0_f32),
+            Vec2::new(ui.available_width(), 168.0_f32),
             Sense::hover(),
         );
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 8.0_f32, COLOR_INPUT);
+        painter.rect_filled(rect, 10.0_f32, COLOR_INPUT);
 
         for step in 1..4 {
             let y = rect.top() + rect.height() * step as f32 / 4.0_f32;
             painter.line_segment(
                 [
-                    egui::pos2(rect.left() + 6.0_f32, y),
-                    egui::pos2(rect.right() - 6.0_f32, y),
+                    egui::pos2(rect.left() + 8.0_f32, y),
+                    egui::pos2(rect.right() - 8.0_f32, y),
                 ],
                 Stroke::new(1.0_f32, COLOR_CHART_GRID),
             );
@@ -707,11 +649,11 @@ impl EngineBApp {
                 let x = rect.left()
                     + rect.width() * i as f32
                         / (self.cps_history.len() - 1) as f32;
-                let normalized = (self.cps_history[index] / max_cps)
-                    .clamp(0.0, 1.0) as f32;
+                let normalized =
+                    (self.cps_history[index] / max_cps).clamp(0.0, 1.0) as f32;
                 let y = rect.bottom()
-                    - 8.0_f32
-                    - normalized * (rect.height() - 18.0_f32);
+                    - 10.0_f32
+                    - normalized * (rect.height() - 22.0_f32);
                 let current = egui::pos2(x, y);
                 if i > 0 {
                     painter.line_segment(
@@ -723,7 +665,7 @@ impl EngineBApp {
             }
         }
         painter.text(
-            rect.left_top() + Vec2::new(10.0_f32, 8.0_f32),
+            rect.left_top() + Vec2::new(12.0_f32, 9.0_f32),
             Align2::LEFT_TOP,
             "REAL-TIME CPS",
             FontId::proportional(12.0_f32),
@@ -737,7 +679,7 @@ impl EngineBApp {
             Sense::hover(),
         );
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 8.0_f32, COLOR_INPUT);
+        painter.rect_filled(rect, 10.0_f32, COLOR_INPUT);
 
         let max_bin = self
             .stats
@@ -748,24 +690,19 @@ impl EngineBApp {
             .unwrap_or(0)
             .max(1) as f32;
         let gap = 3.0_f32;
-        let bar_width =
-            rect.width() / HISTOGRAM_BINS as f32 - gap;
+        let bar_width = rect.width() / HISTOGRAM_BINS as f32 - gap;
         for bin in 0..HISTOGRAM_BINS {
             let height = rect.height()
                 * self.stats.histogram[bin] as f32
                 / max_bin
-                * 0.82_f32;
-            let x = rect.left()
-                + 6.0_f32
-                + bin as f32 * (bar_width + gap);
-            let color = if bin % 2 == 0 {
-                COLOR_ACCENT
-            } else {
-                COLOR_CHART_BAR_ALT
-            };
+                * 0.78_f32;
+            let x =
+                rect.left() + 8.0_f32 + bin as f32 * (bar_width + gap);
+            let color =
+                if bin % 2 == 0 { COLOR_ACCENT } else { COLOR_CHART_BAR_ALT };
             painter.rect_filled(
                 egui::Rect::from_min_size(
-                    egui::pos2(x, rect.bottom() - height - 8.0_f32),
+                    egui::pos2(x, rect.bottom() - height - 10.0_f32),
                     Vec2::new(bar_width, height),
                 ),
                 4.0_f32,
@@ -773,7 +710,7 @@ impl EngineBApp {
             );
         }
         painter.text(
-            rect.left_top() + Vec2::new(10.0_f32, 8.0_f32),
+            rect.left_top() + Vec2::new(12.0_f32, 9.0_f32),
             Align2::LEFT_TOP,
             "INTERVAL HISTOGRAM (ms)",
             FontId::proportional(12.0_f32),
@@ -781,20 +718,23 @@ impl EngineBApp {
         );
     }
 
-    fn draw_analytics_tab(&mut self, ui: &mut egui::Ui) {
+    fn draw_analytics(&mut self, ui: &mut egui::Ui) {
         Self::card(ui, |ui| {
-            Self::card_title(ui, "LIVE PERFORMANCE ANALYTICS");
+            Self::section_title(ui, "LIVE METRICS");
             Grid::new("metrics_grid")
                 .num_columns(2)
-                .spacing(Vec2::new(24.0_f32, 10.0_f32))
+                .spacing(Vec2::new(22.0_f32, 9.0_f32))
                 .show(ui, |ui| {
-                    let metric = |ui: &mut egui::Ui, label: &str, value: String| {
-                        ui.label(
-                            egui::RichText::new(label).color(COLOR_TEXT_DIM),
-                        );
-                        ui.label(egui::RichText::new(value).color(COLOR_TEXT));
-                        ui.end_row();
-                    };
+                    let metric =
+                        |ui: &mut egui::Ui, label: &str, value: String| {
+                            ui.label(
+                                egui::RichText::new(label).color(COLOR_TEXT_DIM),
+                            );
+                            ui.label(
+                                egui::RichText::new(value).color(COLOR_TEXT),
+                            );
+                            ui.end_row();
+                        };
                     metric(ui, "Actual CPS", format!("{:.3}", self.stats.actual_cps));
                     metric(ui, "Interval mean", format!("{:.4} ms", self.stats.mean_interval_ms));
                     metric(ui, "Interval sigma", format!("{:.4} ms", self.stats.sigma_interval_ms));
@@ -804,26 +744,26 @@ impl EngineBApp {
                 });
             ui.label(
                 egui::RichText::new(format!(
-                    "Observed interval range: {:.4} .. {:.4} ms",
+                    "Observed range: {:.4} .. {:.4} ms",
                     self.stats.min_interval_ms, self.stats.max_interval_ms
                 ))
                 .color(COLOR_TEXT_DIM)
                 .small(),
             );
         });
-        ui.add_space(10.0_f32);
-
+        ui.add_space(9.0_f32);
         Self::card(ui, |ui| self.draw_cps_graph(ui));
-        ui.add_space(10.0_f32);
+        ui.add_space(9.0_f32);
         Self::card(ui, |ui| self.draw_histogram(ui));
     }
 
-    fn draw_activity_tab(&self, ui: &mut egui::Ui) {
+    fn draw_activity(&self, ui: &mut egui::Ui) {
         Self::card(ui, |ui| {
-            Self::card_title(ui, "STATUS AND ERROR LOG");
+            Self::section_title(ui, "RECENT ACTIVITY");
+            let height = (ui.available_height() - 8.0_f32).max(80.0_f32);
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
-                .max_height(420.0_f32)
+                .max_height(height)
                 .show(ui, |ui| {
                     for line in &self.logs {
                         let warning = line.contains("PANIC")
@@ -851,9 +791,14 @@ impl EngineBApp {
             ui.add_enabled_ui(!running, |ui| {
                 if ui
                     .add(
-                        egui::Button::new("START")
-                            .fill(COLOR_SUCCESS_SOFT)
-                            .min_size(Vec2::new(start_width, 44.0_f32)),
+                        egui::Button::new(
+                            egui::RichText::new("START")
+                                .strong()
+                                .color(Color32::WHITE)
+                                .size(15.0_f32),
+                        )
+                        .fill(COLOR_SUCCESS)
+                        .min_size(Vec2::new(start_width, 42.0_f32)),
                     )
                     .clicked()
                 {
@@ -863,9 +808,15 @@ impl EngineBApp {
             ui.add_enabled_ui(running, |ui| {
                 if ui
                     .add(
-                        egui::Button::new("STOP")
-                            .fill(COLOR_WARNING_SOFT)
-                            .min_size(Vec2::new(small_width, 44.0_f32)),
+                        egui::Button::new(
+                            egui::RichText::new("STOP")
+                                .strong()
+                                .color(COLOR_WARNING)
+                                .size(15.0_f32),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::new(1.5_f32, COLOR_WARNING))
+                        .min_size(Vec2::new(small_width, 42.0_f32)),
                     )
                     .clicked()
                 {
@@ -875,9 +826,14 @@ impl EngineBApp {
             });
             if ui
                 .add(
-                    egui::Button::new("PANIC STOP (F8)")
-                        .fill(COLOR_DANGER_SOFT)
-                        .min_size(Vec2::new(small_width, 44.0_f32)),
+                    egui::Button::new(
+                        egui::RichText::new("PANIC STOP (F8)")
+                            .strong()
+                            .color(Color32::WHITE)
+                            .size(15.0_f32),
+                    )
+                    .fill(COLOR_DANGER)
+                    .min_size(Vec2::new(small_width, 42.0_f32)),
                 )
                 .clicked()
             {
@@ -906,25 +862,48 @@ impl eframe::App for EngineBApp {
             ctx.request_repaint_after(Duration::from_millis(50));
         }
 
-        egui::TopBottomPanel::bottom("control_footer")
+        egui::TopBottomPanel::top("header_panel")
             .frame(
                 Frame::none()
                     .fill(COLOR_BG)
                     .inner_margin(Margin::symmetric(16.0_f32, 12.0_f32)),
             )
+            .show(ctx, |ui| self.draw_header(ui));
+
+        egui::TopBottomPanel::bottom("control_footer")
+            .frame(
+                Frame::none()
+                    .fill(COLOR_BG)
+                    .inner_margin(Margin::symmetric(16.0_f32, 10.0_f32)),
+            )
             .show(ctx, |ui| self.draw_footer(ui));
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                self.draw_header(ui);
-                self.draw_tab_bar(ui);
-                match self.tab {
-                    Tab::Clicker => self.draw_clicker_tab(ui),
-                    Tab::Target => self.draw_target_tab(ui),
-                    Tab::Analytics => self.draw_analytics_tab(ui),
-                    Tab::Activity => self.draw_activity_tab(ui),
-                }
+        egui::SidePanel::left("controls_panel")
+            .exact_width(SIDE_PANEL_WIDTH)
+            .resizable(true)
+            .frame(
+                Frame::none()
+                    .fill(COLOR_BG)
+                    .inner_margin(Margin::symmetric(14.0_f32, 6.0_f32)),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.draw_controls(ui);
+                });
             });
-        });
+
+        egui::CentralPanel::default()
+            .frame(
+                Frame::none()
+                    .fill(COLOR_BG)
+                    .inner_margin(Margin::symmetric(6.0_f32, 6.0_f32)),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.draw_analytics(ui);
+                    ui.add_space(9.0_f32);
+                    self.draw_activity(ui);
+                });
+            });
     }
 }

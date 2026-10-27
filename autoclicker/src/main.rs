@@ -1,4 +1,4 @@
-//! OP Auto Clicker Engine B binary entry point.
+//! OP Auto Clicker binary entry point.
 //!
 //! The platform-independent modules (`config`, `humanize`, `telemetry`) compile
 //! on every platform so their integration tests run anywhere; the Win32 worker
@@ -27,12 +27,13 @@ mod win32;
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 940.0])
-            .with_title("OP Auto Clicker - Engine B (Rust/egui)"),
+            .with_inner_size([980.0, 700.0])
+            .with_min_inner_size([860.0, 600.0])
+            .with_title("OP Auto Clicker"),
         ..Default::default()
     };
     eframe::run_native(
-        "OP Auto Clicker Engine B",
+        "OP Auto Clicker",
         options,
         Box::new(|_creation_context| Box::new(app::EngineBApp::new())),
     )
@@ -40,7 +41,7 @@ fn main() -> eframe::Result<()> {
 
 #[cfg(not(windows))]
 fn main() {
-    println!("autoclicker_engine_b is a Windows-only GUI application.");
+    println!("OP Auto Clicker is a Windows-only GUI application.");
     println!("Build and run it on Windows 10 21H2+ or Windows 11 x64:");
     println!("    cargo run --release");
     println!("The platform-independent modules stay verifiable here via: cargo test");
