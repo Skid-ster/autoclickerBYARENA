@@ -4,23 +4,41 @@
 
 namespace op41 {
 
-// Cyberpunk dark palette: deep navy/black surfaces with cyan primary, magenta
-// secondary and green status accents. Applied programmatically so the binary
-// needs no external texture or font assets.
+// Modern dark design system shared by the whole dashboard. A single blue
+// accent carries interaction; green/amber/red are reserved for status
+// semantics. Applied programmatically so the binary needs no external font
+// or texture assets.
 namespace theme {
 
-inline constexpr ImU32 kBackground = IM_COL32(10, 12, 24, 255);
-inline constexpr ImU32 kPanel = IM_COL32(18, 22, 40, 255);
-inline constexpr ImU32 kPanelBorder = IM_COL32(0, 229, 255, 90);
-inline constexpr ImU32 kCyan = IM_COL32(0, 229, 255, 255);
-inline constexpr ImU32 kMagenta = IM_COL32(255, 43, 214, 255);
-inline constexpr ImU32 kGreen = IM_COL32(57, 255, 136, 255);
-inline constexpr ImU32 kAmber = IM_COL32(255, 191, 0, 255);
-inline constexpr ImU32 kRed = IM_COL32(255, 70, 90, 255);
-inline constexpr ImU32 kText = IM_COL32(224, 230, 245, 255);
-inline constexpr ImU32 kTextDim = IM_COL32(130, 140, 165, 255);
+// Surfaces.
+inline constexpr ImU32 kBackground = IM_COL32(13, 17, 23, 255);   // #0D1117
+inline constexpr ImU32 kCard = IM_COL32(22, 27, 34, 255);         // #161B22
+inline constexpr ImU32 kInput = IM_COL32(28, 35, 48, 255);        // #1C2330
+inline constexpr ImU32 kBorder = IM_COL32(48, 58, 76, 255);       // #303A4C
 
-void apply_cyberpunk_style();
+// Single interaction accent.
+inline constexpr ImU32 kAccent = IM_COL32(76, 141, 255, 255);     // #4C8DFF
+inline constexpr ImU32 kAccentSoft = IM_COL32(76, 141, 255, 46);
+inline constexpr ImU32 kAccentBorder = IM_COL32(76, 141, 255, 110);
+
+// Semantic status colors.
+inline constexpr ImU32 kSuccess = IM_COL32(63, 185, 80, 255);     // #3FB950
+inline constexpr ImU32 kSuccessSoft = IM_COL32(63, 185, 80, 42);
+inline constexpr ImU32 kDanger = IM_COL32(248, 81, 73, 255);      // #F85149
+inline constexpr ImU32 kDangerSoft = IM_COL32(248, 81, 73, 42);
+inline constexpr ImU32 kWarning = IM_COL32(210, 153, 34, 255);    // #D29922
+inline constexpr ImU32 kWarningSoft = IM_COL32(210, 153, 34, 42);
+
+// Text.
+inline constexpr ImU32 kText = IM_COL32(230, 237, 243, 255);      // #E6EDF3
+inline constexpr ImU32 kTextDim = IM_COL32(139, 148, 158, 255);   // #8B949E
+inline constexpr ImU32 kTextFaint = IM_COL32(96, 105, 120, 255);
+
+// Chart series (monochrome accent family instead of competing neons).
+inline constexpr ImU32 kChartGrid = IM_COL32(48, 58, 76, 90);
+inline constexpr ImU32 kChartBarAlt = IM_COL32(76, 141, 255, 110);
+
+void apply_modern_style();
 
 } // namespace theme
 } // namespace op41

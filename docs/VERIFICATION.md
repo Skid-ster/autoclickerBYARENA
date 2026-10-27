@@ -141,6 +141,44 @@ tree-sitter Rust grammar.
     annotations in the lock-free telemetry ring) is now silenced project-wide
     via `/wd4324`; the padding is intentional false-sharing protection, not a
     defect.
+11. The egui dashboard used `Color32::from_rgba_unmultiplied` inside `const`
+    initializers; that constructor is not `const` in egui/ecolor 0.27.2
+    (E0015). The translucent palette constants now use the const-capable
+    `Color32::from_rgba_premultiplied`; opaque colors keep
+    `Color32::from_rgb`. Caught by the offline real-egui harness, which the
+    sandbox rustc 1.88 can reproduce.
+
+## Dashboard redesign (both engines)
+
+The original single-page cyberpunk dashboard showed every expert field at
+once with five competing neon colors. Both engines now share one modern dark
+design system and a four-tab information architecture:
+
+- one blue interaction accent plus semantic green/amber/red only for status;
+  neutral card surfaces, 8–10 px rounding, larger type, generous spacing.
+- tabs **Clicker / Target / Analytics / Activity**; expert timing fields
+  (sigma, clamps, hold durations, raw interval) move behind an
+  "Advanced timing & humanization" collapsing section.
+- the Clicker tab exposes one CPS slider as the single source of truth, a
+  repeat mode (until stopped / after N clicks), and only the coordinate
+  fields the selected dispatch mode actually consumes; background mode shows
+  a direct prompt to the Target tab when no window is selected.
+- the footer holds one large Start control plus Stop and Panic (F8); the
+  header shows a colored status pill and the four key counters.
+
+The change is presentation-only. The worker thread, QPC scheduler,
+SendInput/PostMessage dispatch paths, SPSC telemetry, F8 panic logic, and all
+configuration validation are untouched, so every existing test remains
+valid. Verification for the redesign:
+
+- Engine A's `main.cpp`, `app.cpp` and `theme.cpp` pass `-fsyntax-only
+  -Wall -Wextra -Wpedantic` against the **real** Dear ImGui 1.90.4
+  `imgui.h`/`imconfig.h` with Win32/D3D11 signature stubs; the portable CTest
+  binaries still pass 3/3 with `-Werror`.
+- Engine B passes the offline real-egui 0.27.2 harness with **zero
+  diagnostics in the production sources** and 23/23 integration tests; a
+  negative-control injection was rejected as expected.
+- Final visual/interaction acceptance remains a Windows-only manual step.
 
 ## Offline real-egui type-check harness
 
