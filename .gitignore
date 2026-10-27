@@ -1,5 +1,7 @@
 # Build artifacts — Engine A (CMake)
 engine-a-cpp/build/
+engine-a-cpp/build-ninja/
+engine-a-cpp/build-nmake/
 engine-a-cpp/cmake-build-*/
 *.obj
 *.pdb

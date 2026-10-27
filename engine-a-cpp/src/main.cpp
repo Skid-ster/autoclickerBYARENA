@@ -13,6 +13,14 @@
 #include "app.h"
 #include "theme.h"
 
+// Dear ImGui keeps this declaration inside an `#if 0` block in
+// imgui_impl_win32.h so the helper header does not drag <windows.h> into
+// every consumer. The upstream header instructs applications to copy the
+// forward declaration into their own translation unit (required since the
+// 1.90 backend series); the definition lives in imgui_impl_win32.cpp.
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
 namespace {
 
 ID3D11Device* g_device = nullptr;
