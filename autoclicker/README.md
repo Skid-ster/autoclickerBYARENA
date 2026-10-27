@@ -37,7 +37,7 @@ cargo run --release
 cargo test --release
 ```
 
-Five integration test binaries run platform-independent logic (40 tests):
+Six integration test binaries run platform-independent logic (44 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -53,6 +53,9 @@ Five integration test binaries run platform-independent logic (40 tests):
   names and the default F6 preference.
 - `settings_tests` — full serialization round trip, tolerance of unknown
   keys, sections and comments, and per-field recovery from malformed values.
+- `icon_tests` — dimensions, transparent rounded corners, solid accent
+  center, two-axis symmetry and the presence of both accent and background
+  pixels in the procedurally generated 32x32 application icon.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
@@ -80,7 +83,12 @@ dark screen:
 
 The **Hotkey setting** dialog remaps the start/stop key (F1–F24, A–Z, 0–9,
 Space); F8 is permanently reserved for Panic Stop and cannot be reassigned.
-Hotkeys use `GetAsyncKeyState`, so they work while the window is unfocused.
+Assignment reacts only to a fresh key press made after clicking "Assign new
+key", so keys already held are never captured by accident, and the toggle
+hotkey is inert while the dialog is listening. Hotkeys use
+`GetAsyncKeyState`, so they work while the window is unfocused. A generated
+crosshair icon is set on the window (title bar, taskbar and Alt-Tab) without
+shipping any binary asset.
 
 The **Advanced** window keeps the power-user features without disturbing the
 4.1 layout:
@@ -107,6 +115,7 @@ previous session is never reused.
 | `src/timing.rs` | QPC wrappers, `timeBeginPeriod(1)` RAII guard, `spin_loop` spin wait (no sleep) |
 | `src/win32.rs` | Narrow FFI wrappers for `SendInput`, `PostMessageW`, `SendMessageTimeoutW`, `GetCursorPos`, `GetAsyncKeyState`, `EnumWindows`, events and QPC; each unsafe block has a SAFETY comment |
 | `src/hotkey.rs` | Virtual-key constants, hotkey validation and key names (platform-independent, fully tested) |
+| `src/icon.rs` | Procedurally generated 32x32 RGBA crosshair icon via signed-distance pixel math; no binary asset |
 | `src/humanize.rs` | Thread-local SplitMix64 PRNG (OS/QPC entropy), Box-Muller Gaussian and uniform +/- offset samples with clamping |
 | `src/settings.rs` | Dependency-free key=value settings serialization and tolerant parsing (platform-independent, fully tested) |
 | `src/telemetry.rs` | Lock-free SPSC ring buffer over atomic `Atom` slots (`Send + Sync`, no `unsafe`), drop-newest back pressure, sliding-window statistics |

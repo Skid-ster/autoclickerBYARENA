@@ -13,6 +13,7 @@
 mod config;
 mod hotkey;
 mod humanize;
+mod icon;
 mod settings;
 mod telemetry;
 
@@ -27,10 +28,17 @@ mod win32;
 
 #[cfg(windows)]
 fn main() -> eframe::Result<()> {
+    let (rgba, icon_width, icon_height) = icon::app_icon_rgba();
+    let icon = std::sync::Arc::new(egui::IconData {
+        rgba,
+        width: icon_width,
+        height: icon_height,
+    });
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([470.0, 700.0])
             .with_min_inner_size([420.0, 600.0])
+            .with_icon(icon)
             .with_title("OP Auto Clicker"),
         ..Default::default()
     };

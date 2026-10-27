@@ -103,7 +103,9 @@ pub struct OpAutoClickerApp {
     // Hotkey edge detection.
     toggle_was_down: bool,
     f8_was_down: bool,
-    capture_was_down: bool,
+    // True when any capturable key was held on the previous capture frame,
+    // so assignment only happens on a fresh press.
+    capture_key_was_down: bool,
 
     // Dialog state.
     show_hotkey_dialog: bool,
@@ -161,7 +163,7 @@ impl OpAutoClickerApp {
             previous_clicks: 0,
             toggle_was_down: false,
             f8_was_down: false,
-            capture_was_down: false,
+            capture_key_was_down: false,
             show_hotkey_dialog: false,
             capturing: false,
             show_advanced: false,
@@ -318,6 +320,14 @@ impl OpAutoClickerApp {
         }
         self.f8_was_down = f8_down;
 
+        // While the assignment dialog is capturing, the toggle key must not
+        // start or stop sessions: every key press belongs to the dialog.
+        // Pretend the toggle is held so a key still physically down when
+        // capture ends cannot produce an immediate start/stop edge.
+        if self.capturing {
+            self.toggle_was_down = true;
+            return;
+        }
         let toggle_down = self.prefs.hotkeys_enabled
             && is_supported_toggle_vk(self.prefs.toggle_hotkey_vk)
             && win32::is_vk_down(self.prefs.toggle_hotkey_vk);
@@ -332,7 +342,14 @@ impl OpAutoClickerApp {
         let hit = hotkey::capturable_vks()
             .into_iter()
             .find(|vk| win32::is_vk_down(*vk));
-        self.capture_was_down = escape_down || hit.is_some();
+        let any_down = escape_down || hit.is_some();
+        // Act only on a fresh press; keys already held when capture starts
+        // (or held over from the rejection of F8) are ignored until released.
+        let fresh_press = any_down && !self.capture_key_was_down;
+        self.capture_key_was_down = any_down;
+        if !fresh_press {
+            return;
+        }
 
         if escape_down {
             self.capturing = false;
@@ -939,7 +956,9 @@ impl OpAutoClickerApp {
                     );
                 } else if ui.button("Assign new key…").clicked() {
                     self.capturing = true;
-                    self.capture_was_down = false;
+                    // Baseline: ignore anything currently held; require a
+                    // distinct press after the button click.
+                    self.capture_key_was_down = true;
                 }
                 ui.add_space(6.0_f32);
                 ui.label(
@@ -960,6 +979,7 @@ impl OpAutoClickerApp {
         if !open || should_close {
             self.show_hotkey_dialog = false;
             self.capturing = false;
+            self.capture_key_was_down = false;
             self.mark_dirty();
             self.flush_settings();
         }
@@ -1329,8 +1349,13 @@ impl eframe::App for OpAutoClickerApp {
 
         // Detect natural session completion (repeat count reached) so the
         // status line and persistence react even without a button press.
+        // Manual stops and worker errors keep their own status instead of
+        // being misreported as a clean completion.
         if self.was_running && !self.engine.is_running() {
-            if self.engine.state() != STATE_PANIC {
+            let count_reached = self.repeat_limited
+                && self.config.max_clicks > 0
+                && self.engine.click_count() >= self.config.max_clicks;
+            if count_reached && self.engine.state() != STATE_PANIC {
                 self.set_status(
                     StatusKind::Ready,
                     format!(

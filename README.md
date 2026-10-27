@@ -46,8 +46,9 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
 - Lock-free single-producer/single-consumer telemetry ring, live CPS graph,
   interval histogram, consistency percentage and missed-deadline count in
   the Advanced window.
-- 40 unit tests over platform-independent modules, plus a Windows CI
-  workflow (format check, clippy, tests, release build and binary artifact).
+- 44 unit tests over platform-independent modules, plus a Windows CI
+  workflow (format check, clippy with warnings denied, tests, release build
+  and binary artifact), and a generated crosshair application icon.
 
 The GUI, input injection and worker threads are Windows-specific and are
 acceptance-tested on Windows; see [`autoclicker/README.md`](autoclicker/README.md)

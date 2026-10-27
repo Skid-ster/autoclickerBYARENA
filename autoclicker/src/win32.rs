@@ -216,6 +216,12 @@ pub fn client_to_screen(hwnd: isize, x: i32, y: i32) -> Option<(i32, i32)> {
     }
 }
 
+// On the real windows-sys 0.52 target `HWND` is a raw pointer, so the
+// `hwnd as isize` conversions below are required. The offline type-check
+// harness aliases `HWND` to `isize`, where the same casts look redundant to
+// clippy; silence that shim-only divergence explicitly rather than weakening
+// the pointer-to-integer conversion on the shipping Windows target.
+#[allow(clippy::unnecessary_cast)]
 unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // SAFETY: lparam is the &mut Vec created in `enumerate_windows` and stays
     // valid for the entire synchronous EnumWindows call on this one thread.
