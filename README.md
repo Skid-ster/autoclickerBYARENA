@@ -1,57 +1,53 @@
-# autoclickerBYARENA — OP 4.1 Killer dual-workspace auto-clicker suite
+# OP Auto Clicker
 
-Two feature-parallel Windows x64 auto-clickers built from a single
-specification:
+A modern Windows x64 auto-clicker written in stable Rust with an egui
+dashboard. A dedicated worker thread drives a QPC spin schedule with
+Gaussian humanization, while the UI stays fully responsive.
 
-| Workspace | Stack | Entry binary |
-| --- | --- | --- |
-| `engine-a-cpp/` | C++20, Dear ImGui (pinned `v1.90.4`), Win32, DirectX 11, CMake | `AutoClickerEngineA.exe` |
-| `engine-b-rust/` | Rust stable 2021, eframe/egui (pinned `=0.27.2`), windows-sys (pinned `=0.52.0`), Cargo | `autoclicker_engine_b.exe` |
+## Quick start
 
-## Shared engineering properties
+Requirements: Windows 10 21H2+ or Windows 11 x64 and a Rust stable
+toolchain (edition 2021). The Rust MSVC target uses the Visual Studio Build
+Tools linker, which `rustup` sets up automatically on a standard install.
 
-- Dedicated click worker thread, never the UI/render thread.
+```
+cd autoclicker
+cargo build --release
+cargo test --release
+cargo run --release
+```
+
+The executable is `autoclicker/target/release/op_auto_clicker.exe`.
+
+## Features
+
+- Dedicated click worker thread — the render thread never runs timing code.
 - QPC spin scheduling on the active click path with no sleep calls; idle
-  parking on a Win32 event.
+  parking on a Win32 manual-reset event.
 - RAII `timeBeginPeriod(1)` / `timeEndPeriod(1)` around each active session.
 - `THREAD_PRIORITY_TIME_CRITICAL` with verified failure reporting.
-- Real Box-Muller Gaussian humanization, runtime adjustable, with measured
-  mean/sigma displayed on the dashboard.
+- Real Box-Muller Gaussian humanization, adjustable at runtime, with
+  measured mean/sigma on the dashboard.
 - Global arrayed `SendInput` mode and background HWND message mode
   (`WM_MOUSEMOVE` / `WM_LBUTTONDOWN` / `WM_LBUTTONUP`, `MK_LBUTTON`,
   `MAKELPARAM`) supporting unfocused and minimized targets.
-- Lock-free single-producer/single-consumer telemetry ring buffer, live CPS
-  graph, interval histogram, consistency percentage and missed-deadline count.
+- Lock-free single-producer/single-consumer telemetry ring, live CPS graph,
+  interval histogram, consistency percentage and missed-deadline count.
 - F8 emergency panic stop sampled before every click and inside every spin.
-- Unit tests for Gaussian generation, ring buffer behavior and config
-  validation in both workspaces.
+- Single-screen dark interface: click rate slider, mode-aware coordinate
+  controls, repeat options, one Advanced section for expert timing fields,
+  and a solid Start / Stop / Panic footer.
+- Unit tests for Gaussian generation, ring-buffer behavior and config
+  validation (23 tests; platform-independent modules compile anywhere).
 
-## Build and test
+The GUI, input injection and worker threads are Windows-specific and are
+acceptance-tested on Windows; see [`autoclicker/README.md`](autoclicker/README.md)
+for the full manual checklist and
+[`docs/VERIFICATION.md`](docs/VERIFICATION.md) for the verification record.
 
-### Engine A (requires Windows + MSVC + CMake 3.24)
+## Repository layout
 
-```
-cmake -S engine-a-cpp -B engine-a-cpp/build -G "Visual Studio 17 2022" -A x64
-cmake --build engine-a-cpp/build --config Release --parallel
-ctest --test-dir engine-a-cpp/build --build-config Release --output-on-failure
-```
-
-### Engine B (requires Windows + Rust stable)
-
-```
-cargo build --release --manifest-path engine-b-rust/Cargo.toml
-cargo test --manifest-path engine-b-rust/Cargo.toml
-```
-
-The platform-independent logic of both engines (config validation, Gaussian
-humanization, SPSC telemetry and statistics) is standard-language code and is
-covered by tests that also compile on non-Windows runners. The GUI, input
-injection and worker threads are Windows-specific and must be acceptance
-tested on Windows 10 21H2+ or Windows 11 x64; see each workspace README for
-the full manual checklist.
-
-## Verification evidence
-
-Exact commands, toolchain versions, results and known limitations from the
-off-Windows verification runs (including ThreadSanitizer and real-cargo test
-runs) are recorded in [`docs/VERIFICATION.md`](docs/VERIFICATION.md).
+| Path | Purpose |
+| --- | --- |
+| `autoclicker/` | The Rust/egui application (the single shipped engine) |
+| `docs/VERIFICATION.md` | Toolchains, test evidence, defect history and limitations |
