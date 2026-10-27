@@ -64,20 +64,31 @@ and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window is a pixel-faithful, fixed-size (560x442, non-resizable,
-non-scrolling) recreation of the classic OP Auto Clicker 4.x dialog in the
-native Windows light theme: `#F0F0F0` face, white sunken numeric fields and
-combo boxes (white in every state — idle, hovered, pressed, open and
-disabled — with dark, readable text and light dropdown lists), gray 3D push
-buttons and bordered group boxes whose titles sit on a face-colored gap that
-breaks the top border, exactly like the native `BS_GROUPBOX` control. The
-viewport height hugs the content with roughly 11 px below the footer hint.
+The main window is a pixel-faithful, fixed-size (560x448, non-resizable,
+non-scrolling) recreation of the classic OP Auto Clicker 4.x dialog. It
+ships with two complete themes, switched by the **Dark mode** checkbox in
+the bottom-right corner and persisted across restarts:
 
-One honest platform note: the native OS title bar can render dark on
-Windows 11 when the system's app mode is set to dark. That chrome belongs to
-Windows, not to the app — egui/eframe 0.27 has no API to recolor the title
-bar of a native-decorated window — and a custom title bar would break the
-classic-dialog goal, so the stock one is kept as-is.
+- **Light (default)** — the classic native look: `#F0F0F0` face, white
+  sunken numeric fields and combo boxes (white in every state — idle,
+  hovered, pressed, open and disabled — with dark, readable text and light
+  dropdown lists), gray 3D push buttons.
+- **Dark** — the same dialog in Windows 11 dark-dialog colors: `#202020`
+  face, `#2C2C2C` sunken fields with light text, matching dropdowns,
+  buttons, group borders and chart colors in the Advanced window.
+
+Both themes share every layout metric, so switching never moves a control.
+In both, the bordered group boxes draw their titles on a face-colored gap
+that breaks the top border, exactly like the native `BS_GROUPBOX` control,
+and the viewport height hugs the content with roughly 11 px below the
+footer row.
+
+One honest platform note: the native OS title bar belongs to Windows, not
+to the app — it follows the system app mode (black when Windows 11 is in
+dark app mode), and egui/eframe 0.27 has no API to recolor the title bar of
+a native-decorated window. A custom title bar would break the
+classic-dialog goal, so the stock one is kept as-is; picking the matching
+in-app theme is the supported way to make the window and title bar agree.
 
 - **Click interval** (full width) — four white numeric boxes for hours /
   mins / secs / milliseconds with labels to the right of each box, defaulting
@@ -99,8 +110,10 @@ classic-dialog goal, so the stock one is kept as-is.
   while the interval is invalid), then **Hotkey setting** and **Advanced…**.
 - A single reserved one-line status strip under the group boxes shows
   semantic colored state (Ready / Running / Stopping / Panic / Warning /
-  Error) without ever changing the window layout, and a footer reminder that
-  F6 starts/stops and F8 panic stop is always armed.
+  Error) without ever changing the window layout, and a status-bar style
+  footer row: a short key reminder on the left (it tracks the actual
+  assigned hotkey, e.g. "F6 start/stop · F8 emergency stop") and the
+  **Dark mode** switch on the right.
 
 The **Hotkey setting** dialog remaps the start/stop key (F1–F24, A–Z, 0–9,
 Space); F8 is permanently reserved for Panic Stop and cannot be reassigned,

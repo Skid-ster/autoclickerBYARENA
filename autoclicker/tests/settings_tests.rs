@@ -41,6 +41,7 @@ fn full_round_trip_preserves_every_field() {
         toggle_hotkey_vk: VK_F7,
         hotkeys_enabled: false,
         random_offset_enabled: true,
+        dark_mode: true,
     };
 
     let document = serialize_settings(&config, &prefs);
@@ -121,4 +122,23 @@ fn empty_document_yields_defaults() {
     let (config, prefs) = parse_settings("");
     assert_eq!(config, EngineConfig::default());
     assert_eq!(prefs, AppPrefs::default());
+}
+
+#[test]
+fn dark_mode_round_trips_and_defaults_to_light() {
+    // Files written before the theme existed have no dark_mode key: they
+    // must keep loading with the classic light look.
+    let (_, prefs) = parse_settings("toggle_hotkey_vk=117\n");
+    assert!(!prefs.dark_mode);
+
+    let mut wanted = AppPrefs::default();
+    wanted.dark_mode = true;
+    let document = serialize_settings(&EngineConfig::default(), &wanted);
+    assert!(document.contains("dark_mode=true"));
+    let (_, restored) = parse_settings(&document);
+    assert!(restored.dark_mode);
+
+    // Malformed values keep the default instead of poisoning the load.
+    let (_, prefs) = parse_settings("dark_mode=maybe\n");
+    assert!(!prefs.dark_mode);
 }

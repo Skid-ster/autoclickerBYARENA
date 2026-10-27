@@ -256,8 +256,9 @@ with an authentic recreation of the classic OP Auto Clicker 3.0/4.x native
 dialog, driven by published screenshots of the real 4.0/4.1 builds rather
 than third-party lookalike clones:
 
-- Fixed viewport (560x524 in this round, tightened to 560x442 by the polish
-  round below) with `ViewportBuilder::with_resizable(false)`; the main
+- Fixed viewport (560x524 in this round, tightened by the later polish
+  rounds below, currently 560x448) with
+  `ViewportBuilder::with_resizable(false)`; the main
   window has no `ScrollArea` and every control is visible inside it.
 - Classic light palette (`#F0F0F0` face), white sunken numeric fields, gray
   3D push buttons and a custom `group_box` widget that draws a bordered frame
@@ -341,6 +342,53 @@ harness: `rustfmt --check` clean, `cargo check` clean,
 and style probes above ran headlessly against the real egui renderer
 output. Pixel-level visual acceptance remains a Windows-only manual step
 and is not claimed from the Linux harness.
+
+## Dark mode + footer wording round (presentation-only)
+
+User-requested follow-up: friendlier footer wording, a dark theme, and a
+stability re-proof. No engine, scheduling, dispatch, telemetry or
+validation code path changed; the only behavioral addition is one persisted
+preference field.
+
+- **Theme system.** All hard-coded `COLOR_*` constants became a `Palette`
+  struct with two `static` instances. `LIGHT_PALETTE` is byte-identical to
+  the previous classic palette; `DARK_PALETTE` mirrors the Windows 11
+  dark-dialog family (`#202020` face, `#2C2C2C` sunken fields, light text,
+  `#60A5FA` accent, dark chart surfaces). `apply_style()` derives every
+  widget-state visual (including the `weak_bg_fill` family from the
+  previous round, `extreme_bg_color` and `selection`) from the active
+  palette, and `visuals.dark_mode` tracks it. Both palettes drive identical
+  layout metrics, so switching themes cannot move a control.
+- **Persistence.** New `AppPrefs::dark_mode` (default **false** — a fresh
+  install keeps the classic light dialog), serialized as `dark_mode=` under
+  a `[ui]` section. Files from older builds have no such key and load
+  light; malformed values keep the default. Covered by a new settings test
+  (6 settings tests now) plus a strengthened hotkey default-prefs test:
+  the suite is **45 tests** total.
+- **Footer.** The footer is now a status-bar style row: a short reminder on
+  the left that tracks the real assigned hotkey ("F6 start/stop · F8
+  emergency stop" by default) and the Dark mode checkbox on the right. The
+  reminder no longer hard-codes F6 after a remap.
+- **Viewport.** The footer row is slightly taller than the old one-line
+  hint, so the fixed window is 560x448 (content bottom measured at
+  y = 437.25 in BOTH themes by the headless real-egui layout probe,
+  leaving ~11 px of margin).
+- **Headless proof.** Three probes ran against the real egui 0.27.2
+  renderer output: (1) the layout probe above; (2) a style probe asserting
+  that at 560x448 the light theme paints only light-family opaque fills,
+  the dark theme only dark-family fills, and no text shape is clipped in
+  either theme; (3) a secondary-surface probe that opens the Advanced
+  window and the Hotkey dialog by injecting real pointer clicks through
+  egui's event pipeline and applies the same fill invariants there
+  (theme-accent chart elements whitelisted by exact color).
+
+Verification for this round on rustc 1.88.0 against the offline real-egui
+harness: `rustfmt --check` clean, `cargo check` clean,
+`cargo clippy -- -D warnings` clean, **45/45 tests pass** (config 13,
+humanize 9, telemetry 8, settings 6, hotkey 5, icon 4), and all six test
+files also compile standalone with zero warnings. Pixel-level visual
+acceptance remains a Windows-only manual step and is not claimed from the
+Linux harness.
 
 ## Dashboard redesign (both engines) — SUPERSEDED
 

@@ -30,26 +30,85 @@ use crate::telemetry::{
 };
 use crate::win32::{self, WindowInfo};
 
+/// Complete color scheme for one theme. Both themes share every layout
+/// metric — only colors differ — so switching can never move a control.
+struct Palette {
+    dark: bool,
+    face: Color32,
+    button: Color32,
+    button_disabled: Color32,
+    button_border: Color32,
+    hover_fill: Color32,
+    pressed_fill: Color32,
+    input_bg: Color32,
+    input_disabled: Color32,
+    group_border: Color32,
+    input_border: Color32,
+    text: Color32,
+    text_dim: Color32,
+    text_disabled: Color32,
+    accent: Color32,
+    success: Color32,
+    danger: Color32,
+    warning: Color32,
+    chart_bg: Color32,
+    chart_grid: Color32,
+    chart_bar_alt: Color32,
+    selection_bg: Color32,
+}
+
 // Classic Windows light palette, matched to the native 4.x screenshots.
-const COLOR_FACE: Color32 = Color32::from_rgb(240, 240, 240);
-const COLOR_BUTTON: Color32 = Color32::from_rgb(236, 236, 236);
-const COLOR_BUTTON_DISABLED: Color32 = Color32::from_rgb(245, 245, 245);
-const COLOR_BUTTON_BORDER: Color32 = Color32::from_rgb(173, 173, 173);
-const COLOR_HOVER_FILL: Color32 = Color32::from_rgb(229, 241, 251);
-const COLOR_PRESSED_FILL: Color32 = Color32::from_rgb(204, 228, 247);
-const COLOR_INPUT_DISABLED: Color32 = Color32::from_rgb(250, 250, 250);
-const COLOR_GROUP_BORDER: Color32 = Color32::from_rgb(166, 166, 166);
-const COLOR_INPUT_BORDER: Color32 = Color32::from_rgb(122, 122, 122);
-const COLOR_TEXT: Color32 = Color32::from_rgb(28, 28, 28);
-const COLOR_TEXT_DIM: Color32 = Color32::from_rgb(102, 102, 102);
-const COLOR_TEXT_DISABLED: Color32 = Color32::from_rgb(166, 166, 166);
-const COLOR_ACCENT: Color32 = Color32::from_rgb(0, 103, 192);
-const COLOR_SUCCESS: Color32 = Color32::from_rgb(16, 124, 16);
-const COLOR_DANGER: Color32 = Color32::from_rgb(196, 43, 28);
-const COLOR_WARNING: Color32 = Color32::from_rgb(154, 107, 0);
-const COLOR_CHART_BG: Color32 = Color32::WHITE;
-const COLOR_CHART_GRID: Color32 = Color32::from_rgb(226, 229, 233);
-const COLOR_CHART_BAR_ALT: Color32 = Color32::from_rgba_premultiplied(0, 103, 192, 110);
+static LIGHT_PALETTE: Palette = Palette {
+    dark: false,
+    face: Color32::from_rgb(240, 240, 240),
+    button: Color32::from_rgb(236, 236, 236),
+    button_disabled: Color32::from_rgb(245, 245, 245),
+    button_border: Color32::from_rgb(173, 173, 173),
+    hover_fill: Color32::from_rgb(229, 241, 251),
+    pressed_fill: Color32::from_rgb(204, 228, 247),
+    input_bg: Color32::WHITE,
+    input_disabled: Color32::from_rgb(250, 250, 250),
+    group_border: Color32::from_rgb(166, 166, 166),
+    input_border: Color32::from_rgb(122, 122, 122),
+    text: Color32::from_rgb(28, 28, 28),
+    text_dim: Color32::from_rgb(102, 102, 102),
+    text_disabled: Color32::from_rgb(166, 166, 166),
+    accent: Color32::from_rgb(0, 103, 192),
+    success: Color32::from_rgb(16, 124, 16),
+    danger: Color32::from_rgb(196, 43, 28),
+    warning: Color32::from_rgb(154, 107, 0),
+    chart_bg: Color32::WHITE,
+    chart_grid: Color32::from_rgb(226, 229, 233),
+    chart_bar_alt: Color32::from_rgba_premultiplied(0, 103, 192, 110),
+    selection_bg: Color32::from_rgba_premultiplied(0, 103, 192, 60),
+};
+
+// Dark counterpart in the Windows 11 dark-dialog spirit: near-black face,
+// slightly lighter sunken fields, light text, brighter accent for contrast.
+static DARK_PALETTE: Palette = Palette {
+    dark: true,
+    face: Color32::from_rgb(32, 32, 32),
+    button: Color32::from_rgb(51, 51, 51),
+    button_disabled: Color32::from_rgb(40, 40, 40),
+    button_border: Color32::from_rgb(96, 96, 96),
+    hover_fill: Color32::from_rgb(58, 62, 66),
+    pressed_fill: Color32::from_rgb(70, 76, 82),
+    input_bg: Color32::from_rgb(44, 44, 44),
+    input_disabled: Color32::from_rgb(37, 37, 37),
+    group_border: Color32::from_rgb(96, 96, 96),
+    input_border: Color32::from_rgb(130, 130, 130),
+    text: Color32::from_rgb(235, 235, 235),
+    text_dim: Color32::from_rgb(158, 158, 158),
+    text_disabled: Color32::from_rgb(109, 109, 109),
+    accent: Color32::from_rgb(96, 165, 250),
+    success: Color32::from_rgb(106, 200, 112),
+    danger: Color32::from_rgb(248, 106, 106),
+    warning: Color32::from_rgb(222, 180, 66),
+    chart_bg: Color32::from_rgb(26, 26, 26),
+    chart_grid: Color32::from_rgb(58, 58, 58),
+    chart_bar_alt: Color32::from_rgba_premultiplied(38, 66, 100, 110),
+    selection_bg: Color32::from_rgba_premultiplied(24, 48, 78, 150),
+};
 
 const LOG_LIMIT: usize = 200;
 const SAVE_THROTTLE_MS: u64 = 1_000;
@@ -65,14 +124,14 @@ enum StatusKind {
 }
 
 impl StatusKind {
-    fn color(self) -> Color32 {
+    fn color(self, pal: &Palette) -> Color32 {
         match self {
-            StatusKind::Ready => COLOR_TEXT_DIM,
-            StatusKind::Running => COLOR_SUCCESS,
-            StatusKind::Stopping => COLOR_WARNING,
-            StatusKind::Panic => COLOR_DANGER,
-            StatusKind::Warning => COLOR_WARNING,
-            StatusKind::Error => COLOR_DANGER,
+            StatusKind::Ready => pal.text_dim,
+            StatusKind::Running => pal.success,
+            StatusKind::Stopping => pal.warning,
+            StatusKind::Panic => pal.danger,
+            StatusKind::Warning => pal.warning,
+            StatusKind::Error => pal.danger,
         }
     }
 }
@@ -293,44 +352,55 @@ impl OpAutoClickerApp {
 
     // -------------------------------------------------------------- styling
 
+    /// The palette for the persisted theme choice. `'static` on purpose so
+    /// closures can hold it without borrowing `self`.
+    fn palette(&self) -> &'static Palette {
+        if self.prefs.dark_mode {
+            &DARK_PALETTE
+        } else {
+            &LIGHT_PALETTE
+        }
+    }
+
     fn apply_style(&self, ctx: &egui::Context) {
+        let pal = self.palette();
         let mut style = (*ctx.style()).clone();
-        style.visuals.dark_mode = false;
-        style.visuals.panel_fill = COLOR_FACE;
-        style.visuals.window_fill = COLOR_FACE;
+        style.visuals.dark_mode = pal.dark;
+        style.visuals.panel_fill = pal.face;
+        style.visuals.window_fill = pal.face;
         // DragValue's keyboard-edit mode is a TextEdit, which paints
-        // `extreme_bg_color`; it must stay white like the button mode below.
-        style.visuals.extreme_bg_color = Color32::WHITE;
-        style.visuals.window_stroke = Stroke::new(1.0_f32, COLOR_GROUP_BORDER);
+        // `extreme_bg_color`; it must match the button-mode field fill.
+        style.visuals.extreme_bg_color = pal.input_bg;
+        style.visuals.window_stroke = Stroke::new(1.0_f32, pal.group_border);
         // Fill-less buttons (DragValue's button mode) and ComboBoxes paint
         // `weak_bg_fill`, not `bg_fill`, so every widget state needs both set
-        // explicitly or the dark-theme default (gray 60) bleeds through as a
-        // charcoal box with unreadable text.
-        style.visuals.widgets.noninteractive.bg_fill = COLOR_FACE;
-        style.visuals.widgets.noninteractive.weak_bg_fill = COLOR_INPUT_DISABLED;
-        style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, COLOR_BUTTON_BORDER);
-        style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.widgets.inactive.bg_fill = Color32::WHITE;
-        style.visuals.widgets.inactive.weak_bg_fill = Color32::WHITE;
-        style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, COLOR_INPUT_BORDER);
-        style.visuals.widgets.hovered.bg_fill = COLOR_HOVER_FILL;
-        style.visuals.widgets.hovered.weak_bg_fill = COLOR_HOVER_FILL;
-        style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
-        style.visuals.widgets.active.bg_fill = COLOR_PRESSED_FILL;
-        style.visuals.widgets.active.weak_bg_fill = COLOR_PRESSED_FILL;
-        style.visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+        // explicitly or egui's built-in defaults bleed through with the
+        // wrong contrast for the active theme.
+        style.visuals.widgets.noninteractive.bg_fill = pal.face;
+        style.visuals.widgets.noninteractive.weak_bg_fill = pal.input_disabled;
+        style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.button_border);
+        style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, pal.text);
+        style.visuals.widgets.inactive.bg_fill = pal.input_bg;
+        style.visuals.widgets.inactive.weak_bg_fill = pal.input_bg;
+        style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, pal.text);
+        style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, pal.input_border);
+        style.visuals.widgets.hovered.bg_fill = pal.hover_fill;
+        style.visuals.widgets.hovered.weak_bg_fill = pal.hover_fill;
+        style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, pal.text);
+        style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, pal.accent);
+        style.visuals.widgets.active.bg_fill = pal.pressed_fill;
+        style.visuals.widgets.active.weak_bg_fill = pal.pressed_fill;
+        style.visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, pal.text);
+        style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, pal.accent);
         // `open` drives an expanded ComboBox button; its popup list inherits
-        // the light window fill, so the whole dropdown stays classic white.
-        style.visuals.widgets.open.bg_fill = Color32::WHITE;
-        style.visuals.widgets.open.weak_bg_fill = Color32::WHITE;
-        style.visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, COLOR_INPUT_BORDER);
-        style.visuals.selection.bg_fill = Color32::from_rgba_premultiplied(0, 103, 192, 60);
-        style.visuals.selection.stroke = Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.hyperlink_color = COLOR_ACCENT;
+        // the theme's window fill, so the whole dropdown matches.
+        style.visuals.widgets.open.bg_fill = pal.input_bg;
+        style.visuals.widgets.open.weak_bg_fill = pal.input_bg;
+        style.visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, pal.text);
+        style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, pal.input_border);
+        style.visuals.selection.bg_fill = pal.selection_bg;
+        style.visuals.selection.stroke = Stroke::new(1.0_f32, pal.text);
+        style.visuals.hyperlink_color = pal.accent;
         let rounding = Rounding::same(2.5_f32);
         style.visuals.widgets.noninteractive.rounding = rounding;
         style.visuals.widgets.inactive.rounding = rounding;
@@ -630,10 +700,15 @@ impl OpAutoClickerApp {
 
     /// Win32 group box: a bordered frame whose title text breaks the top
     /// border, exactly like the native BS_GROUPBOX control.
-    fn group_box<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    fn group_box<R>(
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        title: &str,
+        add: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
         let response = Frame::none()
-            .fill(COLOR_FACE)
-            .stroke(Stroke::new(1.0_f32, COLOR_GROUP_BORDER))
+            .fill(pal.face)
+            .stroke(Stroke::new(1.0_f32, pal.group_border))
             .rounding(Rounding::same(2.0_f32))
             .inner_margin(Margin {
                 left: 11.0_f32,
@@ -649,7 +724,7 @@ impl OpAutoClickerApp {
         // own stroke was already painted by `Frame::show` above.
         let painter = ui.painter_at(rect.expand2(Vec2::new(12.0_f32, 16.0_f32)));
         let font = FontId::proportional(13.0_f32);
-        let galley = painter.layout_no_wrap(title.to_string(), font.clone(), COLOR_TEXT);
+        let galley = painter.layout_no_wrap(title.to_string(), font.clone(), pal.text);
         let text_pos = rect.left_top() + Vec2::new(9.0_f32, -galley.size().y / 2.0_f32);
         // The face-colored backdrop must cover the 1 px border line entirely
         // so the title cleanly breaks it like a native BS_GROUPBOX caption.
@@ -657,24 +732,26 @@ impl OpAutoClickerApp {
             text_pos - Vec2::new(4.0_f32, 1.0_f32),
             galley.size() + Vec2::new(8.0_f32, 2.0_f32),
         );
-        painter.rect_filled(backdrop, 0.0_f32, COLOR_FACE);
-        painter.text(text_pos, Align2::LEFT_TOP, title, font, COLOR_TEXT);
+        painter.rect_filled(backdrop, 0.0_f32, pal.face);
+        painter.text(text_pos, Align2::LEFT_TOP, title, font, pal.text);
         response.inner
     }
 
-    fn classic_button(ui: &mut egui::Ui, text: &str, enabled: bool, width: f32) -> egui::Response {
-        let text_color = if enabled {
-            COLOR_TEXT
-        } else {
-            COLOR_TEXT_DISABLED
-        };
+    fn classic_button(
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        text: &str,
+        enabled: bool,
+        width: f32,
+    ) -> egui::Response {
+        let text_color = if enabled { pal.text } else { pal.text_disabled };
         let button = egui::Button::new(egui::RichText::new(text).color(text_color).size(13.5_f32))
             .fill(if enabled {
-                COLOR_BUTTON
+                pal.button
             } else {
-                COLOR_BUTTON_DISABLED
+                pal.button_disabled
             })
-            .stroke(Stroke::new(1.0_f32, COLOR_BUTTON_BORDER))
+            .stroke(Stroke::new(1.0_f32, pal.button_border))
             .min_size(Vec2::new(width, 31.0_f32));
         ui.add_enabled(enabled, button)
     }
@@ -689,7 +766,8 @@ impl OpAutoClickerApp {
     // ------------------------------------------------------------- the screen
 
     fn draw_interval_group(&mut self, ui: &mut egui::Ui) {
-        Self::group_box(ui, "Click interval", |ui| {
+        let pal = self.palette();
+        Self::group_box(ui, pal, "Click interval", |ui| {
             ui.horizontal(|ui| {
                 let fields: [(&str, &mut u64, u64); 4] = [
                     ("hours", &mut self.hours, 99),
@@ -699,7 +777,7 @@ impl OpAutoClickerApp {
                 ];
                 for (label, value, max) in fields {
                     Self::numeric_field(ui, value, max, 56.0_f32);
-                    ui.label(egui::RichText::new(label).color(COLOR_TEXT));
+                    ui.label(egui::RichText::new(label).color(pal.text));
                     ui.add_space(2.0_f32);
                 }
             });
@@ -723,19 +801,20 @@ impl OpAutoClickerApp {
                             .fixed_decimals(1),
                     );
                 });
-                ui.label(egui::RichText::new("milliseconds").color(COLOR_TEXT));
+                ui.label(egui::RichText::new("milliseconds").color(pal.text));
             });
         });
     }
 
     fn draw_options_and_repeat(&mut self, ui: &mut egui::Ui) {
+        let pal = self.palette();
         ui.columns(2, |columns| {
-            Self::group_box(&mut columns[0], "Click options", |ui| {
+            Self::group_box(&mut columns[0], pal, "Click options", |ui| {
                 Grid::new("click_options_grid")
                     .num_columns(2)
                     .spacing(Vec2::new(8.0_f32, 9.0_f32))
                     .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Mouse button:").color(COLOR_TEXT));
+                        ui.label(egui::RichText::new("Mouse button:").color(pal.text));
                         egui::ComboBox::from_id_source("mouse_button_combo")
                             .selected_text(self.config.mouse_button.label())
                             .show_ui(ui, |ui| {
@@ -749,7 +828,7 @@ impl OpAutoClickerApp {
                             });
                         ui.end_row();
 
-                        ui.label(egui::RichText::new("Click type:").color(COLOR_TEXT));
+                        ui.label(egui::RichText::new("Click type:").color(pal.text));
                         egui::ComboBox::from_id_source("click_type_combo")
                             .selected_text(self.config.click_type.label())
                             .show_ui(ui, |ui| {
@@ -765,7 +844,7 @@ impl OpAutoClickerApp {
                     });
             });
 
-            Self::group_box(&mut columns[1], "Click repeat", |ui| {
+            Self::group_box(&mut columns[1], pal, "Click repeat", |ui| {
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut self.repeat_limited, true, "Repeat");
                     ui.add_enabled_ui(self.repeat_limited, |ui| {
@@ -778,7 +857,7 @@ impl OpAutoClickerApp {
                                 .clamp_range(1..=1_000_000_000),
                         );
                     });
-                    ui.label(egui::RichText::new("times").color(COLOR_TEXT));
+                    ui.label(egui::RichText::new("times").color(pal.text));
                 });
                 ui.add_space(4.0_f32);
                 ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
@@ -790,7 +869,8 @@ impl OpAutoClickerApp {
     }
 
     fn draw_position_group(&mut self, ui: &mut egui::Ui) {
-        Self::group_box(ui, "Cursor position", |ui| {
+        let pal = self.palette();
+        Self::group_box(ui, pal, "Cursor position", |ui| {
             ui.horizontal(|ui| {
                 ui.radio_value(
                     &mut self.config.coordinate_mode,
@@ -810,7 +890,7 @@ impl OpAutoClickerApp {
                 } else {
                     "Pick location"
                 };
-                if Self::classic_button(ui, pick_label, true, 104.0_f32).clicked() {
+                if Self::classic_button(ui, pal, pick_label, true, 104.0_f32).clicked() {
                     if self.picking_location {
                         self.picking_location = false;
                         self.set_status(StatusKind::Ready, "Location pick cancelled.");
@@ -838,6 +918,7 @@ impl OpAutoClickerApp {
     }
 
     fn draw_action_buttons(&mut self, ui: &mut egui::Ui) {
+        let pal = self.palette();
         let running = self.engine.is_running();
         let config_ok = self.validation_message().is_none();
         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
@@ -850,6 +931,7 @@ impl OpAutoClickerApp {
             .show(ui, |ui| {
                 if Self::classic_button(
                     ui,
+                    pal,
                     &format!("Start ({hotkey_name})"),
                     !running && config_ok,
                     button_width,
@@ -858,8 +940,14 @@ impl OpAutoClickerApp {
                 {
                     self.handle_start();
                 }
-                if Self::classic_button(ui, &format!("Stop ({hotkey_name})"), running, button_width)
-                    .clicked()
+                if Self::classic_button(
+                    ui,
+                    pal,
+                    &format!("Stop ({hotkey_name})"),
+                    running,
+                    button_width,
+                )
+                .clicked()
                 {
                     self.engine.request_stop();
                     self.set_status(StatusKind::Stopping, "Stopping…");
@@ -869,11 +957,11 @@ impl OpAutoClickerApp {
                 }
                 ui.end_row();
 
-                if Self::classic_button(ui, "Hotkey setting", true, button_width).clicked() {
+                if Self::classic_button(ui, pal, "Hotkey setting", true, button_width).clicked() {
                     self.show_hotkey_dialog = true;
                     self.capturing = false;
                 }
-                if Self::classic_button(ui, "Advanced…", true, button_width).clicked() {
+                if Self::classic_button(ui, pal, "Advanced…", true, button_width).clicked() {
                     self.show_advanced = true;
                 }
                 ui.end_row();
@@ -883,6 +971,7 @@ impl OpAutoClickerApp {
     // ---------------------------------------------------------- hotkey dialog
 
     fn draw_hotkey_dialog(&mut self, ctx: &egui::Context) {
+        let pal = self.palette();
         let mut open = self.show_hotkey_dialog;
         let mut should_close = false;
         egui::Window::new("Hotkey setting")
@@ -899,14 +988,14 @@ impl OpAutoClickerApp {
                         "Start/Stop hotkey: {}",
                         vk_display_name(self.prefs.toggle_hotkey_vk)
                     ))
-                    .color(COLOR_TEXT)
+                    .color(pal.text)
                     .strong(),
                 );
                 ui.add_space(6.0_f32);
                 if self.capturing {
                     ui.label(
                         egui::RichText::new("Press any key to assign it…  (Esc cancels)")
-                            .color(COLOR_WARNING),
+                            .color(pal.warning),
                     );
                 } else if ui.button("Assign new key…").clicked() {
                     self.capturing = true;
@@ -919,7 +1008,7 @@ impl OpAutoClickerApp {
                     egui::RichText::new(
                         "Supported: F1–F24, A–Z, 0–9 and Space. F8 is permanently reserved for Panic Stop.",
                     )
-                    .color(COLOR_TEXT_DIM)
+                    .color(pal.text_dim)
                     .small(),
                 );
                 ui.add_space(8.0_f32);
@@ -969,7 +1058,8 @@ impl OpAutoClickerApp {
     }
 
     fn draw_delivery_section(&mut self, ui: &mut egui::Ui) {
-        Self::group_box(ui, "Input delivery & targeting", |ui| {
+        let pal = self.palette();
+        Self::group_box(ui, pal, "Input delivery & targeting", |ui| {
             ui.radio_value(
                 &mut self.config.input_mode,
                 InputMode::GlobalSendInput,
@@ -994,7 +1084,7 @@ impl OpAutoClickerApp {
                             if self.windows.is_empty() {
                                 ui.label(
                                     egui::RichText::new("List is empty — press Refresh")
-                                        .color(COLOR_TEXT_DIM),
+                                        .color(pal.text_dim),
                                 );
                             }
                             for (index, info) in self.windows.iter().enumerate() {
@@ -1051,7 +1141,8 @@ impl OpAutoClickerApp {
     }
 
     fn draw_humanization_section(&mut self, ui: &mut egui::Ui) {
-        Self::group_box(ui, "Gaussian humanization (expert)", |ui| {
+        let pal = self.palette();
+        Self::group_box(ui, pal, "Gaussian humanization (expert)", |ui| {
             ui.checkbox(
                 &mut self.config.humanize_enabled,
                 "Enable Gaussian humanization",
@@ -1120,12 +1211,12 @@ impl OpAutoClickerApp {
                             "Valid. Effective sigma: {:.3} ms",
                             self.config.effective_interval_sigma_ms()
                         ))
-                        .color(COLOR_SUCCESS)
+                        .color(pal.success)
                         .small(),
                     ),
                     Err(error) => ui.label(
                         egui::RichText::new(format!("Configuration issue: {error}"))
-                            .color(COLOR_WARNING)
+                            .color(pal.warning)
                             .small(),
                     ),
                 }
@@ -1134,14 +1225,15 @@ impl OpAutoClickerApp {
     }
 
     fn draw_telemetry_section(&mut self, ui: &mut egui::Ui) {
-        Self::group_box(ui, "Live metrics", |ui| {
+        let pal = self.palette();
+        Self::group_box(ui, pal, "Live metrics", |ui| {
             Grid::new("metrics_grid")
                 .num_columns(2)
                 .spacing(Vec2::new(18.0_f32, 8.0_f32))
                 .show(ui, |ui| {
                     let metric = |ui: &mut egui::Ui, label: &str, value: String| {
-                        ui.label(egui::RichText::new(label).color(COLOR_TEXT_DIM));
-                        ui.label(egui::RichText::new(value).color(COLOR_TEXT));
+                        ui.label(egui::RichText::new(label).color(pal.text_dim));
+                        ui.label(egui::RichText::new(value).color(pal.text));
                         ui.end_row();
                     };
                     metric(ui, "Actual CPS", format!("{:.3}", self.stats.actual_cps));
@@ -1173,11 +1265,13 @@ impl OpAutoClickerApp {
                 });
         });
         ui.add_space(8.0_f32);
-        Self::group_box(ui, "Real-time CPS", |ui| self.draw_cps_graph(ui));
+        Self::group_box(ui, pal, "Real-time CPS", |ui| self.draw_cps_graph(ui));
         ui.add_space(8.0_f32);
-        Self::group_box(ui, "Interval histogram (ms)", |ui| self.draw_histogram(ui));
+        Self::group_box(ui, pal, "Interval histogram (ms)", |ui| {
+            self.draw_histogram(ui)
+        });
         ui.add_space(8.0_f32);
-        Self::group_box(ui, "Recent activity", |ui| {
+        Self::group_box(ui, pal, "Recent activity", |ui| {
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
                 .max_height(170.0_f32)
@@ -1188,11 +1282,7 @@ impl OpAutoClickerApp {
                             || line.contains("error")
                             || line.contains("Warning")
                             || line.contains("failed");
-                        let color = if warning {
-                            COLOR_WARNING
-                        } else {
-                            COLOR_TEXT_DIM
-                        };
+                        let color = if warning { pal.warning } else { pal.text_dim };
                         ui.label(egui::RichText::new(line).color(color).small());
                     }
                 });
@@ -1200,11 +1290,12 @@ impl OpAutoClickerApp {
     }
 
     fn draw_cps_graph(&self, ui: &mut egui::Ui) {
+        let pal = self.palette();
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 150.0_f32), Sense::hover());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 6.0_f32, COLOR_CHART_BG);
-        painter.rect_stroke(rect, 6.0_f32, Stroke::new(1.0_f32, COLOR_CHART_GRID));
+        painter.rect_filled(rect, 6.0_f32, pal.chart_bg);
+        painter.rect_stroke(rect, 6.0_f32, Stroke::new(1.0_f32, pal.chart_grid));
 
         for step in 1..4 {
             let y = rect.top() + rect.height() * step as f32 / 4.0_f32;
@@ -1213,7 +1304,7 @@ impl OpAutoClickerApp {
                     egui::pos2(rect.left() + 8.0_f32, y),
                     egui::pos2(rect.right() - 8.0_f32, y),
                 ],
-                Stroke::new(1.0_f32, COLOR_CHART_GRID),
+                Stroke::new(1.0_f32, pal.chart_grid),
             );
         }
 
@@ -1232,7 +1323,7 @@ impl OpAutoClickerApp {
                 let y = rect.bottom() - 10.0_f32 - normalized * (rect.height() - 22.0_f32);
                 let current = egui::pos2(x, y);
                 if i > 0 {
-                    painter.line_segment([previous, current], Stroke::new(2.0_f32, COLOR_ACCENT));
+                    painter.line_segment([previous, current], Stroke::new(2.0_f32, pal.accent));
                 }
                 previous = current;
             }
@@ -1240,11 +1331,12 @@ impl OpAutoClickerApp {
     }
 
     fn draw_histogram(&self, ui: &mut egui::Ui) {
+        let pal = self.palette();
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 130.0_f32), Sense::hover());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 6.0_f32, COLOR_CHART_BG);
-        painter.rect_stroke(rect, 6.0_f32, Stroke::new(1.0_f32, COLOR_CHART_GRID));
+        painter.rect_filled(rect, 6.0_f32, pal.chart_bg);
+        painter.rect_stroke(rect, 6.0_f32, Stroke::new(1.0_f32, pal.chart_grid));
 
         let max_bin = self
             .stats
@@ -1260,9 +1352,9 @@ impl OpAutoClickerApp {
             let height = rect.height() * self.stats.histogram[bin] as f32 / max_bin * 0.78_f32;
             let x = rect.left() + 8.0_f32 + bin as f32 * (bar_width + gap);
             let color = if bin % 2 == 0 {
-                COLOR_ACCENT
+                pal.accent
             } else {
-                COLOR_CHART_BAR_ALT
+                pal.chart_bar_alt
             };
             painter.rect_filled(
                 egui::Rect::from_min_size(
@@ -1279,6 +1371,7 @@ impl OpAutoClickerApp {
 impl eframe::App for OpAutoClickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_style(ctx);
+        let pal = self.palette();
         self.poll_hotkeys();
         self.poll_pick_capture();
         self.surface_engine_errors();
@@ -1330,7 +1423,7 @@ impl eframe::App for OpAutoClickerApp {
         // margin leaves room for the first group title, which rides half
         // above its frame's top border.
         egui::CentralPanel::default()
-            .frame(Frame::none().fill(COLOR_FACE).inner_margin(Margin {
+            .frame(Frame::none().fill(pal.face).inner_margin(Margin {
                 left: 12.0_f32,
                 right: 12.0_f32,
                 top: 14.0_f32,
@@ -1356,21 +1449,38 @@ impl eframe::App for OpAutoClickerApp {
                             Align2::LEFT_CENTER,
                             &self.status_text,
                             FontId::proportional(12.5_f32),
-                            self.status_kind.color(),
+                            self.status_kind.color(pal),
                         );
                     }
 
                     ui.add_space(2.0_f32);
                     self.draw_action_buttons(ui);
                     ui.add_space(5.0_f32);
-                    ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                    // Status-bar style footer: key reminder on the left
+                    // (tracking the real assigned hotkey), theme switch on
+                    // the right.
+                    ui.horizontal(|ui| {
+                        let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
                         ui.label(
-                            egui::RichText::new(
-                                "F6 starts and stops · F8 panic stop is always armed",
-                            )
-                            .color(COLOR_TEXT_DIM)
+                            egui::RichText::new(format!(
+                                "{hotkey_name} start/stop  ·  F8 emergency stop"
+                            ))
+                            .color(pal.text_dim)
                             .small(),
                         );
+                        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                            let mut dark = self.prefs.dark_mode;
+                            if ui
+                                .checkbox(
+                                    &mut dark,
+                                    egui::RichText::new("Dark mode").size(12.0_f32),
+                                )
+                                .changed()
+                            {
+                                self.prefs.dark_mode = dark;
+                                self.mark_dirty();
+                            }
+                        });
                     });
                 });
             });

@@ -2,10 +2,11 @@
 
 A Windows x64 auto-clicker written in stable Rust with an egui interface that
 reproduces the authentic classic OP Auto Clicker 4.x Win32 dialog — a fixed,
-non-resizable light-gray window with group boxes, white numeric fields and
-gray push buttons, nothing scrolled: Hours/Mins/Secs/Milliseconds interval
-with the 4.1 random-offset row, mouse button and click-type pickers, repeat
-rules and cursor position with on-screen point picking. A dedicated worker
+non-resizable light-gray window (with an optional persisted dark theme) with
+group boxes, sunken numeric fields and classic push buttons, nothing
+scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
+row, mouse button and click-type pickers, repeat rules and cursor position
+with on-screen point picking. A dedicated worker
 thread drives a QPC spin schedule while the UI stays fully responsive.
 
 ## Quick start
@@ -33,11 +34,16 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
   (click the button, then click anywhere on screen; Esc cancels), and a
   2x2 Start/Stop/Hotkey setting/Advanced button grid. Start refuses invalid
   configurations and Stop stays greyed until a session is running. The
-  560x442 viewport hugs the content; the group-box titles sit on the face
+  560x448 viewport hugs the content; the group-box titles sit on the face
   color and break the top border like the native control, and every numeric
-  field and dropdown stays white with dark text in all states. (The native
-  OS title bar follows the Windows app mode and may stay dark on Windows 11;
-  eframe/egui 0.27 cannot recolor native window chrome.)
+  field and dropdown keeps readable contrast in all states.
+- **Light and dark themes** — a Dark mode switch in the bottom-right corner
+  restyles every window (main screen, Hotkey dialog, Advanced window and
+  its charts) and is remembered across restarts. Both themes share the
+  exact same layout, so toggling never moves a control. (The native OS
+  title bar follows the Windows app mode — black when Windows is in dark
+  app mode; eframe/egui 0.27 cannot recolor native window chrome, so dark
+  mode is also the way to make the window match a black title bar.)
 - Left, right and middle mouse buttons; single, double and triple click
   types (multi-clicks use QPC-spun gaps, never sleeps).
 - Hours/Mins/Secs/Milliseconds interval fields plus 4.1's uniform
