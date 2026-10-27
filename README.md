@@ -2,7 +2,8 @@
 
 A Windows x64 auto-clicker written in stable Rust with an egui interface that
 reproduces the authentic classic OP Auto Clicker 4.x Win32 dialog — a fixed,
-non-resizable light-gray window (with an optional persisted dark theme) with
+non-resizable light-gray window (with six persisted themes — including a
+MogClicker meme theme — and a 75–200 % window scale) with
 group boxes, sunken numeric fields and classic push buttons, nothing
 scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
 row, mouse button and click-type pickers, repeat rules and cursor position
@@ -37,13 +38,21 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
   560x448 viewport hugs the content; the group-box titles sit on the face
   color and break the top border like the native control, and every numeric
   field and dropdown keeps readable contrast in all states.
-- **Light and dark themes** — a Dark mode switch in the bottom-right corner
-  restyles every window (main screen, Hotkey dialog, Advanced window and
-  its charts) and is remembered across restarts. Both themes share the
-  exact same layout, so toggling never moves a control. (The native OS
-  title bar follows the Windows app mode — black when Windows is in dark
-  app mode; eframe/egui 0.27 cannot recolor native window chrome, so dark
-  mode is also the way to make the window match a black title bar.)
+- **Six themes + window scaling** — a **Settings…** button in the
+  bottom-right corner opens a Settings window with a theme picker (Classic
+  light, Dark, Midnight OLED, Terminal green, Vaporwave, and the
+  **MogClicker** meme theme, which retitles the window "MogClicker" and
+  re-skins the labels: the Start button becomes **Mog**, Stop becomes
+  **It's over**, and the groups become "Mogging interval" / "Mog options" /
+  "Mog repeat" / "Aura position") and a window-scale picker (75–200 %):
+  the whole UI zooms and the window resizes itself so every control stays
+  visible. Both choices restyle every window (main screen, Hotkey dialog,
+  Advanced window and its charts), are remembered across restarts, and all
+  themes share the exact same layout, so switching never moves a control.
+  (The native OS title bar follows the Windows app mode — black when
+  Windows is in dark app mode; eframe/egui 0.27 cannot recolor native
+  window chrome, so picking a dark-family theme is the way to make the
+  window match a black title bar.)
 - Left, right and middle mouse buttons; single, double and triple click
   types (multi-clicks use QPC-spun gaps, never sleeps).
 - Hours/Mins/Secs/Milliseconds interval fields plus 4.1's uniform

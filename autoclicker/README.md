@@ -39,7 +39,7 @@ cargo run --release
 cargo test --release
 ```
 
-Six integration test binaries run platform-independent logic (44 tests):
+Six integration test binaries run platform-independent logic (49 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -52,9 +52,12 @@ Six integration test binaries run platform-independent logic (44 tests):
   pressure, dropped counters, real two-thread producer/consumer traffic,
   statistics moments and histogram totals.
 - `hotkey_tests` — supported virtual-key ranges, F8/Esc reservation, display
-  names and the default F6 preference.
+  names, the default F6/Classic-theme/100 % preferences, theme key/label
+  stability and the window-scale sanitizer.
 - `settings_tests` — full serialization round trip, tolerance of unknown
-  keys, sections and comments, and per-field recovery from malformed values.
+  keys, sections and comments, per-field recovery from malformed values,
+  round trips for all six themes, legacy `dark_mode` migration precedence
+  and `ui_scale` clamping.
 - `icon_tests` — dimensions, transparent rounded corners, solid accent
   center, two-axis symmetry and the presence of both accent and background
   pixels in the procedurally generated 32x32 application icon.
@@ -64,20 +67,43 @@ and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window is a pixel-faithful, fixed-size (560x448, non-resizable,
-non-scrolling) recreation of the classic OP Auto Clicker 4.x dialog. It
-ships with two complete themes, switched by the **Dark mode** checkbox in
-the bottom-right corner and persisted across restarts:
+The main window is a pixel-faithful, fixed-size (560x448 logical points,
+non-resizable, non-scrolling) recreation of the classic OP Auto Clicker 4.x
+dialog. The **Settings…** button in the bottom-right corner opens a
+Settings window with two persisted choices:
 
-- **Light (default)** — the classic native look: `#F0F0F0` face, white
-  sunken numeric fields and combo boxes (white in every state — idle,
+**Theme** — six complete themes:
+
+- **Classic light (default)** — the classic native look: `#F0F0F0` face,
+  white sunken numeric fields and combo boxes (white in every state — idle,
   hovered, pressed, open and disabled — with dark, readable text and light
   dropdown lists), gray 3D push buttons.
 - **Dark** — the same dialog in Windows 11 dark-dialog colors: `#202020`
   face, `#2C2C2C` sunken fields with light text, matching dropdowns,
   buttons, group borders and chart colors in the Advanced window.
+- **Midnight OLED** — a pure-black variant of Dark for OLED screens.
+- **Terminal green** — green-on-black phosphor-terminal colors.
+- **Vaporwave** — pastel pink/purple light colors with a hot-pink accent.
+- **MogClicker** — the meme theme. The OS window retitles itself
+  "MogClicker", the Start button becomes **Mog**, Stop becomes **It's
+  over**, the group boxes become "Mogging interval" / "Mog options" /
+  "Mog repeat" / "Aura position", the footer reads "F6 to mog · F8 when
+  it's over", and the running status reports "Mogging at … CPS" — all on a
+  deep-purple face with a hot-pink accent. Only colors and those labels
+  change; every control keeps its normal meaning and position.
 
-Both themes share every layout metric, so switching never moves a control.
+**Window scale** — 75 / 100 / 125 / 150 / 175 / 200 %. The UI zoom factor
+follows the percentage and the app then re-applies its fixed logical size,
+so the physical window really grows or shrinks and no control is ever cut
+off (the resize lands one frame after the zoom, once egui reports the new
+factor as applied).
+
+Legacy settings files from the dark-mode-only build are still honored:
+`dark_mode=true` loads as the Dark theme, `dark_mode=false` as Classic, and
+a modern `theme=` key always wins over the legacy boolean.
+
+All six themes share every layout metric, so switching never moves a
+control.
 In both, the bordered group boxes draw their titles on a face-colored gap
 that breaks the top border, exactly like the native `BS_GROUPBOX` control,
 and the viewport height hugs the content with roughly 11 px below the
@@ -87,8 +113,10 @@ One honest platform note: the native OS title bar belongs to Windows, not
 to the app — it follows the system app mode (black when Windows 11 is in
 dark app mode), and egui/eframe 0.27 has no API to recolor the title bar of
 a native-decorated window. A custom title bar would break the
-classic-dialog goal, so the stock one is kept as-is; picking the matching
-in-app theme is the supported way to make the window and title bar agree.
+classic-dialog goal, so the stock one is kept as-is; picking a matching
+dark-family in-app theme is the supported way to make the window and title
+bar agree. (The title *text* is app-controlled, which is how the MogClicker
+theme renames the window at runtime.)
 
 - **Click interval** (full width) — four white numeric boxes for hours /
   mins / secs / milliseconds with labels to the right of each box, defaulting
@@ -112,8 +140,9 @@ in-app theme is the supported way to make the window and title bar agree.
   semantic colored state (Ready / Running / Stopping / Panic / Warning /
   Error) without ever changing the window layout, and a status-bar style
   footer row: a short key reminder on the left (it tracks the actual
-  assigned hotkey, e.g. "F6 start/stop · F8 emergency stop") and the
-  **Dark mode** switch on the right.
+  assigned hotkey and the theme's wording, e.g. "F6 start/stop · F8
+  emergency stop", or "F6 to mog · F8 when it's over" in MogClicker) and
+  the **Settings…** button on the right.
 
 The **Hotkey setting** dialog remaps the start/stop key (F1–F24, A–Z, 0–9,
 Space); F8 is permanently reserved for Panic Stop and cannot be reassigned,
@@ -213,11 +242,19 @@ previous session is never reused.
 7. Open Hotkey setting, assign F7, close the dialog: F7 now starts and stops
    the session; trying to assign F8 is rejected; Esc cancels capture.
 8. Close and reopen the app: every setting (interval, offset, button, type,
-   repeat, position, hotkey) is restored from `%APPDATA%`.
+   repeat, position, hotkey, theme, window scale) is restored from
+   `%APPDATA%`.
 9. In Advanced, switch to background mode, Refresh, select an unfocused
    Notepad window: client-coordinate clicks land while Notepad stays
    unfocused; a dead HWND produces a visible target-loss error.
 10. Press F8 mid-run: the session stops within one interval, the status turns
     red and no mouse button remains stuck.
-11. Close the window: the worker is signaled, joined and its event handle
+11. Open Settings…, pick each theme in turn: every window restyles in
+    place and nothing moves; with MogClicker active the title bar reads
+    "MogClicker", the buttons read "Mog"/"It's over" and the footer reads
+    "F6 to mog · F8 when it's over".
+12. Still in Settings…, set Window scale to 150 %: the window grows and
+    every control stays fully visible; set it back to 100 % and the window
+    returns to its original size; both choices survive a restart.
+13. Close the window: the worker is signaled, joined and its event handle
     closed cleanly.

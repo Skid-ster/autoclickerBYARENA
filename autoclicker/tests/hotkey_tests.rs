@@ -4,8 +4,8 @@
 mod hotkey;
 
 use hotkey::{
-    capturable_vks, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs,
-    PANIC_VK, VK_ESCAPE, VK_F6,
+    capturable_vks, is_reserved_panic_vk, is_supported_toggle_vk, sanitize_ui_scale,
+    vk_display_name, AppPrefs, AppTheme, PANIC_VK, UI_SCALE_OPTIONS, VK_ESCAPE, VK_F6,
 };
 
 #[test]
@@ -13,10 +13,43 @@ fn default_prefs_use_f6() {
     let prefs = AppPrefs::default();
     assert_eq!(prefs.toggle_hotkey_vk, VK_F6);
     assert!(prefs.hotkeys_enabled);
-    assert!(
-        !prefs.dark_mode,
-        "fresh installs start with the light theme"
+    assert_eq!(
+        prefs.theme,
+        AppTheme::Classic,
+        "fresh installs start with the classic light theme"
     );
+    assert_eq!(prefs.ui_scale_percent, 100);
+}
+
+#[test]
+fn theme_keys_and_labels_are_stable_and_unique() {
+    for theme in AppTheme::all() {
+        assert_eq!(
+            AppTheme::from_key(theme.key()),
+            Some(theme),
+            "{theme:?} must survive a save/load round trip"
+        );
+        assert_eq!(
+            AppTheme::from_key(&format!(" {} ", theme.key())),
+            Some(theme)
+        );
+        assert!(!theme.label().is_empty());
+    }
+    let keys: std::collections::HashSet<_> = AppTheme::all().iter().map(|t| t.key()).collect();
+    assert_eq!(keys.len(), AppTheme::all().len(), "keys must be unique");
+    assert_eq!(AppTheme::Mog.label(), "MogClicker");
+    assert_eq!(AppTheme::from_key("comic_sans"), None);
+}
+
+#[test]
+fn ui_scale_sanitizer_keeps_every_offered_option() {
+    for percent in UI_SCALE_OPTIONS {
+        assert_eq!(sanitize_ui_scale(percent), percent);
+    }
+    assert_eq!(sanitize_ui_scale(0), 75);
+    assert_eq!(sanitize_ui_scale(74), 75);
+    assert_eq!(sanitize_ui_scale(201), 200);
+    assert_eq!(sanitize_ui_scale(u32::MAX), 200);
 }
 
 #[test]

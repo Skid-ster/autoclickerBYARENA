@@ -28,6 +28,89 @@ const VK_A: i32 = 0x41;
 const VK_Z: i32 = 0x5A;
 const VK_SPACE: i32 = 0x20;
 
+/// Visual theme applied to every window. Themes change colors (and, for
+/// MogClicker, a few label strings) but never layout metrics, so switching
+/// can never move or hide a control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppTheme {
+    /// The classic light OP Auto Clicker 4.x dialog (default).
+    #[default]
+    Classic,
+    /// Windows 11 dark-dialog colors.
+    Dark,
+    /// Pure-black dark theme for OLED screens.
+    Oled,
+    /// Green-on-black terminal look.
+    Matrix,
+    /// Pastel pink/purple light look.
+    Vaporwave,
+    /// The meme theme: retitles the app "MogClicker" and re-skins a few
+    /// labels to match, on a neon purple/pink palette.
+    Mog,
+}
+
+impl AppTheme {
+    pub fn all() -> [AppTheme; 6] {
+        [
+            AppTheme::Classic,
+            AppTheme::Dark,
+            AppTheme::Oled,
+            AppTheme::Matrix,
+            AppTheme::Vaporwave,
+            AppTheme::Mog,
+        ]
+    }
+
+    /// Stable key used in the settings file.
+    pub fn key(self) -> &'static str {
+        match self {
+            AppTheme::Classic => "classic",
+            AppTheme::Dark => "dark",
+            AppTheme::Oled => "oled",
+            AppTheme::Matrix => "matrix",
+            AppTheme::Vaporwave => "vaporwave",
+            AppTheme::Mog => "mog",
+        }
+    }
+
+    pub fn from_key(value: &str) -> Option<AppTheme> {
+        match value.trim() {
+            "classic" => Some(AppTheme::Classic),
+            "dark" => Some(AppTheme::Dark),
+            "oled" => Some(AppTheme::Oled),
+            "matrix" => Some(AppTheme::Matrix),
+            "vaporwave" => Some(AppTheme::Vaporwave),
+            "mog" => Some(AppTheme::Mog),
+            _ => None,
+        }
+    }
+
+    /// Name shown in the Settings window.
+    pub fn label(self) -> &'static str {
+        match self {
+            AppTheme::Classic => "Classic light",
+            AppTheme::Dark => "Dark",
+            AppTheme::Oled => "Midnight OLED",
+            AppTheme::Matrix => "Terminal green",
+            AppTheme::Vaporwave => "Vaporwave",
+            AppTheme::Mog => "MogClicker",
+        }
+    }
+}
+
+/// Window-scale percentages offered in the Settings window.
+pub const UI_SCALE_OPTIONS: [u32; 6] = [75, 100, 125, 150, 175, 200];
+/// Default window scale.
+pub const UI_SCALE_DEFAULT: u32 = 100;
+const UI_SCALE_MIN: u32 = 75;
+const UI_SCALE_MAX: u32 = 200;
+
+/// Clamps a persisted scale percentage into the supported range so a
+/// hand-edited file can never produce an unusable window.
+pub fn sanitize_ui_scale(percent: u32) -> u32 {
+    percent.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
+}
+
 /// Application-level hotkey and UI preferences persisted between sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppPrefs {
@@ -36,9 +119,12 @@ pub struct AppPrefs {
     /// State of the 4.1 "Random offset" checkbox; the offset magnitude itself
     /// lives in [`crate::config::EngineConfig::random_offset_ms`].
     pub random_offset_enabled: bool,
-    /// Dark color theme for every window. Off by default so a fresh install
-    /// shows the classic light dialog the 4.x look is modeled on.
-    pub dark_mode: bool,
+    /// Color/label theme for every window. Classic light by default so a
+    /// fresh install shows the dialog the 4.x look is modeled on.
+    pub theme: AppTheme,
+    /// Window scale percentage (75–200). The whole UI zooms and the fixed
+    /// window resizes itself so every control stays visible.
+    pub ui_scale_percent: u32,
 }
 
 impl Default for AppPrefs {
@@ -47,7 +133,8 @@ impl Default for AppPrefs {
             toggle_hotkey_vk: DEFAULT_TOGGLE_VK,
             hotkeys_enabled: true,
             random_offset_enabled: false,
-            dark_mode: false,
+            theme: AppTheme::Classic,
+            ui_scale_percent: UI_SCALE_DEFAULT,
         }
     }
 }

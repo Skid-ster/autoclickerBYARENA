@@ -21,7 +21,8 @@ use crate::config::{
 };
 use crate::engine::{ClickEngine, STATE_PANIC};
 use crate::hotkey::{
-    self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, VK_ESCAPE,
+    self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, AppTheme,
+    UI_SCALE_OPTIONS, VK_ESCAPE,
 };
 use crate::settings;
 use crate::telemetry::{
@@ -110,6 +111,159 @@ static DARK_PALETTE: Palette = Palette {
     selection_bg: Color32::from_rgba_premultiplied(24, 48, 78, 150),
 };
 
+// Pure-black dark variant for OLED screens.
+static OLED_PALETTE: Palette = Palette {
+    dark: true,
+    face: Color32::BLACK,
+    button: Color32::from_rgb(24, 24, 24),
+    button_disabled: Color32::from_rgb(14, 14, 14),
+    button_border: Color32::from_rgb(70, 70, 70),
+    hover_fill: Color32::from_rgb(32, 36, 40),
+    pressed_fill: Color32::from_rgb(44, 50, 56),
+    input_bg: Color32::from_rgb(18, 18, 18),
+    input_disabled: Color32::from_rgb(10, 10, 10),
+    group_border: Color32::from_rgb(74, 74, 74),
+    input_border: Color32::from_rgb(110, 110, 110),
+    text: Color32::from_rgb(230, 230, 230),
+    text_dim: Color32::from_rgb(150, 150, 150),
+    text_disabled: Color32::from_rgb(96, 96, 96),
+    accent: Color32::from_rgb(76, 194, 255),
+    success: Color32::from_rgb(98, 212, 120),
+    danger: Color32::from_rgb(255, 99, 99),
+    warning: Color32::from_rgb(226, 186, 60),
+    chart_bg: Color32::from_rgb(8, 8, 8),
+    chart_grid: Color32::from_rgb(44, 44, 44),
+    chart_bar_alt: Color32::from_rgba_premultiplied(28, 70, 92, 110),
+    selection_bg: Color32::from_rgba_premultiplied(18, 48, 64, 150),
+};
+
+// Green-on-black terminal look.
+static MATRIX_PALETTE: Palette = Palette {
+    dark: true,
+    face: Color32::from_rgb(8, 14, 8),
+    button: Color32::from_rgb(16, 30, 16),
+    button_disabled: Color32::from_rgb(10, 20, 10),
+    button_border: Color32::from_rgb(38, 92, 38),
+    hover_fill: Color32::from_rgb(22, 44, 22),
+    pressed_fill: Color32::from_rgb(30, 60, 30),
+    input_bg: Color32::from_rgb(12, 24, 12),
+    input_disabled: Color32::from_rgb(8, 16, 8),
+    group_border: Color32::from_rgb(42, 100, 42),
+    input_border: Color32::from_rgb(58, 136, 58),
+    text: Color32::from_rgb(130, 235, 130),
+    text_dim: Color32::from_rgb(74, 150, 74),
+    text_disabled: Color32::from_rgb(46, 92, 46),
+    accent: Color32::from_rgb(0, 230, 118),
+    success: Color32::from_rgb(0, 230, 118),
+    danger: Color32::from_rgb(255, 90, 90),
+    warning: Color32::from_rgb(210, 200, 70),
+    chart_bg: Color32::from_rgb(5, 10, 5),
+    chart_grid: Color32::from_rgb(22, 48, 22),
+    chart_bar_alt: Color32::from_rgba_premultiplied(0, 92, 48, 110),
+    selection_bg: Color32::from_rgba_premultiplied(0, 70, 36, 150),
+};
+
+// Pastel pink/purple light look.
+static VAPORWAVE_PALETTE: Palette = Palette {
+    dark: false,
+    face: Color32::from_rgb(244, 230, 250),
+    button: Color32::from_rgb(238, 218, 246),
+    button_disabled: Color32::from_rgb(246, 238, 250),
+    button_border: Color32::from_rgb(196, 156, 220),
+    hover_fill: Color32::from_rgb(250, 224, 244),
+    pressed_fill: Color32::from_rgb(252, 204, 232),
+    input_bg: Color32::from_rgb(253, 248, 255),
+    input_disabled: Color32::from_rgb(246, 240, 250),
+    group_border: Color32::from_rgb(182, 142, 208),
+    input_border: Color32::from_rgb(150, 100, 180),
+    text: Color32::from_rgb(58, 30, 78),
+    text_dim: Color32::from_rgb(142, 102, 164),
+    text_disabled: Color32::from_rgb(192, 170, 206),
+    accent: Color32::from_rgb(232, 62, 176),
+    success: Color32::from_rgb(0, 168, 150),
+    danger: Color32::from_rgb(226, 64, 84),
+    warning: Color32::from_rgb(196, 118, 0),
+    chart_bg: Color32::from_rgb(252, 245, 255),
+    chart_grid: Color32::from_rgb(230, 210, 240),
+    chart_bar_alt: Color32::from_rgba_premultiplied(160, 44, 122, 110),
+    selection_bg: Color32::from_rgba_premultiplied(120, 32, 92, 60),
+};
+
+// The MogClicker meme theme: deep purple face, hot-pink accent. Pairs with
+// the re-skinned labels in MOG_TEXT below.
+static MOG_PALETTE: Palette = Palette {
+    dark: true,
+    face: Color32::from_rgb(24, 16, 32),
+    button: Color32::from_rgb(44, 30, 60),
+    button_disabled: Color32::from_rgb(30, 20, 40),
+    button_border: Color32::from_rgb(104, 70, 138),
+    hover_fill: Color32::from_rgb(54, 36, 72),
+    pressed_fill: Color32::from_rgb(70, 46, 94),
+    input_bg: Color32::from_rgb(36, 24, 48),
+    input_disabled: Color32::from_rgb(28, 19, 38),
+    group_border: Color32::from_rgb(110, 70, 150),
+    input_border: Color32::from_rgb(150, 100, 190),
+    text: Color32::from_rgb(240, 230, 250),
+    text_dim: Color32::from_rgb(174, 150, 196),
+    text_disabled: Color32::from_rgb(112, 90, 134),
+    accent: Color32::from_rgb(255, 46, 136),
+    success: Color32::from_rgb(90, 240, 140),
+    danger: Color32::from_rgb(255, 92, 92),
+    warning: Color32::from_rgb(236, 196, 70),
+    chart_bg: Color32::from_rgb(18, 12, 26),
+    chart_grid: Color32::from_rgb(58, 40, 78),
+    chart_bar_alt: Color32::from_rgba_premultiplied(124, 28, 70, 110),
+    selection_bg: Color32::from_rgba_premultiplied(96, 20, 54, 150),
+};
+
+/// The handful of strings a theme is allowed to re-skin. Every variant
+/// keeps similar lengths so the fixed layout always fits (proven by the
+/// headless layout probe across all themes).
+struct ThemeText {
+    window_title: &'static str,
+    group_interval: &'static str,
+    group_options: &'static str,
+    group_repeat: &'static str,
+    group_position: &'static str,
+    /// Start-button verb, completed as "{start_verb} ({hotkey})".
+    start_verb: &'static str,
+    /// Stop-button verb, completed as "{stop_verb} ({hotkey})".
+    stop_verb: &'static str,
+    /// Footer tail after the hotkey name, e.g. "{hotkey} start/stop".
+    footer_toggle: &'static str,
+    /// Footer right half, describing the F8 panic key.
+    footer_panic: &'static str,
+}
+
+static CLASSIC_TEXT: ThemeText = ThemeText {
+    window_title: "OP Auto Clicker",
+    group_interval: "Click interval",
+    group_options: "Click options",
+    group_repeat: "Click repeat",
+    group_position: "Cursor position",
+    start_verb: "Start",
+    stop_verb: "Stop",
+    footer_toggle: "start/stop",
+    footer_panic: "F8 emergency stop",
+};
+
+static MOG_TEXT: ThemeText = ThemeText {
+    window_title: "MogClicker",
+    group_interval: "Mogging interval",
+    group_options: "Mog options",
+    group_repeat: "Mog repeat",
+    group_position: "Aura position",
+    start_verb: "Mog",
+    stop_verb: "It's over",
+    footer_toggle: "to mog",
+    footer_panic: "F8 when it's over",
+};
+
+/// Logical (point) size of the fixed main window; the Settings window's
+/// scale option zooms the UI and re-applies this size so the physical
+/// window grows or shrinks with the chosen percentage.
+pub const MAIN_WINDOW_SIZE: [f32; 2] = [560.0, 448.0];
+
 const LOG_LIMIT: usize = 200;
 const SAVE_THROTTLE_MS: u64 = 1_000;
 
@@ -177,6 +331,12 @@ pub struct OpAutoClickerApp {
     show_hotkey_dialog: bool,
     capturing: bool,
     show_advanced: bool,
+    show_settings: bool,
+
+    // Window-chrome bookkeeping: retitle on theme change, resize once the
+    // zoom factor for the chosen scale has been applied by egui.
+    applied_window_title: &'static str,
+    pending_resize: bool,
 
     // Persistence. The "last saved" fingerprints make the dirty check exact
     // so the disk is never written while nothing changed.
@@ -235,6 +395,9 @@ impl OpAutoClickerApp {
             show_hotkey_dialog: false,
             capturing: false,
             show_advanced: false,
+            show_settings: false,
+            applied_window_title: "",
+            pending_resize: false,
             settings_path: Self::settings_file_path(),
             settings_dirty: false,
             last_save: Instant::now(),
@@ -355,10 +518,22 @@ impl OpAutoClickerApp {
     /// The palette for the persisted theme choice. `'static` on purpose so
     /// closures can hold it without borrowing `self`.
     fn palette(&self) -> &'static Palette {
-        if self.prefs.dark_mode {
-            &DARK_PALETTE
-        } else {
-            &LIGHT_PALETTE
+        match self.prefs.theme {
+            AppTheme::Classic => &LIGHT_PALETTE,
+            AppTheme::Dark => &DARK_PALETTE,
+            AppTheme::Oled => &OLED_PALETTE,
+            AppTheme::Matrix => &MATRIX_PALETTE,
+            AppTheme::Vaporwave => &VAPORWAVE_PALETTE,
+            AppTheme::Mog => &MOG_PALETTE,
+        }
+    }
+
+    /// The re-skinnable strings for the active theme. Only MogClicker
+    /// deviates from the classic wording.
+    fn theme_text(&self) -> &'static ThemeText {
+        match self.prefs.theme {
+            AppTheme::Mog => &MOG_TEXT,
+            _ => &CLASSIC_TEXT,
         }
     }
 
@@ -618,10 +793,15 @@ impl OpAutoClickerApp {
                 self.previous_elapsed_ms = 0.0;
                 self.previous_clicks = 0;
                 self.last_seen_error = None;
+                let status_verb = if self.prefs.theme == AppTheme::Mog {
+                    "Mogging"
+                } else {
+                    "Running"
+                };
                 self.set_status(
                     StatusKind::Running,
                     format!(
-                        "Running at {:.2} CPS — {} button, {} click.",
+                        "{status_verb} at {:.2} CPS — {} button, {} click.",
                         self.config.target_cps(),
                         self.config.mouse_button.label().to_lowercase(),
                         self.config.click_type.label().to_lowercase()
@@ -767,7 +947,8 @@ impl OpAutoClickerApp {
 
     fn draw_interval_group(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
-        Self::group_box(ui, pal, "Click interval", |ui| {
+        let text = self.theme_text();
+        Self::group_box(ui, pal, text.group_interval, |ui| {
             ui.horizontal(|ui| {
                 let fields: [(&str, &mut u64, u64); 4] = [
                     ("hours", &mut self.hours, 99),
@@ -808,8 +989,9 @@ impl OpAutoClickerApp {
 
     fn draw_options_and_repeat(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
+        let text = self.theme_text();
         ui.columns(2, |columns| {
-            Self::group_box(&mut columns[0], pal, "Click options", |ui| {
+            Self::group_box(&mut columns[0], pal, text.group_options, |ui| {
                 Grid::new("click_options_grid")
                     .num_columns(2)
                     .spacing(Vec2::new(8.0_f32, 9.0_f32))
@@ -844,7 +1026,7 @@ impl OpAutoClickerApp {
                     });
             });
 
-            Self::group_box(&mut columns[1], pal, "Click repeat", |ui| {
+            Self::group_box(&mut columns[1], pal, text.group_repeat, |ui| {
                 ui.horizontal(|ui| {
                     ui.radio_value(&mut self.repeat_limited, true, "Repeat");
                     ui.add_enabled_ui(self.repeat_limited, |ui| {
@@ -870,7 +1052,8 @@ impl OpAutoClickerApp {
 
     fn draw_position_group(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
-        Self::group_box(ui, pal, "Cursor position", |ui| {
+        let text = self.theme_text();
+        Self::group_box(ui, pal, text.group_position, |ui| {
             ui.horizontal(|ui| {
                 ui.radio_value(
                     &mut self.config.coordinate_mode,
@@ -919,6 +1102,7 @@ impl OpAutoClickerApp {
 
     fn draw_action_buttons(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
+        let text = self.theme_text();
         let running = self.engine.is_running();
         let config_ok = self.validation_message().is_none();
         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
@@ -932,7 +1116,7 @@ impl OpAutoClickerApp {
                 if Self::classic_button(
                     ui,
                     pal,
-                    &format!("Start ({hotkey_name})"),
+                    &format!("{} ({hotkey_name})", text.start_verb),
                     !running && config_ok,
                     button_width,
                 )
@@ -943,7 +1127,7 @@ impl OpAutoClickerApp {
                 if Self::classic_button(
                     ui,
                     pal,
-                    &format!("Stop ({hotkey_name})"),
+                    &format!("{} ({hotkey_name})", text.stop_verb),
                     running,
                     button_width,
                 )
@@ -1029,6 +1213,68 @@ impl OpAutoClickerApp {
     }
 
     // ------------------------------------------------------------ advanced UI
+
+    fn draw_settings_window(&mut self, ctx: &egui::Context) {
+        let pal = self.palette();
+        let mut open = self.show_settings;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(280.0_f32)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("Theme").color(pal.text).strong());
+                egui::ComboBox::from_id_source("settings_theme")
+                    .width(220.0_f32)
+                    .selected_text(self.prefs.theme.label())
+                    .show_ui(ui, |ui| {
+                        for theme in AppTheme::all() {
+                            if ui
+                                .selectable_value(&mut self.prefs.theme, theme, theme.label())
+                                .changed()
+                            {
+                                self.mark_dirty();
+                            }
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new(
+                        "MogClicker is the meme theme — the window itself gets mogged.",
+                    )
+                    .color(pal.text_dim)
+                    .small(),
+                );
+                ui.add_space(10.0_f32);
+                ui.label(egui::RichText::new("Window scale").color(pal.text).strong());
+                egui::ComboBox::from_id_source("settings_scale")
+                    .width(220.0_f32)
+                    .selected_text(format!("{} %", self.prefs.ui_scale_percent))
+                    .show_ui(ui, |ui| {
+                        for percent in UI_SCALE_OPTIONS {
+                            if ui
+                                .selectable_value(
+                                    &mut self.prefs.ui_scale_percent,
+                                    percent,
+                                    format!("{percent} %"),
+                                )
+                                .changed()
+                            {
+                                self.mark_dirty();
+                            }
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new(
+                        "The window resizes itself so every control stays visible.",
+                    )
+                    .color(pal.text_dim)
+                    .small(),
+                );
+            });
+        if !open {
+            self.show_settings = false;
+        }
+    }
 
     fn draw_advanced_window(&mut self, ctx: &egui::Context) {
         let mut open = self.show_advanced;
@@ -1372,6 +1618,33 @@ impl eframe::App for OpAutoClickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_style(ctx);
         let pal = self.palette();
+
+        // Keep the OS window title in sync with the theme ("MogClicker"
+        // while the meme theme is active). Sent only when it changes.
+        let title = self.theme_text().window_title;
+        if self.applied_window_title != title {
+            self.applied_window_title = title;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.to_owned()));
+        }
+
+        // UI scale: the zoom factor follows the persisted percentage; one
+        // frame later (once egui reports the new factor as applied) the OS
+        // window is re-sized to the same logical size so the physical
+        // window actually grows or shrinks and no control is cut off.
+        let desired_zoom = self.prefs.ui_scale_percent as f32 / 100.0_f32;
+        if (ctx.zoom_factor() - desired_zoom).abs() > 0.001_f32 {
+            ctx.set_zoom_factor(desired_zoom);
+            self.pending_resize = true;
+            ctx.request_repaint();
+        } else if self.pending_resize {
+            self.pending_resize = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
+                MAIN_WINDOW_SIZE[0],
+                MAIN_WINDOW_SIZE[1],
+            )));
+            ctx.request_repaint();
+        }
+
         self.poll_hotkeys();
         self.poll_pick_capture();
         self.surface_engine_errors();
@@ -1457,34 +1730,40 @@ impl eframe::App for OpAutoClickerApp {
                     self.draw_action_buttons(ui);
                     ui.add_space(5.0_f32);
                     // Status-bar style footer: key reminder on the left
-                    // (tracking the real assigned hotkey), theme switch on
-                    // the right.
+                    // (tracking the real assigned hotkey, in the active
+                    // theme's wording), Settings entry point on the right.
                     ui.horizontal(|ui| {
+                        let text = self.theme_text();
                         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
                         ui.label(
                             egui::RichText::new(format!(
-                                "{hotkey_name} start/stop  ·  F8 emergency stop"
+                                "{hotkey_name} {}  ·  {}",
+                                text.footer_toggle, text.footer_panic
                             ))
                             .color(pal.text_dim)
                             .small(),
                         );
                         ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                            let mut dark = self.prefs.dark_mode;
-                            if ui
-                                .checkbox(
-                                    &mut dark,
-                                    egui::RichText::new("Dark mode").size(12.0_f32),
-                                )
-                                .changed()
-                            {
-                                self.prefs.dark_mode = dark;
-                                self.mark_dirty();
+                            ui.spacing_mut().button_padding = Vec2::new(8.0_f32, 2.0_f32);
+                            let button = egui::Button::new(
+                                egui::RichText::new("Settings…")
+                                    .size(12.0_f32)
+                                    .color(pal.text),
+                            )
+                            .fill(pal.button)
+                            .stroke(Stroke::new(1.0_f32, pal.button_border))
+                            .rounding(Rounding::same(3.0_f32));
+                            if ui.add(button).clicked() {
+                                self.show_settings = true;
                             }
                         });
                     });
                 });
             });
 
+        if self.show_settings {
+            self.draw_settings_window(ctx);
+        }
         if self.show_hotkey_dialog {
             self.draw_hotkey_dialog(ctx);
         }
