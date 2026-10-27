@@ -110,3 +110,48 @@ fn aggressive_clamp_never_negative() {
         assert!((2.0..=8.0).contains(&value));
     }
 }
+
+#[test]
+fn zero_offset_is_exact_base_interval() {
+    let mut config = EngineConfig::default();
+    config.base_interval_ms = 120.0;
+    config.random_offset_ms = 0.0;
+    let humanizer = GaussianHumanizer::with_seed(7);
+    for _ in 0..100 {
+        assert!((humanizer.next_offset_interval_ms(&config) - 120.0).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn random_offset_stays_inside_bounds() {
+    let mut config = EngineConfig::default();
+    config.base_interval_ms = 200.0;
+    config.random_offset_ms = 40.0;
+    config.min_interval_ms = 1.0;
+    config.max_interval_ms = 10_000.0;
+    let humanizer = GaussianHumanizer::with_seed(11);
+    for _ in 0..50_000 {
+        let value = humanizer.next_offset_interval_ms(&config);
+        assert!(
+            (160.0..=240.0).contains(&value),
+            "offset sample {value} escaped the +/-40 ms window"
+        );
+    }
+}
+
+#[test]
+fn random_offset_uses_uniform_distribution() {
+    let mut config = EngineConfig::default();
+    config.base_interval_ms = 1_000.0;
+    config.random_offset_ms = 100.0;
+    let humanizer = GaussianHumanizer::with_seed(23);
+    let samples: Vec<f64> = (0..20_000)
+        .map(|_| humanizer.next_offset_interval_ms(&config))
+        .collect();
+    let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+    // Uniform [900, 1100] has mean 1000; generous 10 ms tolerance.
+    assert!((mean - 1_000.0).abs() < 10.0, "mean was {mean}");
+    let below_mid = samples.iter().filter(|v| **v < 1_000.0).count();
+    let ratio = below_mid as f64 / samples.len() as f64;
+    assert!((0.45..=0.55).contains(&ratio), "split ratio was {ratio}");
+}

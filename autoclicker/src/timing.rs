@@ -8,9 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use windows_sys::Win32::Media::{timeBeginPeriod, timeEndPeriod};
-use windows_sys::Win32::System::Performance::{
-    QueryPerformanceCounter, QueryPerformanceFrequency,
-};
+use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpinResult {

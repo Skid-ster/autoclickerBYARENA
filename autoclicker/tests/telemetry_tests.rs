@@ -8,8 +8,7 @@ mod telemetry;
 use std::sync::atomic::AtomicI32;
 
 use telemetry::{
-    compute_stats, ClickRecord, ClickRecordAtom, SpscRingBuffer, TelemetryStore,
-    HISTOGRAM_BINS,
+    compute_stats, ClickRecord, ClickRecordAtom, SpscRingBuffer, TelemetryStore, HISTOGRAM_BINS,
 };
 
 #[test]
@@ -212,10 +211,7 @@ fn ring_buffer_is_send_sync_and_survives_real_threads() {
     assert!(!received.is_empty());
     assert_eq!(store.total_clicks(), TOTAL);
     assert_eq!(store.missed_deadlines(), TOTAL / 50);
-    assert_eq!(
-        received.len() as u64 + store.dropped_records(),
-        TOTAL
-    );
+    assert_eq!(received.len() as u64 + store.dropped_records(), TOTAL);
     let mut previous = 0u64;
     for record in &received {
         assert!(record.seq > previous);

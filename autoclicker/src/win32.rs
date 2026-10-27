@@ -8,43 +8,52 @@
 use std::io;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, BOOL, HANDLE, HWND, LPARAM, LRESULT, POINT,
-    RECT, WAIT_FAILED, WAIT_OBJECT_0,
+    CloseHandle, GetLastError, BOOL, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_FAILED,
+    WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
-use windows_sys::Win32::System::Performance::{
-    QueryPerformanceCounter, QueryPerformanceFrequency,
-};
+use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentThread, ResetEvent, SetEvent, SetThreadPriority,
-    THREAD_PRIORITY_TIME_CRITICAL, WaitForSingleObject,
+    CreateEventW, GetCurrentThread, ResetEvent, SetEvent, SetThreadPriority, WaitForSingleObject,
+    THREAD_PRIORITY_TIME_CRITICAL,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, MOUSEINPUT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClientRect, GetSystemMetrics, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-    PostMessageW, SendMessageTimeoutW, WNDENUMPROC,
+    EnumWindows, GetClientRect, GetCursorPos, GetSystemMetrics, GetWindowTextW,
+    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
+    SendMessageTimeoutW, WNDENUMPROC,
 };
+
+use crate::hotkey::PANIC_VK;
 
 pub const INPUT_MOUSE: u32 = 0;
 pub const MOUSEEVENTF_MOVE: u32 = 0x0001;
 pub const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
 pub const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+pub const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
+pub const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
+pub const MOUSEEVENTF_MIDDLEDOWN: u32 = 0x0020;
+pub const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
 pub const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
 
 pub const WM_MOUSEMOVE: u32 = 0x0200;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_LBUTTONUP: u32 = 0x0202;
+pub const WM_RBUTTONDOWN: u32 = 0x0204;
+pub const WM_RBUTTONUP: u32 = 0x0205;
+pub const WM_MBUTTONDOWN: u32 = 0x0207;
+pub const WM_MBUTTONUP: u32 = 0x0208;
 pub const MK_LBUTTON: usize = 0x0001;
+pub const MK_RBUTTON: usize = 0x0002;
+pub const MK_MBUTTON: usize = 0x0010;
 
 pub const SMTO_ABORTIFHUNG: u32 = 0x0002;
 pub const SM_XVIRTUALSCREEN: i32 = 76;
 pub const SM_YVIRTUALSCREEN: i32 = 77;
 pub const SM_CXVIRTUALSCREEN: i32 = 78;
 pub const SM_CYVIRTUALSCREEN: i32 = 79;
-pub const VK_F8: i32 = 0x77;
 
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
@@ -139,9 +148,27 @@ pub fn set_current_thread_time_critical() -> io::Result<()> {
     Ok(())
 }
 
-pub fn is_f8_down() -> bool {
+/// Polls the physical state of any virtual-key code via GetAsyncKeyState,
+/// which reports presses even when the window is unfocused or minimized.
+pub fn is_vk_down(vk: i32) -> bool {
     // SAFETY: GetAsyncKeyState only reads global key state; no pointers.
-    (unsafe { GetAsyncKeyState(VK_F8) } as u16) & 0x8000 != 0
+    (unsafe { GetAsyncKeyState(vk) } as u16) & 0x8000 != 0
+}
+
+pub fn is_f8_down() -> bool {
+    is_vk_down(PANIC_VK)
+}
+
+/// Returns the current physical cursor position in virtual-screen pixels.
+pub fn get_cursor_pos() -> Option<(i32, i32)> {
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY: `point` is a valid local POINT for the duration of the call.
+    let ok = unsafe { GetCursorPos(&mut point) };
+    if ok == 0 {
+        None
+    } else {
+        Some((point.x, point.y))
+    }
 }
 
 pub fn is_valid_window(hwnd: isize) -> bool {
@@ -155,9 +182,7 @@ pub fn is_valid_window(hwnd: isize) -> bool {
 pub fn get_window_text(hwnd: isize) -> String {
     let mut buffer = [0u16; 512];
     // SAFETY: buffer is a valid 512-element UTF-16 array for the call.
-    let length = unsafe {
-        GetWindowTextW(hwnd as HWND, buffer.as_mut_ptr(), buffer.len() as i32)
-    };
+    let length = unsafe { GetWindowTextW(hwnd as HWND, buffer.as_mut_ptr(), buffer.len() as i32) };
     if length <= 0 {
         return String::new();
     }
@@ -266,7 +291,9 @@ pub fn send_inputs(inputs: &[INPUT]) -> io::Result<u32> {
         )
     };
     if sent as usize != inputs.len() {
-        return Err(last_os_error("SendInput injected fewer events than requested"));
+        return Err(last_os_error(
+            "SendInput injected fewer events than requested",
+        ));
     }
     Ok(sent)
 }
@@ -296,12 +323,7 @@ pub fn normalize_virtual_y(screen_y: i64) -> i32 {
     (relative as f64 * 65535.0 / (height - 1) as f64) as i32
 }
 
-pub fn post_message(
-    hwnd: isize,
-    message: u32,
-    wparam: usize,
-    lparam: isize,
-) -> io::Result<()> {
+pub fn post_message(hwnd: isize, message: u32, wparam: usize, lparam: isize) -> io::Result<()> {
     if !is_valid_window(hwnd) {
         return Err(io::Error::new(
             io::ErrorKind::NotConnected,
@@ -310,9 +332,7 @@ pub fn post_message(
     }
     // SAFETY: hwnd has just been validated and the message parameters are
     // plain integer values packed per the WM_MOUSE* contract.
-    let ok = unsafe {
-        PostMessageW(hwnd as HWND, message, wparam, lparam as LPARAM)
-    };
+    let ok = unsafe { PostMessageW(hwnd as HWND, message, wparam, lparam as LPARAM) };
     if ok == 0 {
         return Err(last_os_error("PostMessageW failed"));
     }

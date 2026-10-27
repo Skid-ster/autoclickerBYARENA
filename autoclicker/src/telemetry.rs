@@ -9,9 +9,7 @@
 //! increments the dropped counter instead of ever blocking the producer,
 //! keeping `popped + dropped == pushed` exact under every interleaving.
 
-use std::sync::atomic::{
-    AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering,
-};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
 pub const TELEMETRY_RING_SIZE: usize = 4096;
 pub const HISTOGRAM_BINS: usize = 24;
@@ -70,7 +68,8 @@ impl Atom for ClickRecordAtom {
         self.seq.store(value.seq, Ordering::Relaxed);
         self.interval_ms
             .store(value.interval_ms.to_bits(), Ordering::Relaxed);
-        self.hold_ms.store(value.hold_ms.to_bits(), Ordering::Relaxed);
+        self.hold_ms
+            .store(value.hold_ms.to_bits(), Ordering::Relaxed);
         self.deadline_error_ms
             .store(value.deadline_error_ms.to_bits(), Ordering::Relaxed);
         self.missed_deadline
@@ -82,9 +81,7 @@ impl Atom for ClickRecordAtom {
             seq: self.seq.load(Ordering::Relaxed),
             interval_ms: f64::from_bits(self.interval_ms.load(Ordering::Relaxed)),
             hold_ms: f64::from_bits(self.hold_ms.load(Ordering::Relaxed)),
-            deadline_error_ms: f64::from_bits(
-                self.deadline_error_ms.load(Ordering::Relaxed),
-            ),
+            deadline_error_ms: f64::from_bits(self.deadline_error_ms.load(Ordering::Relaxed)),
             missed_deadline: self.missed_deadline.load(Ordering::Relaxed),
         }
     }
@@ -99,7 +96,10 @@ pub struct SpscRingBuffer<A: Atom, const N: usize> {
 
 impl<A: Atom, const N: usize> SpscRingBuffer<A, N> {
     pub fn new() -> Self {
-        assert!(N >= 2 && N.is_power_of_two(), "N must be a power of two >= 2");
+        assert!(
+            N >= 2 && N.is_power_of_two(),
+            "N must be a power of two >= 2"
+        );
         let mut slots: Vec<A> = Vec::with_capacity(N);
         for _ in 0..N {
             slots.push(A::default());
@@ -330,8 +330,7 @@ pub fn compute_stats(
     }
     let bin_width = span / HISTOGRAM_BINS as f64;
     for record in window {
-        let mut bin =
-            ((record.interval_ms - stats.histogram_low_ms) / bin_width) as usize;
+        let mut bin = ((record.interval_ms - stats.histogram_low_ms) / bin_width) as usize;
         if bin >= HISTOGRAM_BINS {
             bin = HISTOGRAM_BINS - 1;
         }
