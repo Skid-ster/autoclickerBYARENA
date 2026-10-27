@@ -60,7 +60,7 @@ Windows-only.
 | File | Responsibility |
 | --- | --- |
 | `src/main.rs` | `eframe::run_native` entry point, viewport setup, platform gating |
-| `src/app.rs` | egui cyberpunk dashboard, target picker, controls, painter-drawn CPS graph and histogram, F8 polling |
+| `src/app.rs` | egui modern dark dashboard, tabbed target picker, controls, painter-drawn CPS graph and histogram, F8 polling |
 | `src/engine.rs` | Dedicated worker thread, atomic config snapshot, time-critical priority, RAII timer resolution, QPC spin loop, panic checks |
 | `src/timing.rs` | QPC wrappers, `timeBeginPeriod(1)` RAII guard, `spin_loop` spin wait (no sleep) |
 | `src/win32.rs` | Narrow FFI wrappers for `SendInput`, `PostMessageW`, `SendMessageTimeoutW`, `EnumWindows`, `IsWindow`, `GetClientRect`, `ClientToScreen`, thread priority, events and QPC; each unsafe block has a SAFETY comment |
@@ -102,7 +102,7 @@ Windows-only.
 
 ## Manual acceptance checklist
 
-1. Run `cargo run --release`; the cyberpunk dashboard appears and stays
+1. Run `cargo run --release`; the modern dark dashboard appears and stays
    responsive while idle without continuous repainting.
 2. Set 10 CPS, global mode, current cursor, Start: clicks register in a text
    editor; actual CPS, mean, sigma and the live graph update.

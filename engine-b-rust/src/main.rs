@@ -1,4 +1,4 @@
-//! OP 4.1 Killer Engine B binary entry point.
+//! OP Auto Clicker Engine B binary entry point.
 //!
 //! The platform-independent modules (`config`, `humanize`, `telemetry`) compile
 //! on every platform so their integration tests run anywhere; the Win32 worker
@@ -28,11 +28,11 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 940.0])
-            .with_title("OP 4.1 Killer - Engine B (Rust / egui / windows-sys)"),
+            .with_title("OP Auto Clicker - Engine B (Rust/egui)"),
         ..Default::default()
     };
     eframe::run_native(
-        "OP 4.1 Killer Engine B",
+        "OP Auto Clicker Engine B",
         options,
         Box::new(|_creation_context| Box::new(app::EngineBApp::new())),
     )

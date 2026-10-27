@@ -9,6 +9,7 @@
 #include "click_engine.h"
 #include "config.h"
 #include "telemetry.h"
+#include "theme.h"
 #include "window_target.h"
 
 namespace op41 {
@@ -22,25 +23,34 @@ public:
     void render();
 
 private:
+    enum class Tab { Clicker, Target, Analytics, Activity };
+
     void poll_panic_hotkey();
     void refresh_target_list();
     void handle_start();
     void drain_and_aggregate();
     void add_log(const std::string& line);
     void surface_engine_errors();
+
     void draw_header();
-    void draw_timing_panel();
-    void draw_input_panel();
-    void draw_target_panel();
-    void draw_control_panel();
-    void draw_analytics_panel();
-    void draw_log_panel();
+    void draw_tab_bar();
+    void draw_clicker_tab();
+    void draw_target_tab();
+    void draw_analytics_tab();
+    void draw_activity_tab();
+    void draw_footer();
     void draw_cps_graph();
     void draw_interval_histogram();
+    void draw_validation_line();
+    void draw_status_pill(const char* text, ImU32 color, ImU32 soft_color);
+
     [[nodiscard]] static std::string narrow(const std::wstring& wide);
 
     ClickEngine engine_;
     EngineConfig config_;
+
+    Tab tab_ = Tab::Clicker;
+    bool repeat_limited_ = false;
 
     std::vector<WindowInfo> windows_;
     int selected_window_ = -1;

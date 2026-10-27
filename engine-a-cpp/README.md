@@ -56,14 +56,14 @@ with `g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror`.
 | File | Responsibility |
 | --- | --- |
 | `src/main.cpp` | WinMain, window class, D3D11 device/swap chain, ImGui bootstrap, message loop, resize and cleanup |
-| `src/app.cpp` | Dashboard UI, target picker, commands, telemetry drain, CPS graph and histogram rendering, F8 polling |
+| `src/app.cpp` | Dashboard UI, tabbed layout (Clicker/Target/Analytics/Activity), progressive-disclosure settings, telemetry drain, CPS graph and histogram, F8 polling |
 | `src/click_engine.cpp` | Dedicated worker, atomic config snapshot, time-critical priority, RAII timer resolution, QPC spin loop, panic checks |
 | `src/input_dispatcher.cpp` | Arrayed `SendInput` global mode and `PostMessageW` / `SendMessageTimeoutW` background mode |
 | `src/humanize.cpp` | Thread-local MT19937_64 seeded from `random_device`, steady clock and QPC; Box-Muller Gaussian samples with clamping |
 | `src/telemetry.cpp` | Lock-free SPSC ring buffer, atomic counters, sliding-window statistics and histogram |
 | `src/timing.cpp` | QPC wrappers, `timeBeginPeriod(1)` RAII guard, `_mm_pause` spin wait (no `Sleep`) |
 | `src/window_target.cpp` | `EnumWindows` enumeration, `IsWindow` validation, cached client geometry for minimized targets |
-| `src/theme.cpp` | Programmatic cyberpunk ImGui style |
+| `src/theme.cpp` | Programmatic modern dark ImGui style |
 | `src/config.h` | Configuration snapshot and validation |
 
 ### Timing and threading rules
@@ -96,7 +96,7 @@ with `g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror`.
 
 ## Manual acceptance checklist
 
-1. Launch the executable; the cyberpunk dashboard renders at 60 FPS with no
+1. Launch the executable; the modern dark dashboard renders at 60 FPS with no
    console window.
 2. Set 10 CPS, global mode, current cursor, Start: clicks register in a text
    editor; actual CPS, mean, sigma and the graph update live.

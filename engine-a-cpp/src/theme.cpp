@@ -2,94 +2,123 @@
 
 namespace op41::theme {
 
-void apply_cyberpunk_style() {
+namespace {
+
+ImVec4 rgb(int r, int g, int b, float a = 1.0f) {
+    return ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, a);
+}
+
+} // namespace
+
+void apply_modern_style() {
     ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowPadding = ImVec2(14.0f, 14.0f);
-    style.FramePadding = ImVec2(10.0f, 6.0f);
-    style.CellPadding = ImVec2(8.0f, 6.0f);
-    style.ItemSpacing = ImVec2(10.0f, 10.0f);
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Slightly larger default type for readability; no external font assets.
+    io.FontGlobalScale = 1.12f;
+
+    // Generous, calm spacing.
+    style.WindowPadding = ImVec2(20.0f, 18.0f);
+    style.FramePadding = ImVec2(12.0f, 8.0f);
+    style.CellPadding = ImVec2(10.0f, 8.0f);
+    style.ItemSpacing = ImVec2(10.0f, 11.0f);
     style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
-    style.TouchExtraPadding = ImVec2(0.0f, 0.0f);
     style.IndentSpacing = 22.0f;
-    style.ScrollbarSize = 14.0f;
-    style.GrabMinSize = 12.0f;
+    style.ScrollbarSize = 12.0f;
+    style.GrabMinSize = 10.0f;
 
-    style.WindowBorderSize = 1.0f;
-    style.ChildBorderSize = 1.0f;
-    style.PopupBorderSize = 1.0f;
-    style.FrameBorderSize = 0.0f;
-    style.TabBorderSize = 0.0f;
-
+    // Soft rounded geometry everywhere.
     style.WindowRounding = 10.0f;
-    style.ChildRounding = 8.0f;
-    style.FrameRounding = 6.0f;
+    style.ChildRounding = 10.0f;
+    style.FrameRounding = 8.0f;
     style.PopupRounding = 8.0f;
     style.ScrollbarRounding = 8.0f;
     style.GrabRounding = 6.0f;
-    style.TabRounding = 6.0f;
+    style.TabRounding = 8.0f;
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
+    style.FrameBorderSize = 0.0f;
+    style.PopupBorderSize = 1.0f;
+
+    const ImVec4 bg(0.051f, 0.067f, 0.090f, 1.0f);        // #0D1117
+    const ImVec4 card(0.086f, 0.106f, 0.133f, 1.0f);      // #161B22
+    const ImVec4 input(0.110f, 0.137f, 0.188f, 1.0f);     // #1C2330
+    const ImVec4 border(0.188f, 0.227f, 0.298f, 1.0f);    // #303A4C
+    const ImVec4 accent = rgb(76, 141, 255);              // #4C8DFF
+    const ImVec4 accent_soft = rgb(76, 141, 255, 0.18f);
+    const ImVec4 text(0.902f, 0.929f, 0.953f, 1.0f);      // #E6EDF3
+    const ImVec4 text_dim(0.545f, 0.580f, 0.620f, 1.0f);  // #8B949E
 
     ImVec4* colors = style.Colors;
-    const ImVec4 bg(0.039f, 0.047f, 0.094f, 1.0f);
-    const ImVec4 panel(0.071f, 0.086f, 0.157f, 1.0f);
-    const ImVec4 panel_hover(0.110f, 0.130f, 0.220f, 1.0f);
-    const ImVec4 cyan(0.000f, 0.898f, 1.000f, 1.0f);
-    const ImVec4 magenta(1.000f, 0.169f, 0.839f, 1.0f);
-    const ImVec4 green(0.224f, 1.000f, 0.533f, 1.0f);
-    const ImVec4 amber(1.000f, 0.749f, 0.000f, 1.0f);
-    const ImVec4 red(1.000f, 0.275f, 0.353f, 1.0f);
-    const ImVec4 text(0.878f, 0.902f, 0.961f, 1.0f);
-    const ImVec4 text_dim(0.510f, 0.549f, 0.647f, 1.0f);
-
     colors[ImGuiCol_Text] = text;
     colors[ImGuiCol_TextDisabled] = text_dim;
     colors[ImGuiCol_WindowBg] = bg;
-    colors[ImGuiCol_ChildBg] = panel;
-    colors[ImGuiCol_PopupBg] = ImVec4(0.055f, 0.067f, 0.125f, 0.98f);
-    colors[ImGuiCol_Border] = ImVec4(cyan.x, cyan.y, cyan.z, 0.35f);
+    colors[ImGuiCol_ChildBg] = card;
+    colors[ImGuiCol_PopupBg] = rgb(22, 27, 34, 0.98f);
+    colors[ImGuiCol_Border] = border;
     colors[ImGuiCol_BorderShadow] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-    colors[ImGuiCol_FrameBg] = ImVec4(0.102f, 0.125f, 0.220f, 1.0f);
-    colors[ImGuiCol_FrameBgHovered] = panel_hover;
-    colors[ImGuiCol_FrameBgActive] = ImVec4(0.145f, 0.170f, 0.280f, 1.0f);
-    colors[ImGuiCol_TitleBg] = panel;
-    colors[ImGuiCol_TitleBgActive] = ImVec4(0.090f, 0.110f, 0.200f, 1.0f);
-    colors[ImGuiCol_TitleBgCollapsed] = panel;
-    colors[ImGuiCol_MenuBarBg] = panel;
+
+    // Inputs and framed widgets.
+    colors[ImGuiCol_FrameBg] = input;
+    colors[ImGuiCol_FrameBgHovered] = rgb(38, 47, 64, 1.0f);
+    colors[ImGuiCol_FrameBgActive] = rgb(46, 57, 78, 1.0f);
+
+    // Titles and menus.
+    colors[ImGuiCol_TitleBg] = card;
+    colors[ImGuiCol_TitleBgActive] = card;
+    colors[ImGuiCol_TitleBgCollapsed] = card;
+    colors[ImGuiCol_MenuBarBg] = card;
+
+    // Neutral, quiet scrollbars.
     colors[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-    colors[ImGuiCol_ScrollbarGrab] = ImVec4(cyan.x, cyan.y, cyan.z, 0.35f);
-    colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(cyan.x, cyan.y, cyan.z, 0.55f);
-    colors[ImGuiCol_ScrollbarGrabActive] = cyan;
-    colors[ImGuiCol_CheckMark] = cyan;
-    colors[ImGuiCol_SliderGrab] = magenta;
-    colors[ImGuiCol_SliderGrabActive] = ImVec4(magenta.x, magenta.y, magenta.z, 0.85f);
-    colors[ImGuiCol_Button] = ImVec4(cyan.x, cyan.y, cyan.z, 0.18f);
-    colors[ImGuiCol_ButtonHovered] = ImVec4(cyan.x, cyan.y, cyan.z, 0.35f);
-    colors[ImGuiCol_ButtonActive] = ImVec4(cyan.x, cyan.y, cyan.z, 0.55f);
-    colors[ImGuiCol_Header] = ImVec4(magenta.x, magenta.y, magenta.z, 0.20f);
-    colors[ImGuiCol_HeaderHovered] = ImVec4(magenta.x, magenta.y, magenta.z, 0.35f);
-    colors[ImGuiCol_HeaderActive] = ImVec4(magenta.x, magenta.y, magenta.z, 0.50f);
-    colors[ImGuiCol_Separator] = ImVec4(cyan.x, cyan.y, cyan.z, 0.25f);
-    colors[ImGuiCol_SeparatorHovered] = cyan;
-    colors[ImGuiCol_SeparatorActive] = cyan;
-    colors[ImGuiCol_Tab] = panel;
-    colors[ImGuiCol_TabHovered] = panel_hover;
-    colors[ImGuiCol_TabActive] = ImVec4(cyan.x, cyan.y, cyan.z, 0.22f);
-    colors[ImGuiCol_TabUnfocused] = panel;
-    colors[ImGuiCol_TabUnfocusedActive] = panel_hover;
-    colors[ImGuiCol_PlotLines] = cyan;
-    colors[ImGuiCol_PlotLinesHovered] = cyan;
-    colors[ImGuiCol_PlotHistogram] = magenta;
-    colors[ImGuiCol_PlotHistogramHovered] = magenta;
-    colors[ImGuiCol_TableHeaderBg] = ImVec4(cyan.x, cyan.y, cyan.z, 0.16f);
-    colors[ImGuiCol_TableBorderStrong] = ImVec4(cyan.x, cyan.y, cyan.z, 0.35f);
-    colors[ImGuiCol_TableBorderLight] = ImVec4(cyan.x, cyan.y, cyan.z, 0.18f);
+    colors[ImGuiCol_ScrollbarGrab] = border;
+    colors[ImGuiCol_ScrollbarGrabHovered] = rgb(76, 141, 255, 0.65f);
+    colors[ImGuiCol_ScrollbarGrabActive] = accent;
+
+    // One accent for every interactive affordance.
+    colors[ImGuiCol_CheckMark] = accent;
+    colors[ImGuiCol_SliderGrab] = accent;
+    colors[ImGuiCol_SliderGrabActive] = rgb(120, 170, 255, 1.0f);
+    colors[ImGuiCol_Button] = accent_soft;
+    colors[ImGuiCol_ButtonHovered] = rgb(76, 141, 255, 0.32f);
+    colors[ImGuiCol_ButtonActive] = rgb(76, 141, 255, 0.50f);
+
+    // Lists, trees and headers.
+    colors[ImGuiCol_Header] = accent_soft;
+    colors[ImGuiCol_HeaderHovered] = rgb(76, 141, 255, 0.30f);
+    colors[ImGuiCol_HeaderActive] = rgb(76, 141, 255, 0.45f);
+
+    // Quiet separators and dividers.
+    colors[ImGuiCol_Separator] = border;
+    colors[ImGuiCol_SeparatorHovered] = accent;
+    colors[ImGuiCol_SeparatorActive] = accent;
+
+    // Tabs.
+    colors[ImGuiCol_Tab] = card;
+    colors[ImGuiCol_TabHovered] = accent_soft;
+    colors[ImGuiCol_TabActive] = accent_soft;
+    colors[ImGuiCol_TabUnfocused] = card;
+    colors[ImGuiCol_TabUnfocusedActive] = rgb(30, 38, 52, 1.0f);
+
+    // Plots use the accent family only.
+    colors[ImGuiCol_PlotLines] = accent;
+    colors[ImGuiCol_PlotLinesHovered] = rgb(120, 170, 255, 1.0f);
+    colors[ImGuiCol_PlotHistogram] = accent;
+    colors[ImGuiCol_PlotHistogramHovered] = rgb(120, 170, 255, 1.0f);
+
+    // Tables.
+    colors[ImGuiCol_TableHeaderBg] = rgb(76, 141, 255, 0.14f);
+    colors[ImGuiCol_TableBorderStrong] = border;
+    colors[ImGuiCol_TableBorderLight] = rgb(48, 58, 76, 0.55f);
     colors[ImGuiCol_TableRowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
-    colors[ImGuiCol_TableRowBgAlt] = ImVec4(1.0f, 1.0f, 1.0f, 0.04f);
-    colors[ImGuiCol_TextSelectedBg] = ImVec4(magenta.x, magenta.y, magenta.z, 0.45f);
-    colors[ImGuiCol_DragDropTarget] = amber;
-    colors[ImGuiCol_NavHighlight] = cyan;
-    colors[ImGuiCol_NavWindowingHighlight] = cyan;
-    colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.10f, 0.12f, 0.20f, 0.7f);
-    colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.02f, 0.03f, 0.06f, 0.65f);
+    colors[ImGuiCol_TableRowBgAlt] = ImVec4(1.0f, 1.0f, 1.0f, 0.03f);
+
+    colors[ImGuiCol_TextSelectedBg] = rgb(76, 141, 255, 0.38f);
+    colors[ImGuiCol_DragDropTarget] = rgb(210, 153, 34, 1.0f);
+    colors[ImGuiCol_NavHighlight] = accent;
+    colors[ImGuiCol_NavWindowingHighlight] = accent;
+    colors[ImGuiCol_NavWindowingDimBg] = rgb(13, 17, 23, 0.7f);
+    colors[ImGuiCol_ModalWindowDimBg] = rgb(5, 7, 11, 0.65f);
 }
 
 } // namespace op41::theme

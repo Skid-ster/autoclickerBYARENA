@@ -133,8 +133,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     RegisterClassExW(&wc);
 
     HWND hwnd = CreateWindowExW(
-        0, wc.lpszClassName, L"OP 4.1 Killer - Engine A (C++20 / ImGui / DX11)",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1200, 940,
+        0, wc.lpszClassName, L"OP Auto Clicker - Engine A (C++20)",
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1080, 880,
         nullptr, nullptr, instance, nullptr);
     if (hwnd == nullptr) {
         UnregisterClassW(wc.lpszClassName, instance);
@@ -158,7 +158,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    op41::theme::apply_cyberpunk_style();
+    op41::theme::apply_modern_style();
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_device, g_device_context);
 
@@ -192,7 +192,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show_command) {
         app.render();
         ImGui::Render();
 
-        const float clear_color[4] = {0.039f, 0.047f, 0.094f, 1.0f};
+        // #0D1117, matching the modern dark theme background.
+        const float clear_color[4] = {0.051f, 0.067f, 0.090f, 1.0f};
         g_device_context->OMSetRenderTargets(1, &g_render_target_view, nullptr);
         g_device_context->ClearRenderTargetView(g_render_target_view,
                                                 clear_color);
