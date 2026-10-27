@@ -8,7 +8,7 @@ mod hotkey;
 mod settings;
 
 use config::{ClickType, CoordinateMode, EngineConfig, InputMode, MouseButton};
-use hotkey::{AppPrefs, VK_F7};
+use hotkey::{AppPrefs, AppTheme, VK_F7};
 use settings::{parse_settings, serialize_settings};
 
 #[test]
@@ -41,7 +41,8 @@ fn full_round_trip_preserves_every_field() {
         toggle_hotkey_vk: VK_F7,
         hotkeys_enabled: false,
         random_offset_enabled: true,
-        dark_mode: true,
+        theme: AppTheme::Vaporwave,
+        ui_scale_percent: 150,
     };
 
     let document = serialize_settings(&config, &prefs);
@@ -125,20 +126,96 @@ fn empty_document_yields_defaults() {
 }
 
 #[test]
-fn dark_mode_round_trips_and_defaults_to_light() {
-    // Files written before the theme existed have no dark_mode key: they
-    // must keep loading with the classic light look.
-    let (_, prefs) = parse_settings("toggle_hotkey_vk=117\n");
-    assert!(!prefs.dark_mode);
+fn every_theme_round_trips_through_the_settings_file() {
+    for theme in AppTheme::all() {
+        let mut wanted = AppPrefs::default();
+        wanted.theme = theme;
+        let document = serialize_settings(&EngineConfig::default(), &wanted);
+        assert!(
+            document.contains(&format!("theme={}", theme.key())),
+            "serialized document must name the {theme:?} theme"
+        );
+        let (_, restored) = parse_settings(&document);
+        assert_eq!(restored.theme, theme);
+    }
 
-    let mut wanted = AppPrefs::default();
-    wanted.dark_mode = true;
-    let document = serialize_settings(&EngineConfig::default(), &wanted);
-    assert!(document.contains("dark_mode=true"));
-    let (_, restored) = parse_settings(&document);
-    assert!(restored.dark_mode);
+    // Unknown names keep the classic default instead of poisoning the load.
+    let (_, prefs) = parse_settings(
+        "theme=comic_sans
+",
+    );
+    assert_eq!(prefs.theme, AppTheme::Classic);
+}
 
-    // Malformed values keep the default instead of poisoning the load.
-    let (_, prefs) = parse_settings("dark_mode=maybe\n");
-    assert!(!prefs.dark_mode);
+#[test]
+fn legacy_dark_mode_files_map_onto_the_theme() {
+    // Files written by the dark-mode-only build carry a boolean; upgrades
+    // must keep the user's look, and files with neither key stay classic.
+    let (_, prefs) = parse_settings(
+        "dark_mode=true
+",
+    );
+    assert_eq!(prefs.theme, AppTheme::Dark);
+    let (_, prefs) = parse_settings(
+        "dark_mode=false
+",
+    );
+    assert_eq!(prefs.theme, AppTheme::Classic);
+    let (_, prefs) = parse_settings(
+        "toggle_hotkey_vk=117
+",
+    );
+    assert_eq!(prefs.theme, AppTheme::Classic);
+    let (_, prefs) = parse_settings(
+        "dark_mode=maybe
+",
+    );
+    assert_eq!(prefs.theme, AppTheme::Classic);
+
+    // A newer theme key wins over the legacy boolean regardless of order.
+    let (_, prefs) = parse_settings(
+        "theme=mog
+dark_mode=false
+",
+    );
+    assert_eq!(prefs.theme, AppTheme::Mog);
+}
+
+#[test]
+fn ui_scale_is_clamped_and_defaulted() {
+    let (_, prefs) = parse_settings("");
+    assert_eq!(prefs.ui_scale_percent, 100);
+    let (_, prefs) = parse_settings(
+        "ui_scale=150
+",
+    );
+    assert_eq!(prefs.ui_scale_percent, 150);
+    // Out-of-range values clamp to the supported window instead of
+    // producing an unusable (giant or microscopic) window.
+    let (_, prefs) = parse_settings(
+        "ui_scale=10
+",
+    );
+    assert_eq!(prefs.ui_scale_percent, 75);
+    let (_, prefs) = parse_settings(
+        "ui_scale=5000
+",
+    );
+    assert_eq!(prefs.ui_scale_percent, 200);
+    let (_, prefs) = parse_settings(
+        "ui_scale=99999999999999999999
+",
+    );
+    assert_eq!(prefs.ui_scale_percent, 100);
+    // Malformed values keep the default.
+    let (_, prefs) = parse_settings(
+        "ui_scale=big
+",
+    );
+    assert_eq!(prefs.ui_scale_percent, 100);
+    let (_, prefs) = parse_settings(
+        "ui_scale=-50
+",
+    );
+    assert_eq!(prefs.ui_scale_percent, 100);
 }

@@ -390,6 +390,62 @@ files also compile standalone with zero warnings. Pixel-level visual
 acceptance remains a Windows-only manual step and is not claimed from the
 Linux harness.
 
+## Theme gallery + Settings window + UI scaling round (presentation-only)
+
+User-requested follow-up: a Settings entry point inside the app, a gallery
+of themes including the "MogClicker" meme theme, and a user-selectable
+window scale. No engine, scheduling, dispatch, telemetry or validation
+code path changed; the behavioral additions are two persisted preference
+fields and two viewport commands (window title and window size).
+
+- **Theme system.** `AppPrefs::dark_mode` was generalized into an
+  `AppTheme` enum with six variants — Classic light (default), Dark,
+  Midnight OLED, Terminal green, Vaporwave, and MogClicker — each a full
+  22-field `Palette` static. Legacy settings files still load:
+  `dark_mode=true` maps to Dark, `dark_mode=false`/absent to Classic, and
+  a modern `theme=` key always outranks the legacy boolean regardless of
+  line order (tested both ways).
+- **Themed wording.** A `ThemeText` table carries the handful of strings a
+  theme may re-skin (window title, four group titles, Start/Stop verbs,
+  footer). Only MogClicker deviates: title "MogClicker", Start → "Mog",
+  Stop → "It's over", "Mogging interval"/"Mog options"/"Mog repeat"/
+  "Aura position", footer "F6 to mog · F8 when it's over", and a running
+  status of "Mogging at … CPS". Inner control labels keep their normal
+  wording so the app stays usable. The OS title is switched at runtime via
+  `ViewportCommand::Title`, sent only when it changes.
+- **Settings window.** The footer's Dark-mode checkbox became a
+  **Settings…** button opening a small egui window with the six-entry
+  theme picker and a 75–200 % window-scale picker; both persist under
+  `[ui]` (`theme=`, `ui_scale=`). Out-of-range scales clamp to 75–200 and
+  malformed values keep 100 (tested).
+- **Scaling.** Each frame the desired zoom (`ui_scale/100`) is compared to
+  `Context::zoom_factor()`; on mismatch `set_zoom_factor()` is called, and
+  one frame later — once egui reports the factor as applied — a single
+  `ViewportCommand::InnerSize(560x448 logical)` re-asserts the fixed size
+  so the physical window really scales and nothing is cut off.
+- **Headless proof (real egui 0.27.2).** Four probes: (1) layout — content
+  bounds measured at 548.50 x 439.25 in **all six themes** at width 560,
+  so 560x448 still fits with ~9 px margin and no Mog label widens any
+  row; (2) style — at 560x448, dark-family themes (Dark, OLED, Terminal,
+  Mog) paint only dark-family opaque fills, light-family themes (Classic,
+  Vaporwave) only light fills (each theme's exact accent color
+  whitelisted), with zero clipped text; (3) secondary surfaces — real
+  injected pointer clicks open the Hotkey dialog, Settings window and
+  Advanced window in Classic, Dark and Mog, their marker texts appear, and
+  the fill invariants hold with all surfaces open; (4) scale/title —
+  `ui_scale=150` yields zoom 1.5 followed by exactly one
+  `InnerSize(560,448)` command and then silence, the Mog theme emits
+  `Title("MogClicker")` on the first frame, and a default configuration
+  sends no resize commands and keeps zoom 1.0.
+
+Verification for this round on rustc 1.88.0 against the offline real-egui
+harness: `rustfmt --check` clean, `cargo clippy -- -D warnings` clean,
+**49/49 tests pass** (config 13, humanize 9, telemetry 8, settings 8,
+hotkey 7, icon 4), and all six test files also compile standalone with
+zero warnings. On-screen scaling behavior (actual pixel growth of the OS
+window) and visual appearance remain Windows-only manual acceptance items
+and are not claimed from the Linux harness.
+
 ## Dashboard redesign (both engines) — SUPERSEDED
 
 > **Historical record only.** The dark four-tab design described below was
@@ -503,12 +559,13 @@ cargo test --release
 cargo run --release
 ```
 
-Then follow the eleven-step manual checklist in `autoclicker/README.md`:
+Then follow the thirteen-step manual checklist in `autoclicker/README.md`:
 dashboard rendering, interval and random-offset behavior, right/middle and
 double/triple bursts, picked fixed coordinates, repeat-count auto-stop,
 hotkey remap and F8 reservation, settings persistence across restarts,
 unfocused and minimized background targets, F8 panic stop (button must never
-stick), and clean shutdown with no leaked handles.
+stick), the six-theme switch (including the MogClicker retitle), the
+window-scale resize, and clean shutdown with no leaked handles.
 
 The repository's GitHub Actions workflow performs an additional, genuinely
 Windows-native gate on every push and pull request: `cargo fmt --check`,

@@ -11,7 +11,7 @@
 //! serialization logic unit testable on every host.
 
 use crate::config::{ClickType, CoordinateMode, EngineConfig, InputMode, MouseButton};
-use crate::hotkey::AppPrefs;
+use crate::hotkey::{sanitize_ui_scale as hotkey_scale_sanitize, AppPrefs, AppTheme};
 
 const SETTINGS_VERSION: &str = "1";
 
@@ -138,7 +138,8 @@ pub fn serialize_settings(config: &EngineConfig, prefs: &AppPrefs) -> String {
         format!("random_offset_enabled={}", prefs.random_offset_enabled),
         String::new(),
         "[ui]".to_string(),
-        format!("dark_mode={}", prefs.dark_mode),
+        format!("theme={}", prefs.theme.key()),
+        format!("ui_scale={}", prefs.ui_scale_percent),
     ];
     lines.join("\n") + "\n"
 }
@@ -149,6 +150,9 @@ pub fn serialize_settings(config: &EngineConfig, prefs: &AppPrefs) -> String {
 pub fn parse_settings(text: &str) -> (EngineConfig, AppPrefs) {
     let mut config = EngineConfig::default();
     let mut prefs = AppPrefs::default();
+    // A modern `theme=` key always outranks the legacy `dark_mode=` boolean,
+    // whatever order a hand-edited file lists them in.
+    let mut theme_key_seen = false;
 
     for raw_line in text.lines() {
         let line = raw_line.trim();
@@ -289,9 +293,29 @@ pub fn parse_settings(text: &str) -> (EngineConfig, AppPrefs) {
                     prefs.random_offset_enabled = parsed;
                 }
             }
+            "theme" => {
+                if let Some(parsed) = AppTheme::from_key(value) {
+                    prefs.theme = parsed;
+                    theme_key_seen = true;
+                }
+            }
+            // Files written by the dark-mode-only build predate the theme
+            // key; honor their boolean so an upgrade keeps the user's look.
             "dark_mode" => {
-                if let Some(parsed) = parse_bool(value) {
-                    prefs.dark_mode = parsed;
+                if !theme_key_seen {
+                    if let Some(parsed) = parse_bool(value) {
+                        prefs.theme = if parsed {
+                            AppTheme::Dark
+                        } else {
+                            AppTheme::Classic
+                        };
+                    }
+                }
+            }
+            "ui_scale" => {
+                if let Some(parsed) = parse_u64(value) {
+                    prefs.ui_scale_percent =
+                        hotkey_scale_sanitize(u32::try_from(parsed).unwrap_or(u32::MAX));
                 }
             }
             _ => {}
