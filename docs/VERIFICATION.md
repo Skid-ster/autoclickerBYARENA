@@ -103,6 +103,49 @@ tree-sitter Rust grammar.
 4. ImGui 1.90.4 has no `InputLong`; the C++ dashboard now uses
    `InputScalar` with `ImGuiDataType_S32` (default step arguments), matching
    the 32-bit Win64 `long` type.
+5. Real `cargo build` on Windows 11 with rustc 1.99.0 failed with E0432:
+   `CreateEventW` in windows-sys 0.52 is gated behind both
+   `Win32_Foundation` and `Win32_Security` (it takes a
+   `SECURITY_ATTRIBUTES` pointer). `Win32_Security` was added to the
+   `windows-sys` feature list; every other imported symbol was re-checked
+   against the windows-rs 0.52.0 source and stays Foundation-gated.
+6. rustc 1.99 reports the future-incompatible `float_literal_f32_fallback`
+   lint wherever an unsuffixed float literal is inferred as `f32`. Every
+   `f32`-context literal in `app.rs` now carries an explicit `_f32` suffix
+   (stroke widths, corner radii, `Vec2` geometry, spacing, graph/histogram
+   arithmetic). All remaining unsuffixed literals were individually traced
+   to `f64` fields/expressions, which the lint does not target.
+7. The CPS graph mixed `f64` telemetry history with `f32` `Rect` geometry in
+   one expression (E0308/E0277 on 1.99). The normalized value is now computed
+   fully in `f64` and cast once at the `f32` boundary, with all geometric
+   literals explicitly `f32`.
+
+## Offline real-egui type-check harness
+
+crates.io is unreachable from the sandbox, so a temporary harness (kept
+outside the repository) was assembled that compiles the **unmodified**
+engine-b source files via `#[path]` includes against:
+
+- the **real** egui/epaint/emath/ecolor 0.27.2 sources (GitHub tarball),
+- the **real** parking_lot 0.12.1, ab_glyph 0.2.32, owned_ttf_parser 0.25.1,
+  ttf-parser 0.25.1, smallvec, cfg-if, scopeguard and libc,
+- thin local shims for `ahash` and `nohash_hasher` (only the
+  `HashMap`/`HashSet`/`RandomState::with_seeds`/`hash_one` and
+  `IntMap`/`IntSet`/`IsEnabled` surface these crates use),
+- signature-only stubs of `eframe` (native entry point) and `windows-sys`
+  0.52, with every FFI signature transcribed from the engine's own call
+  sites and cross-checked against the windows-rs 0.52.0 source on GitHub.
+
+Result on rustc 1.88.0: `cargo check` finishes with **zero diagnostics in
+the engine-b sources** (warnings exist only inside vendored upstream
+crates), and the real 23 integration tests pass (`9 + 6 + 8`). A deliberate
+type error injected into `app.rs` was correctly rejected, proving the
+harness really type-checks the production files. The sandbox rustc (1.88)
+predates the `float_literal_f32_fallback` lint, so defect 6 cannot be
+reproduced locally; explicit suffixing removes every `f32` fallback by
+construction instead. The C++ portable translation units were rebuilt
+directly with `g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror`: all three
+test binaries pass.
 
 ## Static policy audits (grep-verified on both engines)
 
