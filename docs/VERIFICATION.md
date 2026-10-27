@@ -256,8 +256,9 @@ with an authentic recreation of the classic OP Auto Clicker 3.0/4.x native
 dialog, driven by published screenshots of the real 4.0/4.1 builds rather
 than third-party lookalike clones:
 
-- Fixed 560x524 viewport with `ViewportBuilder::with_resizable(false)`; the
-  main window has no `ScrollArea` and every control is visible inside it.
+- Fixed viewport (560x524 in this round, tightened to 560x442 by the polish
+  round below) with `ViewportBuilder::with_resizable(false)`; the main
+  window has no `ScrollArea` and every control is visible inside it.
 - Classic light palette (`#F0F0F0` face), white sunken numeric fields, gray
   3D push buttons and a custom `group_box` widget that draws a bordered frame
   with the title breaking the top border like the native `BS_GROUPBOX`.
@@ -285,6 +286,61 @@ rustc 1.88.0 against the real egui 0.27.2 harness: `cargo check` and
 to cover the new checkbox field, including backward-compatible loading).
 Final pixel-level visual acceptance is a Windows-only manual step and is
 not claimed from the Linux harness.
+
+## Classic-look polish round (screenshot-driven, presentation-only)
+
+A Windows 11 screenshot of the redesign above showed four presentation
+defects. Each was root-caused in the vendored real egui 0.27.2 sources and
+fixed without touching any engine, scheduling, dispatch, telemetry or
+persistence code path:
+
+1. **Charcoal numeric fields and combo boxes.** egui's fill-less `Button`
+   (which `DragValue`'s button mode creates, `widgets/button.rs:265` /
+   `widgets/drag_value.rs`) and `ComboBox` (`containers/combo_box.rs:423`)
+   paint `visuals.weak_bg_fill`, whose inactive default is the dark-theme
+   `Color32::from_gray(60)` (`style.rs:1196`). `apply_style()` set only
+   `bg_fill`, so every DragValue and ComboBox rendered dark with
+   near-invisible text. Fix: `weak_bg_fill` (plus `bg_fill`, `bg_stroke`,
+   `fg_stroke`) is now set explicitly for all five widget states — white
+   when idle, the classic hover tint `(229,241,251)` when hovered, the
+   pressed tint `(204,228,247)` when active, white with the input border
+   when open (expanded combo), and a near-white `(250,250,250)` for the
+   disabled state so the gated Random-offset box reads as a disabled white
+   edit control. `extreme_bg_color` stays white for DragValue's
+   keyboard-edit `TextEdit` mode, and `selection.stroke` is dark so selected
+   dropdown rows stay readable on the light highlight.
+2. **Half-clipped group-box titles.** `group_box()` painted the title with
+   `ui.painter_at(rect)`, which clips to the frame rect — but the title sits
+   half above `rect.top()`, so its upper half (and the face-colored backdrop
+   that breaks the border) was cut off. The painter now uses a clip region
+   expanded upward (`rect.expand2(vec2(12, 16))`), the backdrop fully covers
+   the 1 px border line, and the `CentralPanel` top margin grew from 10 to
+   14 px so the first title has headroom.
+3. **Dead gray zone below the footer.** A headless layout probe driving the
+   real `app::update` through the real egui 0.27.2 layout engine (same
+   embedded fonts, logical points) measured the content bottom at y = 431 in
+   a 560-wide window; the viewport is now 560x442 (was 560x524), leaving
+   ~11 px under the footer hint. The same probe confirms that at 560x442 no
+   text shape is clipped by its clip rect and no opaque dark-family fill is
+   painted anywhere on the main screen.
+4. **Cosmetics.** Group frames use near-square 2 px rounding with the same
+   1 px border and 13 px proportional title; the two test-only `dead_code`
+   warnings (`MouseButton::all`, `ClickType::all`/`label`, used only by the
+   Windows-only `app.rs` that the path-included test builds omit) carry
+   targeted `#[allow(dead_code)]` annotations instead of any crate-wide
+   blanket.
+
+Known and accepted: the native OS title bar may stay black when Windows 11
+runs with dark app mode. egui/eframe 0.27 exposes no API to recolor the
+title bar of a native-decorated window, and a custom title bar would break
+the classic-dialog goal, so the stock chrome is kept and documented.
+
+Verification for this round on rustc 1.88.0 against the offline real-egui
+harness: `rustfmt --check` clean, `cargo check` clean,
+`cargo clippy -- -D warnings` clean and **44/44 tests pass**; the layout
+and style probes above ran headlessly against the real egui renderer
+output. Pixel-level visual acceptance remains a Windows-only manual step
+and is not claimed from the Linux harness.
 
 ## Dashboard redesign (both engines) — SUPERSEDED
 

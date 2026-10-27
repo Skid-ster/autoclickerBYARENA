@@ -64,11 +64,20 @@ and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window is a pixel-faithful, fixed-size (560x524, non-resizable,
+The main window is a pixel-faithful, fixed-size (560x442, non-resizable,
 non-scrolling) recreation of the classic OP Auto Clicker 4.x dialog in the
-native Windows light theme: `#F0F0F0` face, white sunken numeric fields,
-gray 3D push buttons and bordered group boxes whose titles break the top
-border, exactly like the native `BS_GROUPBOX` control.
+native Windows light theme: `#F0F0F0` face, white sunken numeric fields and
+combo boxes (white in every state — idle, hovered, pressed, open and
+disabled — with dark, readable text and light dropdown lists), gray 3D push
+buttons and bordered group boxes whose titles sit on a face-colored gap that
+breaks the top border, exactly like the native `BS_GROUPBOX` control. The
+viewport height hugs the content with roughly 11 px below the footer hint.
+
+One honest platform note: the native OS title bar can render dark on
+Windows 11 when the system's app mode is set to dark. That chrome belongs to
+Windows, not to the app — egui/eframe 0.27 has no API to recolor the title
+bar of a native-decorated window — and a custom title bar would break the
+classic-dialog goal, so the stock one is kept as-is.
 
 - **Click interval** (full width) — four white numeric boxes for hours /
   mins / secs / milliseconds with labels to the right of each box, defaulting
