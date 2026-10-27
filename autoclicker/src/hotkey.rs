@@ -36,6 +36,9 @@ pub struct AppPrefs {
     /// State of the 4.1 "Random offset" checkbox; the offset magnitude itself
     /// lives in [`crate::config::EngineConfig::random_offset_ms`].
     pub random_offset_enabled: bool,
+    /// Dark color theme for every window. Off by default so a fresh install
+    /// shows the classic light dialog the 4.x look is modeled on.
+    pub dark_mode: bool,
 }
 
 impl Default for AppPrefs {
@@ -44,6 +47,7 @@ impl Default for AppPrefs {
             toggle_hotkey_vk: DEFAULT_TOGGLE_VK,
             hotkeys_enabled: true,
             random_offset_enabled: false,
+            dark_mode: false,
         }
     }
 }

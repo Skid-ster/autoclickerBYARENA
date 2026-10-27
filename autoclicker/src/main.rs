@@ -37,10 +37,11 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             // Fixed-size classic window: every control fits without
-            // scrolling. 560x442 hugs the content with ~11 px to spare below
-            // the footer hint (content bottom measured at y=431 by a
-            // headless layout pass through the real egui 0.27.2 engine).
-            .with_inner_size([560.0, 442.0])
+            // scrolling. 560x448 hugs the content with ~11 px to spare below
+            // the footer row (content bottom measured at y=437 in both
+            // themes by a headless layout pass through the real egui 0.27.2
+            // engine).
+            .with_inner_size([560.0, 448.0])
             .with_resizable(false)
             .with_icon(icon)
             .with_title("OP Auto Clicker"),

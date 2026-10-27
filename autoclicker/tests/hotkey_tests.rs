@@ -13,6 +13,10 @@ fn default_prefs_use_f6() {
     let prefs = AppPrefs::default();
     assert_eq!(prefs.toggle_hotkey_vk, VK_F6);
     assert!(prefs.hotkeys_enabled);
+    assert!(
+        !prefs.dark_mode,
+        "fresh installs start with the light theme"
+    );
 }
 
 #[test]
