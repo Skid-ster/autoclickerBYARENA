@@ -119,6 +119,28 @@ tree-sitter Rust grammar.
    one expression (E0308/E0277 on 1.99). The normalized value is now computed
    fully in `f64` and cast once at the `f32` boundary, with all geometric
    literals explicitly `f32`.
+8. First real MSVC (14.44, VS 2022 Build Tools) compile of engine A failed in
+   four translation units with C2589/C4003: the Windows SDK defines `min`/
+   `max` as preprocessor macros in `windef.h`, which corrupt
+   `std::min`/`std::max`/`std::numeric_limits<...>::min()` (non-Windows
+   compilers never see these macros, which is why the portable tests missed
+   it). The CMake build now defines `NOMINMAX` (plus `WIN32_LEAN_AND_MEAN`,
+   per Microsoft's "Using the Windows Headers" guidance) at directory scope,
+   covering every target including the fetched ImGui library. An MSVC-faithful
+   macro simulation in the sandbox reproduces the original errors without the
+   define and compiles warning-clean (`-Werror -Wpedantic`) with it; all
+   eight affected call patterns were enumerated and none rely on macro
+   semantics.
+9. Dear ImGui 1.90.x keeps the `ImGui_ImplWin32_WndProcHandler` declaration
+   inside an intentional `#if 0` block in `imgui_impl_win32.h` (verified in
+   the v1.90.4 tag sources) so the helper header does not force
+   `<windows.h>` on consumers; the upstream comment instructs applications
+   to forward-declare the function themselves. `main.cpp` now carries that
+   exact forward declaration, fixing C3861.
+10. MSVC C4324 (structure padded due to the deliberate cache-line `alignas`
+    annotations in the lock-free telemetry ring) is now silenced project-wide
+    via `/wd4324`; the padding is intentional false-sharing protection, not a
+    defect.
 
 ## Offline real-egui type-check harness
 
@@ -166,15 +188,29 @@ test binaries pass.
 ## Required Windows acceptance run
 
 On Windows 10 21H2+ or Windows 11 x64, with VS 2022 (C++20 + Windows SDK) and
-stable Rust:
+stable Rust. When the Visual Studio generator cannot enumerate the installed
+instances (observed on a machine with several partial VS installs where
+vswhere returned no VC toolset despite the Build Tools toolset being present),
+the Ninja generator driven from an initialized developer environment is the
+reliable route:
+
+```
+call "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+cmake -S engine-a-cpp -B engine-a-cpp/build-ninja -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build engine-a-cpp/build-ninja
+ctest --test-dir engine-a-cpp/build-ninja --output-on-failure
+
+cargo build --release --manifest-path engine-b-rust/Cargo.toml
+cargo test  --release --manifest-path engine-b-rust/Cargo.toml
+```
+
+The Visual Studio generator workflow remains equivalent on a cleanly
+registered installation:
 
 ```
 cmake -S engine-a-cpp -B engine-a-cpp/build -G "Visual Studio 17 2022" -A x64
 cmake --build engine-a-cpp/build --config Release --parallel
 ctest --test-dir engine-a-cpp/build --build-config Release --output-on-failure
-
-cargo build --release --manifest-path engine-b-rust/Cargo.toml
-cargo test  --release --manifest-path engine-b-rust/Cargo.toml
 ```
 
 Then follow the nine-step manual checklist in each workspace README:

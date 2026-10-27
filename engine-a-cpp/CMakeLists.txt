@@ -15,6 +15,23 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR "Engine A requires a 64-bit (x64) toolchain.")
 endif()
 
+# windows.h hygiene, following Microsoft's own "Using the Windows Headers"
+# guidance and the convention used by the DirectX/Chromium/LLVM codebases.
+# NOMINMAX prevents windows.h from defining min/max as preprocessor macros,
+# which otherwise corrupt std::min/std::max/std::numeric_limits and trigger
+# MSVC C2589/C4003. WIN32_LEAN_AND_MEAN excludes unused legacy header surface
+# (Shell, OLE, Winsock, cryptography...) for faster, collision-resistant builds.
+# Directory-scope definitions apply to every target including imgui_static.
+if(WIN32)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+if(MSVC)
+    # C4324 only reports trailing padding from the deliberate cache-line
+    # alignas() annotations in telemetry.h (prevents CPU false sharing).
+    add_compile_options(/wd4324)
+endif()
+
 include(FetchContent)
 FetchContent_Declare(
     imgui
