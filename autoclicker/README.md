@@ -1,9 +1,11 @@
 # OP Auto Clicker (Rust / eframe egui / windows-sys)
 
-Windows x64 auto-clicker written in stable Rust with an egui dashboard that
-follows the OP Auto Clicker 4.1 layout, backed by a dedicated QPC
-spin-scheduled worker thread, uniform/Gaussian timing jitter, global
-`SendInput` injection and background HWND message delivery.
+Windows x64 auto-clicker written in stable Rust with an egui interface that
+reproduces the authentic classic OP Auto Clicker 4.x Win32 dialog — a fixed,
+non-resizable light-gray window with native-style group boxes and push
+buttons, every control visible without scrolling. It is backed by a
+dedicated QPC spin-scheduled worker thread, uniform/Gaussian timing jitter,
+global `SendInput` injection and background HWND message delivery.
 
 ## Requirements
 
@@ -62,36 +64,46 @@ and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window mirrors the four OP Auto Clicker 4.1 cards in one compact
-dark screen:
+The main window is a pixel-faithful, fixed-size (560x524, non-resizable,
+non-scrolling) recreation of the classic OP Auto Clicker 4.x dialog in the
+native Windows light theme: `#F0F0F0` face, white sunken numeric fields,
+gray 3D push buttons and bordered group boxes whose titles break the top
+border, exactly like the native `BS_GROUPBOX` control.
 
-- **Click Interval** — Hours / Mins / Secs / Milliseconds numeric fields plus
-  the 4.1 **Random offset ± ms** uniform jitter. A live `ms · CPS` readout and
-  a Valid/Invalid indicator (clicker-rs style) make every edit checkable; an
-  invalid configuration disables Start.
-- **Click Options** — Mouse button (Left / Right / Middle) and Click type
-  (Single / Double / Triple). Double and triple emit two or three down/up
-  bursts separated by a short QPC-spun gap — never a sleep.
-- **Click Repeat** — Repeat until stopped, or Repeat N times (the worker
-  auto-stops at the count).
-- **Cursor Position** — Current location, or Pick location with X/Y fields
-  and a Pick button that captures the live cursor via `GetCursorPos`.
-- **Footer** — solid green **Start (F6)**, outlined **Stop (F6)**, red
-  **Panic (F8)**, plus Hotkey setting, Reset and Advanced buttons.
-- **Status line** — semantic colored state (Ready / Running / Stopping /
-  Panic / Warning / Error) under the header, with click counters.
+- **Click interval** (full width) — four white numeric boxes for hours /
+  mins / secs / milliseconds with labels to the right of each box, defaulting
+  to 100 ms, followed by the 4.1 **Random offset ± [40] milliseconds** row.
+  The offset is checkbox-gated: ticking it reveals/arms the magnitude (40 ms
+  the first time, matching the reference build); unticked, timing is exact.
+- **Click options** (left group box) — classic combo boxes for Mouse button
+  (Left / Right / Middle) and Click type (Single / Double / Triple). Double
+  and triple emit two or three down/up bursts separated by a short QPC-spun
+  gap — never a sleep.
+- **Click repeat** (right group box) — Repeat N times, or Repeat until
+  stopped (the default); the worker auto-stops at the count.
+- **Cursor position** (full width) — Current location (default) or Pick
+  location radio, a real gray **Pick location** button that captures the next
+  left-click anywhere on screen via `GetCursorPos` (Esc cancels, the button
+  doubles as "Cancel pick" while armed), plus white X/Y boxes.
+- **2x2 push-button grid** — **Start (F6)** and **Stop (F6)** (Stop is
+  greyed out until a session is running; Start is disabled while running or
+  while the interval is invalid), then **Hotkey setting** and **Advanced…**.
+- A single reserved one-line status strip under the group boxes shows
+  semantic colored state (Ready / Running / Stopping / Panic / Warning /
+  Error) without ever changing the window layout, and a footer reminder that
+  F6 starts/stops and F8 panic stop is always armed.
 
 The **Hotkey setting** dialog remaps the start/stop key (F1–F24, A–Z, 0–9,
-Space); F8 is permanently reserved for Panic Stop and cannot be reassigned.
-Assignment reacts only to a fresh key press made after clicking "Assign new
-key", so keys already held are never captured by accident, and the toggle
-hotkey is inert while the dialog is listening. Hotkeys use
-`GetAsyncKeyState`, so they work while the window is unfocused. A generated
-crosshair icon is set on the window (title bar, taskbar and Alt-Tab) without
-shipping any binary asset.
+Space); F8 is permanently reserved for Panic Stop and cannot be reassigned,
+which the dialog states explicitly. Assignment reacts only to a fresh key
+press made after clicking "Assign new key", so keys already held are never
+captured by accident, and the toggle hotkey is inert while the dialog is
+listening. Hotkeys use `GetAsyncKeyState`, so they work while the window is
+unfocused. A generated crosshair icon is set on the window (title bar,
+taskbar and Alt-Tab) without shipping any binary asset.
 
-The **Advanced** window keeps the power-user features without disturbing the
-4.1 layout:
+The **Advanced…** window keeps every power-user feature off the faithful
+main screen (it is the only scrollable surface in the application):
 
 - Global `SendInput` vs background window-message delivery, with a
   refreshable target-window picker, client coordinates and synchronous
@@ -99,6 +111,8 @@ The **Advanced** window keeps the power-user features without disturbing the
 - Gaussian humanization with all nine expert fields and live validation.
 - Live telemetry: metrics grid, real-time CPS sparkline, interval histogram
   and the recent-activity log.
+- **Reset all settings to factory defaults** lives at the bottom of this
+  window so the main dialog keeps its exact classic control set.
 
 Settings persist automatically to
 `%APPDATA%\op-auto-clicker\settings.conf` (a hand-editable, tolerant
@@ -110,7 +124,7 @@ previous session is never reused.
 | File | Responsibility |
 | --- | --- |
 | `src/main.rs` | `eframe::run_native` entry point, viewport setup, platform gating |
-| `src/app.rs` | 4.1-style egui dashboard, dialogs, hotkey polling, settings persistence, telemetry painting |
+| `src/app.rs` | Classic Win32-style egui dialog (fixed-size, non-scrolling), Advanced and hotkey windows, hotkey polling, location pick, settings persistence, telemetry painting |
 | `src/engine.rs` | Dedicated worker thread, atomic config snapshot, time-critical priority, RAII timer resolution, QPC spin loop, single/double/triple bursts, panic checks |
 | `src/timing.rs` | QPC wrappers, `timeBeginPeriod(1)` RAII guard, `spin_loop` spin wait (no sleep) |
 | `src/win32.rs` | Narrow FFI wrappers for `SendInput`, `PostMessageW`, `SendMessageTimeoutW`, `GetCursorPos`, `GetAsyncKeyState`, `EnumWindows`, events and QPC; each unsafe block has a SAFETY comment |
@@ -157,17 +171,21 @@ previous session is never reused.
 
 ## Manual acceptance checklist
 
-1. Run `cargo run --release`; the compact 4.1-style window appears and stays
-   responsive while idle.
+1. Run `cargo run --release`; the fixed-size light-gray classic window
+   appears with every control visible (no scrollbars, cannot be resized) and
+   stays responsive while idle; Stop is greyed out until a session runs.
 2. Leave the defaults (100 ms, Left, Single, Repeat until stopped, Current
    location), press Start or F6: clicks register in a text editor at ~10 CPS;
-   the counters and status line update.
-3. Set Random offset to 40 ms: observed intervals vary uniformly between
-   60 ms and 140 ms (visible in the Advanced histogram).
+   the status line updates and Stop becomes enabled.
+3. Tick Random offset (the magnitude box shows 40 ms): observed intervals
+   vary uniformly between 60 ms and 140 ms (visible in the Advanced
+   histogram); unticking it restores exact timing.
 4. Choose Right button and Double click: each repetition sends two right
    down/up bursts; Triple sends three.
-5. Pick location: press Pick while hovering a target point; X/Y populate and
-   clicks land there even after you move the mouse away.
+5. Pick location: press Pick location (the button becomes "Cancel pick"),
+   then left-click the target point anywhere on screen; X/Y populate and
+   clicks land there even after you move the mouse away. Esc while armed
+   cancels the pick without changing the stored point.
 6. Set Repeat to 25 times: the session auto-stops at 25 and the status line
    reports completion.
 7. Open Hotkey setting, assign F7, close the dialog: F7 now starts and stops

@@ -28,11 +28,14 @@ const VK_A: i32 = 0x41;
 const VK_Z: i32 = 0x5A;
 const VK_SPACE: i32 = 0x20;
 
-/// Application-level hotkey preferences persisted between sessions.
+/// Application-level hotkey and UI preferences persisted between sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppPrefs {
     pub toggle_hotkey_vk: i32,
     pub hotkeys_enabled: bool,
+    /// State of the 4.1 "Random offset" checkbox; the offset magnitude itself
+    /// lives in [`crate::config::EngineConfig::random_offset_ms`].
+    pub random_offset_enabled: bool,
 }
 
 impl Default for AppPrefs {
@@ -40,6 +43,7 @@ impl Default for AppPrefs {
         Self {
             toggle_hotkey_vk: DEFAULT_TOGGLE_VK,
             hotkeys_enabled: true,
+            random_offset_enabled: false,
         }
     }
 }

@@ -249,7 +249,49 @@ tree-sitter Rust grammar.
     `Color32::from_rgb`. Caught by the offline real-egui harness, which the
     sandbox rustc 1.88 can reproduce.
 
-## Dashboard redesign (both engines)
+## Classic Win32 visual redesign (authentic OP Auto Clicker 4.x)
+
+The earlier dark "modern dashboard" look was replaced after user feedback
+with an authentic recreation of the classic OP Auto Clicker 3.0/4.x native
+dialog, driven by published screenshots of the real 4.0/4.1 builds rather
+than third-party lookalike clones:
+
+- Fixed 560x524 viewport with `ViewportBuilder::with_resizable(false)`; the
+  main window has no `ScrollArea` and every control is visible inside it.
+- Classic light palette (`#F0F0F0` face), white sunken numeric fields, gray
+  3D push buttons and a custom `group_box` widget that draws a bordered frame
+  with the title breaking the top border like the native `BS_GROUPBOX`.
+- Full-width **Click interval** group with four h/m/s/ms boxes (default
+  100 ms) and the 4.1 **Random offset ± [40] milliseconds** row, now gated
+  by a persisted `random_offset_enabled` preference (new `AppPrefs` field,
+  serialized under `[hotkey] random_offset_enabled=`; older files with a
+  non-zero saved offset load with the checkbox ticked).
+- Side-by-side **Click options** / **Click repeat** groups and a full-width
+  **Cursor position** group with Current location / Pick location radios, a
+  real Pick button that arms capture of the next left-click anywhere on
+  screen through `GetCursorPos` (Esc cancels), and X/Y boxes.
+- 2x2 button grid: Start (F6) / Stop (F6, disabled until running) over
+  Hotkey setting / Advanced…. Background delivery, Gaussian humanization,
+  live graphs and reset-to-defaults moved into the Advanced window so the
+  main screen stays faithful; F8 panic stop remains always armed and is
+  documented inside the Hotkey dialog.
+
+The change is presentation-only plus the one additive preference field: the
+worker, QPC scheduler, SendInput/PostMessage dispatch, SPSC telemetry, F8
+panic logic and configuration validation are untouched. Verification on
+rustc 1.88.0 against the real egui 0.27.2 harness: `cargo check` and
+`cargo clippy -- -D warnings` clean for the production sources,
+`rustfmt --check` clean, and **44/44 tests pass** (settings tests extended
+to cover the new checkbox field, including backward-compatible loading).
+Final pixel-level visual acceptance is a Windows-only manual step and is
+not claimed from the Linux harness.
+
+## Dashboard redesign (both engines) — SUPERSEDED
+
+> **Historical record only.** The dark four-tab design described below was
+> later replaced by the authentic classic Win32 redesign documented directly
+> above; the C++/ImGui "Engine A" it references has been removed and the
+> Rust/egui app is the single shipped engine.
 
 The original single-page cyberpunk dashboard showed every expert field at
 once with five competing neon colors. Both engines now share one modern dark

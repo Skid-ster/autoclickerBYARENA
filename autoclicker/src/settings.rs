@@ -135,6 +135,7 @@ pub fn serialize_settings(config: &EngineConfig, prefs: &AppPrefs) -> String {
         "[hotkey]".to_string(),
         format!("toggle_hotkey_vk={}", prefs.toggle_hotkey_vk),
         format!("hotkeys_enabled={}", prefs.hotkeys_enabled),
+        format!("random_offset_enabled={}", prefs.random_offset_enabled),
     ];
     lines.join("\n") + "\n"
 }
@@ -278,6 +279,11 @@ pub fn parse_settings(text: &str) -> (EngineConfig, AppPrefs) {
             "hotkeys_enabled" => {
                 if let Some(parsed) = parse_bool(value) {
                     prefs.hotkeys_enabled = parsed;
+                }
+            }
+            "random_offset_enabled" => {
+                if let Some(parsed) = parse_bool(value) {
+                    prefs.random_offset_enabled = parsed;
                 }
             }
             _ => {}
