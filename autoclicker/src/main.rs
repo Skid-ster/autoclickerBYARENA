@@ -36,8 +36,9 @@ fn main() -> eframe::Result<()> {
     });
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([470.0, 700.0])
-            .with_min_inner_size([420.0, 600.0])
+            // Fixed-size classic window: every control fits without scrolling.
+            .with_inner_size([560.0, 524.0])
+            .with_resizable(false)
             .with_icon(icon)
             .with_title("OP Auto Clicker"),
         ..Default::default()

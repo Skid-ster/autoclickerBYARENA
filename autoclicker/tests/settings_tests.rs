@@ -40,6 +40,7 @@ fn full_round_trip_preserves_every_field() {
     let prefs = AppPrefs {
         toggle_hotkey_vk: VK_F7,
         hotkeys_enabled: false,
+        random_offset_enabled: true,
     };
 
     let document = serialize_settings(&config, &prefs);
@@ -101,6 +102,7 @@ background_synchronous=on
 humanize_enabled=off
 hotkeys_enabled=no
 toggle_hotkey_vk=116
+random_offset_enabled=yes
 ";
     let (config, prefs) = parse_settings(document);
     assert_eq!(config.click_type, ClickType::Double);
@@ -111,6 +113,7 @@ toggle_hotkey_vk=116
     assert!(!config.humanize_enabled);
     assert!(!prefs.hotkeys_enabled);
     assert_eq!(prefs.toggle_hotkey_vk, 116); // VK_F5
+    assert!(prefs.random_offset_enabled);
 }
 
 #[test]

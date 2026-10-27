@@ -1,25 +1,25 @@
-//! OP Auto Clicker 4.1-style dashboard.
+//! OP Auto Clicker 4.1-style dashboard (classic Win32 look).
 //!
-//! The main window mirrors the four-card 4.1 layout (Click Interval, Click
-//! Options, Click Repeat, Cursor Position) with a bottom Start/Stop/Hotkey
-//! row. Delivery internals, Gaussian humanization and the live telemetry
-//! surface live behind an Advanced window so the primary screen stays as
-//! small and familiar as the reference application.
+//! The main window is a fixed-size, non-scrolling replica of the classic
+//! OP Auto Clicker 4.x screen: four bordered group boxes (Click interval,
+//! Click options, Click repeat, Cursor position) above a 2x2 grid of
+//! standard push buttons. Power-user features (background window delivery,
+//! Gaussian humanization and live telemetry) live in a separate Advanced
+//! window so the main screen stays pixel-faithful to the reference.
 //!
 //! All worker interaction goes through atomics and the lock-free telemetry
-//! store. The update thread never blocks on the worker and only requests
-//! continuous repaints while a click session is actually running.
+//! store. The update thread never blocks on the worker.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use egui::{Align2, Color32, FontId, Frame, Grid, Margin, Rounding, Sense, Stroke, Vec2};
+use egui::{Align2, Color32, FontId, Frame, Grid, Layout, Margin, Rounding, Sense, Stroke, Vec2};
 
 use crate::config::{
     interval_parts_to_ms, ms_to_interval_parts, ClickType, CoordinateMode, EngineConfig, InputMode,
     MouseButton,
 };
-use crate::engine::{ClickEngine, STATE_PANIC, STATE_RUNNING, STATE_STOPPING};
+use crate::engine::{ClickEngine, STATE_PANIC};
 use crate::hotkey::{
     self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, VK_ESCAPE,
 };
@@ -30,21 +30,23 @@ use crate::telemetry::{
 };
 use crate::win32::{self, WindowInfo};
 
-// Modern dark palette. Opaque colors use the const `from_rgb`; translucent
-// ones use the const-capable premultiplied constructor.
-const COLOR_BG: Color32 = Color32::from_rgb(14, 17, 22);
-const COLOR_CARD: Color32 = Color32::from_rgb(22, 27, 34);
-const COLOR_INPUT: Color32 = Color32::from_rgb(28, 35, 48);
-const COLOR_BORDER: Color32 = Color32::from_rgb(43, 53, 70);
-const COLOR_ACCENT: Color32 = Color32::from_rgb(76, 141, 255);
-const COLOR_SUCCESS: Color32 = Color32::from_rgb(63, 185, 80);
-const COLOR_DANGER: Color32 = Color32::from_rgb(248, 81, 73);
-const COLOR_WARNING: Color32 = Color32::from_rgb(210, 153, 34);
-const COLOR_TEXT: Color32 = Color32::from_rgb(230, 237, 243);
-const COLOR_TEXT_DIM: Color32 = Color32::from_rgb(139, 148, 158);
-const COLOR_CHART_GRID: Color32 = Color32::from_rgba_premultiplied(48, 58, 76, 90);
-const COLOR_CHART_BAR_ALT: Color32 = Color32::from_rgba_premultiplied(76, 141, 255, 110);
-const COLOR_PILL_IDLE: Color32 = Color32::from_rgba_premultiplied(139, 148, 158, 40);
+// Classic Windows light palette, matched to the native 4.x screenshots.
+const COLOR_FACE: Color32 = Color32::from_rgb(240, 240, 240);
+const COLOR_BUTTON: Color32 = Color32::from_rgb(236, 236, 236);
+const COLOR_BUTTON_DISABLED: Color32 = Color32::from_rgb(245, 245, 245);
+const COLOR_BUTTON_BORDER: Color32 = Color32::from_rgb(173, 173, 173);
+const COLOR_GROUP_BORDER: Color32 = Color32::from_rgb(166, 166, 166);
+const COLOR_INPUT_BORDER: Color32 = Color32::from_rgb(122, 122, 122);
+const COLOR_TEXT: Color32 = Color32::from_rgb(28, 28, 28);
+const COLOR_TEXT_DIM: Color32 = Color32::from_rgb(102, 102, 102);
+const COLOR_TEXT_DISABLED: Color32 = Color32::from_rgb(166, 166, 166);
+const COLOR_ACCENT: Color32 = Color32::from_rgb(0, 103, 192);
+const COLOR_SUCCESS: Color32 = Color32::from_rgb(16, 124, 16);
+const COLOR_DANGER: Color32 = Color32::from_rgb(196, 43, 28);
+const COLOR_WARNING: Color32 = Color32::from_rgb(154, 107, 0);
+const COLOR_CHART_BG: Color32 = Color32::WHITE;
+const COLOR_CHART_GRID: Color32 = Color32::from_rgb(226, 229, 233);
+const COLOR_CHART_BAR_ALT: Color32 = Color32::from_rgba_premultiplied(0, 103, 192, 110);
 
 const LOG_LIMIT: usize = 200;
 const SAVE_THROTTLE_MS: u64 = 1_000;
@@ -62,8 +64,8 @@ enum StatusKind {
 impl StatusKind {
     fn color(self) -> Color32 {
         match self {
-            StatusKind::Ready => COLOR_SUCCESS,
-            StatusKind::Running => COLOR_ACCENT,
+            StatusKind::Ready => COLOR_TEXT_DIM,
+            StatusKind::Running => COLOR_SUCCESS,
             StatusKind::Stopping => COLOR_WARNING,
             StatusKind::Panic => COLOR_DANGER,
             StatusKind::Warning => COLOR_WARNING,
@@ -85,6 +87,10 @@ pub struct OpAutoClickerApp {
     offset_ms: f64,
     repeat_limited: bool,
 
+    // Screen-point capture for "Pick location".
+    picking_location: bool,
+    pick_was_down: bool,
+
     // Background targeting (Advanced window).
     windows: Vec<WindowInfo>,
     selected_window: Option<usize>,
@@ -103,8 +109,6 @@ pub struct OpAutoClickerApp {
     // Hotkey edge detection.
     toggle_was_down: bool,
     f8_was_down: bool,
-    // True when any capturable key was held on the previous capture frame,
-    // so assignment only happens on a fresh press.
     capture_key_was_down: bool,
 
     // Dialog state.
@@ -147,6 +151,8 @@ impl OpAutoClickerApp {
             millis,
             offset_ms: 0.0,
             repeat_limited: false,
+            picking_location: false,
+            pick_was_down: false,
             windows: Vec::new(),
             selected_window: None,
             logs: vec![
@@ -174,7 +180,7 @@ impl OpAutoClickerApp {
             last_saved_prefs: AppPrefs::default(),
             was_running: false,
             status_kind: StatusKind::Ready,
-            status_text: "Ready — set the interval and press Start (F6).".to_string(),
+            status_text: String::new(),
         };
         app.load_persisted();
         app.last_saved_config = app.config.clone();
@@ -205,7 +211,7 @@ impl OpAutoClickerApp {
         let Ok(text) = std::fs::read_to_string(&path) else {
             return;
         };
-        let (mut config, prefs) = settings::parse_settings(&text);
+        let (mut config, mut prefs) = settings::parse_settings(&text);
         // A window handle from a previous process can never be reused: the OS
         // may have recycled it for an unrelated window.
         config.target_hwnd = 0;
@@ -217,10 +223,13 @@ impl OpAutoClickerApp {
             );
             return;
         }
+        // Backward compatibility: files written before the checkbox existed
+        // encode the intent through a non-zero offset magnitude.
+        if config.random_offset_ms > 0.0 {
+            prefs.random_offset_enabled = true;
+        }
         self.config = config;
         self.prefs = prefs;
-        // A hand-edited file could name an unsupported or reserved toggle
-        // key; fall back to the documented default instead of polling it.
         if !hotkey::is_supported_toggle_vk(self.prefs.toggle_hotkey_vk) {
             self.log("Saved hotkey code was unsupported or reserved; restored F6.");
             self.prefs.toggle_hotkey_vk = hotkey::DEFAULT_TOGGLE_VK;
@@ -283,27 +292,31 @@ impl OpAutoClickerApp {
 
     fn apply_style(&self, ctx: &egui::Context) {
         let mut style = (*ctx.style()).clone();
-        style.visuals.dark_mode = true;
-        style.visuals.panel_fill = COLOR_BG;
-        style.visuals.window_fill = COLOR_CARD;
-        style.visuals.extreme_bg_color = COLOR_INPUT;
-        style.visuals.window_stroke = Stroke::new(1.0_f32, COLOR_BORDER);
-        style.visuals.widgets.noninteractive.bg_fill = COLOR_CARD;
+        style.visuals.dark_mode = false;
+        style.visuals.panel_fill = COLOR_FACE;
+        style.visuals.window_fill = COLOR_FACE;
+        style.visuals.extreme_bg_color = Color32::WHITE;
+        style.visuals.window_stroke = Stroke::new(1.0_f32, COLOR_GROUP_BORDER);
+        style.visuals.widgets.noninteractive.bg_fill = COLOR_FACE;
         style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.widgets.inactive.bg_fill = COLOR_INPUT;
+        style.visuals.widgets.inactive.bg_fill = Color32::WHITE;
         style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(38, 47, 64);
+        style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, COLOR_INPUT_BORDER);
+        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(229, 241, 251);
         style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
-        style.visuals.widgets.active.bg_fill = Color32::from_rgb(46, 57, 78);
+        style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+        style.visuals.widgets.active.bg_fill = Color32::from_rgb(204, 228, 247);
         style.visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
-        style.visuals.selection.bg_fill = Color32::from_rgba_premultiplied(76, 141, 255, 70);
+        style.visuals.selection.bg_fill = Color32::from_rgba_premultiplied(0, 103, 192, 60);
         style.visuals.hyperlink_color = COLOR_ACCENT;
-        style.visuals.widgets.noninteractive.rounding = Rounding::same(10.0_f32);
-        style.visuals.widgets.inactive.rounding = Rounding::same(8.0_f32);
-        style.visuals.widgets.hovered.rounding = Rounding::same(8.0_f32);
-        style.visuals.widgets.active.rounding = Rounding::same(8.0_f32);
-        style.spacing.item_spacing = Vec2::new(8.0_f32, 8.0_f32);
-        style.spacing.button_padding = Vec2::new(10.0_f32, 6.0_f32);
+        let rounding = Rounding::same(2.5_f32);
+        style.visuals.widgets.noninteractive.rounding = rounding;
+        style.visuals.widgets.inactive.rounding = rounding;
+        style.visuals.widgets.hovered.rounding = rounding;
+        style.visuals.widgets.active.rounding = rounding;
+        style.visuals.widgets.open.rounding = rounding;
+        style.spacing.item_spacing = Vec2::new(7.0_f32, 6.0_f32);
+        style.spacing.button_padding = Vec2::new(10.0_f32, 5.0_f32);
         ctx.set_style(style);
     }
 
@@ -377,6 +390,46 @@ impl OpAutoClickerApp {
             self.mark_dirty();
             self.flush_settings();
         }
+    }
+
+    // ------------------------------------------------------ location picking
+
+    fn arm_location_pick(&mut self) {
+        self.config.coordinate_mode = CoordinateMode::FixedScreen;
+        self.picking_location = true;
+        // The click that pressed the button must not capture itself.
+        self.pick_was_down = true;
+        self.set_status(
+            StatusKind::Warning,
+            "Click anywhere on screen to pick the point — Esc cancels.",
+        );
+    }
+
+    fn poll_pick_capture(&mut self) {
+        if win32::is_vk_down(VK_ESCAPE) {
+            if self.picking_location {
+                self.picking_location = false;
+                self.set_status(StatusKind::Ready, "Location pick cancelled.");
+            }
+            self.pick_was_down = true;
+            return;
+        }
+        let mouse_down = win32::is_vk_down(win32::VK_LBUTTON);
+        if self.picking_location && mouse_down && !self.pick_was_down {
+            if let Some((x, y)) = win32::get_cursor_pos() {
+                self.config.fixed_x = x as i64;
+                self.config.fixed_y = y as i64;
+                self.picking_location = false;
+                self.set_status(
+                    StatusKind::Ready,
+                    format!("Picked screen position ({x}, {y})."),
+                );
+                self.log(format!("Fixed position picked: ({x}, {y})."));
+                self.mark_dirty();
+                self.flush_settings();
+            }
+        }
+        self.pick_was_down = mouse_down;
     }
 
     // ------------------------------------------------------------- engine I/O
@@ -501,6 +554,7 @@ impl OpAutoClickerApp {
         self.repeat_limited = false;
         self.offset_ms = 0.0;
         self.selected_window = None;
+        self.picking_location = false;
         self.sync_interval_editors();
         self.set_status(StatusKind::Ready, "Factory defaults restored.");
         self.log("Configuration reset to factory defaults.");
@@ -524,7 +578,16 @@ impl OpAutoClickerApp {
         if total > 0 {
             self.config.base_interval_ms = total as f64;
         }
-        self.config.random_offset_ms = self.offset_ms;
+        // The 4.1 checkbox gates the offset; zero means exact timing.
+        self.config.random_offset_ms = if self.prefs.random_offset_enabled {
+            self.offset_ms
+        } else {
+            0.0
+        };
+    }
+
+    fn interval_total_ms(&self) -> u64 {
+        interval_parts_to_ms(self.hours, self.minutes, self.seconds, self.millis)
     }
 
     /// Compares the live configuration against the last flushed fingerprint.
@@ -534,10 +597,6 @@ impl OpAutoClickerApp {
         }
     }
 
-    fn interval_total_ms(&self) -> u64 {
-        interval_parts_to_ms(self.hours, self.minutes, self.seconds, self.millis)
-    }
-
     fn validation_message(&self) -> Option<String> {
         if self.interval_total_ms() == 0 {
             return Some("Interval must be at least 1 millisecond.".to_string());
@@ -545,343 +604,233 @@ impl OpAutoClickerApp {
         self.config.validate().err()
     }
 
-    // ------------------------------------------------------------ small parts
+    // --------------------------------------------------------- classic widgets
 
-    fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-        Frame::group(ui.style())
-            .fill(COLOR_CARD)
-            .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
-            .rounding(Rounding::same(10.0_f32))
-            .inner_margin(Margin::same(12.0_f32))
-            .show(ui, add)
-            .inner
-    }
-
-    fn section_title(ui: &mut egui::Ui, title: &str) {
-        ui.label(
-            egui::RichText::new(title)
-                .color(COLOR_TEXT_DIM)
-                .strong()
-                .size(12.5_f32),
-        );
-        ui.add_space(4.0_f32);
-    }
-
-    fn status_pill(ui: &mut egui::Ui, text: &str, color: Color32, soft: Color32) {
-        let font = FontId::proportional(12.5_f32);
-        let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
-        let size = galley.size() + Vec2::new(22.0_f32, 8.0_f32);
-        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    /// Win32 group box: a bordered frame whose title text breaks the top
+    /// border, exactly like the native BS_GROUPBOX control.
+    fn group_box<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+        let response = Frame::none()
+            .fill(COLOR_FACE)
+            .stroke(Stroke::new(1.0_f32, COLOR_GROUP_BORDER))
+            .rounding(Rounding::same(3.0_f32))
+            .inner_margin(Margin {
+                left: 11.0_f32,
+                right: 11.0_f32,
+                top: 17.0_f32,
+                bottom: 11.0_f32,
+            })
+            .show(ui, add);
+        let rect = response.response.rect;
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 9.0_f32, soft);
-        painter.rect_stroke(rect, 9.0_f32, Stroke::new(1.0_f32, color));
-        painter.text(
-            rect.min + Vec2::new(11.0_f32, 4.0_f32),
-            Align2::LEFT_TOP,
-            text,
-            FontId::proportional(12.5_f32),
-            color,
+        let font = FontId::proportional(13.0_f32);
+        let galley = painter.layout_no_wrap(title.to_string(), font.clone(), COLOR_TEXT);
+        let text_pos = rect.left_top() + Vec2::new(9.0_f32, -galley.size().y / 2.0_f32);
+        let backdrop = egui::Rect::from_min_size(
+            text_pos - Vec2::new(4.0_f32, 1.0_f32),
+            galley.size() + Vec2::new(8.0_f32, 0.0_f32),
         );
+        painter.rect_filled(backdrop, 0.0_f32, COLOR_FACE);
+        painter.text(text_pos, Align2::LEFT_TOP, title, font, COLOR_TEXT);
+        response.inner
     }
 
-    fn validity_indicator(ui: &mut egui::Ui, error: Option<&str>) {
-        let (color, text) = match error {
-            None => (COLOR_SUCCESS, "\u{2022} Valid"),
-            Some(_) => (COLOR_DANGER, "\u{2022} Invalid"),
+    fn classic_button(ui: &mut egui::Ui, text: &str, enabled: bool, width: f32) -> egui::Response {
+        let text_color = if enabled {
+            COLOR_TEXT
+        } else {
+            COLOR_TEXT_DISABLED
         };
-        ui.label(
-            egui::RichText::new(text)
-                .color(color)
-                .strong()
-                .size(12.5_f32),
-        );
+        let button = egui::Button::new(egui::RichText::new(text).color(text_color).size(13.5_f32))
+            .fill(if enabled {
+                COLOR_BUTTON
+            } else {
+                COLOR_BUTTON_DISABLED
+            })
+            .stroke(Stroke::new(1.0_f32, COLOR_BUTTON_BORDER))
+            .min_size(Vec2::new(width, 31.0_f32));
+        ui.add_enabled(enabled, button)
     }
 
-    fn numbered_field(ui: &mut egui::Ui, value: &mut u64, max: u64, width: f32) {
+    fn numeric_field(ui: &mut egui::Ui, value: &mut u64, max: u64, width: f32) {
         ui.add_sized(
             [width, 22.0_f32],
             egui::DragValue::new(value).clamp_range(0..=max),
         );
     }
 
-    // ---------------------------------------------------------------- header
+    // ------------------------------------------------------------- the screen
 
-    fn draw_header(&mut self, ui: &mut egui::Ui) {
-        let (pill_text, pill_color, pill_soft) = match self.engine.state() {
-            STATE_RUNNING => (
-                "RUNNING",
-                COLOR_SUCCESS,
-                Color32::from_rgba_premultiplied(63, 185, 80, 42),
-            ),
-            STATE_STOPPING => (
-                "STOPPING",
-                COLOR_WARNING,
-                Color32::from_rgba_premultiplied(210, 153, 34, 42),
-            ),
-            STATE_PANIC => (
-                "PANIC",
-                COLOR_DANGER,
-                Color32::from_rgba_premultiplied(248, 81, 73, 42),
-            ),
-            _ => ("IDLE", COLOR_TEXT_DIM, COLOR_PILL_IDLE),
-        };
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new("OP Auto Clicker")
-                        .color(COLOR_TEXT)
-                        .size(19.0_f32)
-                        .strong(),
-                );
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                Self::status_pill(ui, pill_text, pill_color, pill_soft);
-            });
-        });
-        ui.add_space(2.0_f32);
-        ui.horizontal_wrapped(|ui| {
-            let counters = [
-                format!("Clicks: {}", self.engine.click_count()),
-                format!("Elapsed: {:.2} s", self.engine.elapsed_ms() / 1000.0),
-                format!("Actual CPS: {:.2}", self.stats.actual_cps),
-            ];
-            for (i, counter) in counters.iter().enumerate() {
-                if i > 0 {
-                    ui.add_space(12.0_f32);
-                }
-                ui.label(egui::RichText::new(counter).color(COLOR_TEXT_DIM).small());
-            }
-        });
-        ui.add_space(3.0_f32);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("\u{2022}")
-                    .color(self.status_kind.color())
-                    .size(13.0_f32),
-            );
-            ui.label(
-                egui::RichText::new(&self.status_text)
-                    .color(self.status_kind.color())
-                    .size(13.0_f32),
-            );
-        });
-    }
-
-    // --------------------------------------------------------- the four cards
-
-    fn draw_interval_card(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "CLICK INTERVAL");
+    fn draw_interval_group(&mut self, ui: &mut egui::Ui) {
+        Self::group_box(ui, "Click interval", |ui| {
             ui.horizontal(|ui| {
                 let fields: [(&str, &mut u64, u64); 4] = [
-                    ("Hours", &mut self.hours, 99),
-                    ("Mins", &mut self.minutes, 59),
-                    ("Secs", &mut self.seconds, 59),
-                    ("Milliseconds", &mut self.millis, 999),
+                    ("hours", &mut self.hours, 99),
+                    ("mins", &mut self.minutes, 59),
+                    ("secs", &mut self.seconds, 59),
+                    ("milliseconds", &mut self.millis, 999),
                 ];
                 for (label, value, max) in fields {
-                    ui.vertical(|ui| {
-                        Self::numbered_field(ui, value, max, 66.0_f32);
-                        ui.label(
-                            egui::RichText::new(label)
-                                .color(COLOR_TEXT_DIM)
-                                .size(11.5_f32),
-                        );
-                    });
-                    ui.add_space(4.0_f32);
+                    Self::numeric_field(ui, value, max, 56.0_f32);
+                    ui.label(egui::RichText::new(label).color(COLOR_TEXT));
+                    ui.add_space(2.0_f32);
                 }
             });
-            ui.add_space(4.0_f32);
+            ui.add_space(7.0_f32);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Random offset \u{00B1}").color(COLOR_TEXT));
-                ui.add_sized(
-                    [90.0_f32, 22.0_f32],
-                    egui::DragValue::new(&mut self.offset_ms)
-                        .speed(1.0)
-                        .clamp_range(0.0..=10_000.0)
-                        .fixed_decimals(1)
-                        .suffix(" ms"),
-                );
-            });
-            ui.add_space(4.0_f32);
-            let total = self.interval_total_ms();
-            let error = self.validation_message();
-            ui.horizontal(|ui| {
-                let cps = if total > 0 {
-                    1000.0 / total as f64
-                } else {
-                    0.0
-                };
-                ui.label(
-                    egui::RichText::new(format!("{total} ms \u{00B7} {cps:.2} CPS"))
-                        .color(COLOR_TEXT_DIM)
-                        .small(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    Self::validity_indicator(ui, error.as_deref());
+                let mut enabled = self.prefs.random_offset_enabled;
+                if ui.checkbox(&mut enabled, "Random offset ±").changed() {
+                    self.prefs.random_offset_enabled = enabled;
+                    if enabled && self.offset_ms <= 0.0 {
+                        // The reference 4.1 build shows 40 ms by default.
+                        self.offset_ms = 40.0;
+                    }
+                    self.mark_dirty();
+                }
+                ui.add_enabled_ui(enabled, |ui| {
+                    ui.add_sized(
+                        [72.0_f32, 22.0_f32],
+                        egui::DragValue::new(&mut self.offset_ms)
+                            .speed(1.0)
+                            .clamp_range(0.0..=10_000.0)
+                            .fixed_decimals(1),
+                    );
                 });
+                ui.label(egui::RichText::new("milliseconds").color(COLOR_TEXT));
             });
-            if let Some(message) = &error {
-                ui.label(egui::RichText::new(message).color(COLOR_WARNING).small());
-            }
         });
     }
 
-    fn draw_options_card(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "CLICK OPTIONS");
-            Grid::new("click_options_grid")
-                .num_columns(2)
-                .spacing(Vec2::new(10.0_f32, 8.0_f32))
-                .show(ui, |ui| {
-                    ui.label(egui::RichText::new("Mouse button").color(COLOR_TEXT_DIM));
-                    egui::ComboBox::from_id_source("mouse_button_combo")
-                        .selected_text(self.config.mouse_button.label())
-                        .show_ui(ui, |ui| {
-                            for button in MouseButton::all() {
-                                ui.selectable_value(
-                                    &mut self.config.mouse_button,
-                                    button,
-                                    button.label(),
-                                );
-                            }
-                        });
-                    ui.end_row();
+    fn draw_options_and_repeat(&mut self, ui: &mut egui::Ui) {
+        ui.columns(2, |columns| {
+            Self::group_box(&mut columns[0], "Click options", |ui| {
+                Grid::new("click_options_grid")
+                    .num_columns(2)
+                    .spacing(Vec2::new(8.0_f32, 9.0_f32))
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Mouse button:").color(COLOR_TEXT));
+                        egui::ComboBox::from_id_source("mouse_button_combo")
+                            .selected_text(self.config.mouse_button.label())
+                            .show_ui(ui, |ui| {
+                                for button in MouseButton::all() {
+                                    ui.selectable_value(
+                                        &mut self.config.mouse_button,
+                                        button,
+                                        button.label(),
+                                    );
+                                }
+                            });
+                        ui.end_row();
 
-                    ui.label(egui::RichText::new("Click type").color(COLOR_TEXT_DIM));
-                    egui::ComboBox::from_id_source("click_type_combo")
-                        .selected_text(self.config.click_type.label())
-                        .show_ui(ui, |ui| {
-                            for kind in ClickType::all() {
-                                ui.selectable_value(
-                                    &mut self.config.click_type,
-                                    kind,
-                                    kind.label(),
-                                );
-                            }
-                        });
-                    ui.end_row();
+                        ui.label(egui::RichText::new("Click type:").color(COLOR_TEXT));
+                        egui::ComboBox::from_id_source("click_type_combo")
+                            .selected_text(self.config.click_type.label())
+                            .show_ui(ui, |ui| {
+                                for kind in ClickType::all() {
+                                    ui.selectable_value(
+                                        &mut self.config.click_type,
+                                        kind,
+                                        kind.label(),
+                                    );
+                                }
+                            });
+                        ui.end_row();
+                    });
+            });
+
+            Self::group_box(&mut columns[1], "Click repeat", |ui| {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.repeat_limited, true, "Repeat");
+                    ui.add_enabled_ui(self.repeat_limited, |ui| {
+                        if self.repeat_limited && self.config.max_clicks == 0 {
+                            self.config.max_clicks = 1;
+                        }
+                        ui.add_sized(
+                            [76.0_f32, 22.0_f32],
+                            egui::DragValue::new(&mut self.config.max_clicks)
+                                .clamp_range(1..=1_000_000_000),
+                        );
+                    });
+                    ui.label(egui::RichText::new("times").color(COLOR_TEXT));
                 });
-        });
-    }
-
-    fn draw_repeat_card(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "CLICK REPEAT");
-            ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.repeat_limited, true, "Repeat");
-                ui.add_sized(
-                    [110.0_f32, 22.0_f32],
-                    egui::DragValue::new(&mut self.config.max_clicks)
-                        .clamp_range(1..=1_000_000_000),
-                );
-                ui.label(egui::RichText::new("times").color(COLOR_TEXT_DIM));
+                ui.add_space(4.0_f32);
+                ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
+                if !self.repeat_limited {
+                    self.config.max_clicks = 0;
+                }
             });
-            if self.repeat_limited && self.config.max_clicks == 0 {
-                self.config.max_clicks = 100;
-            }
-            if !self.repeat_limited {
-                self.config.max_clicks = 0;
-            }
         });
     }
 
-    fn draw_position_card(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "CURSOR POSITION");
-            ui.radio_value(
-                &mut self.config.coordinate_mode,
-                CoordinateMode::CurrentCursor,
-                "Current location",
-            );
+    fn draw_position_group(&mut self, ui: &mut egui::Ui) {
+        Self::group_box(ui, "Cursor position", |ui| {
+            ui.horizontal(|ui| {
+                ui.radio_value(
+                    &mut self.config.coordinate_mode,
+                    CoordinateMode::CurrentCursor,
+                    "Current location",
+                );
+            });
+            ui.add_space(4.0_f32);
             ui.horizontal(|ui| {
                 ui.radio_value(
                     &mut self.config.coordinate_mode,
                     CoordinateMode::FixedScreen,
                     "Pick location",
                 );
+                let pick_label = if self.picking_location {
+                    "Cancel pick"
+                } else {
+                    "Pick location"
+                };
+                if Self::classic_button(ui, pick_label, true, 104.0_f32).clicked() {
+                    if self.picking_location {
+                        self.picking_location = false;
+                        self.set_status(StatusKind::Ready, "Location pick cancelled.");
+                    } else {
+                        self.arm_location_pick();
+                    }
+                }
                 let fixed = self.config.coordinate_mode == CoordinateMode::FixedScreen;
                 ui.add_enabled_ui(fixed, |ui| {
                     ui.add_sized(
-                        [86.0_f32, 22.0_f32],
+                        [78.0_f32, 22.0_f32],
                         egui::DragValue::new(&mut self.config.fixed_x)
                             .clamp_range(-100_000..=100_000)
                             .prefix("X: "),
                     );
                     ui.add_sized(
-                        [86.0_f32, 22.0_f32],
+                        [78.0_f32, 22.0_f32],
                         egui::DragValue::new(&mut self.config.fixed_y)
                             .clamp_range(-100_000..=100_000)
                             .prefix("Y: "),
                     );
-                    if ui.button("Pick").clicked() {
-                        match win32::get_cursor_pos() {
-                            Some((x, y)) => {
-                                self.config.fixed_x = x as i64;
-                                self.config.fixed_y = y as i64;
-                                self.set_status(
-                                    StatusKind::Ready,
-                                    format!("Picked screen position ({x}, {y})."),
-                                );
-                                self.log(format!("Fixed position picked: ({x}, {y})."));
-                                self.mark_dirty();
-                                self.flush_settings();
-                            }
-                            None => {
-                                self.set_status(
-                                    StatusKind::Error,
-                                    "GetCursorPos failed; enter X/Y manually.",
-                                );
-                                self.log(
-                                    "Pick location failed: GetCursorPos returned no position.",
-                                );
-                            }
-                        }
-                    }
                 });
             });
         });
     }
 
-    // ---------------------------------------------------------------- footer
-
-    fn draw_footer(&mut self, ui: &mut egui::Ui) {
+    fn draw_action_buttons(&mut self, ui: &mut egui::Ui) {
         let running = self.engine.is_running();
         let config_ok = self.validation_message().is_none();
         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
+        let gap = ui.spacing().item_spacing.x;
+        let button_width = (ui.available_width() - gap) / 2.0;
 
-        ui.horizontal_wrapped(|ui| {
-            ui.add_enabled_ui(!running && config_ok, |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(format!("Start ({hotkey_name})"))
-                                .strong()
-                                .color(Color32::WHITE)
-                                .size(14.0_f32),
-                        )
-                        .fill(COLOR_SUCCESS)
-                        .min_size(Vec2::new(118.0_f32, 36.0_f32)),
-                    )
-                    .clicked()
+        Grid::new("action_button_grid")
+            .num_columns(2)
+            .spacing(Vec2::new(gap, 6.0_f32))
+            .show(ui, |ui| {
+                if Self::classic_button(
+                    ui,
+                    &format!("Start ({hotkey_name})"),
+                    !running && config_ok,
+                    button_width,
+                )
+                .clicked()
                 {
                     self.handle_start();
                 }
-            });
-            ui.add_enabled_ui(running, |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new(format!("Stop ({hotkey_name})"))
-                                .strong()
-                                .color(COLOR_WARNING)
-                                .size(14.0_f32),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .stroke(Stroke::new(1.5_f32, COLOR_WARNING))
-                        .min_size(Vec2::new(118.0_f32, 36.0_f32)),
-                    )
+                if Self::classic_button(ui, &format!("Stop ({hotkey_name})"), running, button_width)
                     .clicked()
                 {
                     self.engine.request_stop();
@@ -890,38 +839,17 @@ impl OpAutoClickerApp {
                     self.mark_dirty();
                     self.flush_settings();
                 }
+                ui.end_row();
+
+                if Self::classic_button(ui, "Hotkey setting", true, button_width).clicked() {
+                    self.show_hotkey_dialog = true;
+                    self.capturing = false;
+                }
+                if Self::classic_button(ui, "Advanced…", true, button_width).clicked() {
+                    self.show_advanced = true;
+                }
+                ui.end_row();
             });
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Panic (F8)")
-                            .strong()
-                            .color(Color32::WHITE)
-                            .size(14.0_f32),
-                    )
-                    .fill(COLOR_DANGER)
-                    .min_size(Vec2::new(104.0_f32, 36.0_f32)),
-                )
-                .clicked()
-            {
-                self.engine.panic_stop();
-                self.set_status(StatusKind::Panic, "Panic stop triggered from dashboard.");
-                self.log("PANIC STOP triggered from dashboard.");
-                self.mark_dirty();
-                self.flush_settings();
-            }
-            ui.separator();
-            if ui.button("Hotkey setting…").clicked() {
-                self.show_hotkey_dialog = true;
-                self.capturing = false;
-            }
-            if ui.button("Reset").clicked() {
-                self.reset_to_defaults();
-            }
-            if ui.button("Advanced…").clicked() {
-                self.show_advanced = true;
-            }
-        });
     }
 
     // ---------------------------------------------------------- hotkey dialog
@@ -949,10 +877,8 @@ impl OpAutoClickerApp {
                 ui.add_space(6.0_f32);
                 if self.capturing {
                     ui.label(
-                        egui::RichText::new(
-                            "Press any key to assign it…  (Esc cancels)",
-                        )
-                        .color(COLOR_WARNING),
+                        egui::RichText::new("Press any key to assign it…  (Esc cancels)")
+                            .color(COLOR_WARNING),
                     );
                 } else if ui.button("Assign new key…").clicked() {
                     self.capturing = true;
@@ -1000,6 +926,13 @@ impl OpAutoClickerApp {
                     self.draw_humanization_section(ui);
                     ui.add_space(8.0_f32);
                     self.draw_telemetry_section(ui);
+                    ui.add_space(8.0_f32);
+                    if ui
+                        .button("Reset all settings to factory defaults")
+                        .clicked()
+                    {
+                        self.reset_to_defaults();
+                    }
                 });
             });
         if !open {
@@ -1008,8 +941,7 @@ impl OpAutoClickerApp {
     }
 
     fn draw_delivery_section(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "INPUT DELIVERY & TARGETING");
+        Self::group_box(ui, "Input delivery & targeting", |ui| {
             ui.radio_value(
                 &mut self.config.input_mode,
                 InputMode::GlobalSendInput,
@@ -1091,8 +1023,7 @@ impl OpAutoClickerApp {
     }
 
     fn draw_humanization_section(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "GAUSSIAN HUMANIZATION (EXPERT)");
+        Self::group_box(ui, "Gaussian humanization (expert)", |ui| {
             ui.checkbox(
                 &mut self.config.humanize_enabled,
                 "Enable Gaussian humanization",
@@ -1175,8 +1106,7 @@ impl OpAutoClickerApp {
     }
 
     fn draw_telemetry_section(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "LIVE METRICS");
+        Self::group_box(ui, "Live metrics", |ui| {
             Grid::new("metrics_grid")
                 .num_columns(2)
                 .spacing(Vec2::new(18.0_f32, 8.0_f32))
@@ -1215,15 +1145,14 @@ impl OpAutoClickerApp {
                 });
         });
         ui.add_space(8.0_f32);
-        Self::card(ui, |ui| self.draw_cps_graph(ui));
+        Self::group_box(ui, "Real-time CPS", |ui| self.draw_cps_graph(ui));
         ui.add_space(8.0_f32);
-        Self::card(ui, |ui| self.draw_histogram(ui));
+        Self::group_box(ui, "Interval histogram (ms)", |ui| self.draw_histogram(ui));
         ui.add_space(8.0_f32);
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "RECENT ACTIVITY");
+        Self::group_box(ui, "Recent activity", |ui| {
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
-                .max_height(180.0_f32)
+                .max_height(170.0_f32)
                 .show(ui, |ui| {
                     for line in &self.logs {
                         let warning = line.contains("PANIC")
@@ -1246,7 +1175,8 @@ impl OpAutoClickerApp {
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 150.0_f32), Sense::hover());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 10.0_f32, COLOR_INPUT);
+        painter.rect_filled(rect, 6.0_f32, COLOR_CHART_BG);
+        painter.rect_stroke(rect, 6.0_f32, Stroke::new(1.0_f32, COLOR_CHART_GRID));
 
         for step in 1..4 {
             let y = rect.top() + rect.height() * step as f32 / 4.0_f32;
@@ -1279,20 +1209,14 @@ impl OpAutoClickerApp {
                 previous = current;
             }
         }
-        painter.text(
-            rect.left_top() + Vec2::new(12.0_f32, 9.0_f32),
-            Align2::LEFT_TOP,
-            "REAL-TIME CPS",
-            FontId::proportional(12.0_f32),
-            COLOR_TEXT_DIM,
-        );
     }
 
     fn draw_histogram(&self, ui: &mut egui::Ui) {
         let (rect, _) =
             ui.allocate_exact_size(Vec2::new(ui.available_width(), 130.0_f32), Sense::hover());
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 10.0_f32, COLOR_INPUT);
+        painter.rect_filled(rect, 6.0_f32, COLOR_CHART_BG);
+        painter.rect_stroke(rect, 6.0_f32, Stroke::new(1.0_f32, COLOR_CHART_GRID));
 
         let max_bin = self
             .stats
@@ -1317,17 +1241,10 @@ impl OpAutoClickerApp {
                     egui::pos2(x, rect.bottom() - height - 10.0_f32),
                     Vec2::new(bar_width, height),
                 ),
-                4.0_f32,
+                3.0_f32,
                 color,
             );
         }
-        painter.text(
-            rect.left_top() + Vec2::new(12.0_f32, 9.0_f32),
-            Align2::LEFT_TOP,
-            "INTERVAL HISTOGRAM (ms)",
-            FontId::proportional(12.0_f32),
-            COLOR_TEXT_DIM,
-        );
     }
 }
 
@@ -1335,6 +1252,7 @@ impl eframe::App for OpAutoClickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_style(ctx);
         self.poll_hotkeys();
+        self.poll_pick_capture();
         self.surface_engine_errors();
         if self.engine.is_running() {
             if let Err(error) = self.engine.update_config(&self.config) {
@@ -1376,43 +1294,53 @@ impl eframe::App for OpAutoClickerApp {
         self.commit_interval_editors();
         self.detect_settings_changes();
         self.maybe_autosave();
-        if self.engine.is_running() {
-            ctx.request_repaint_after(Duration::from_millis(50));
-        } else if self.capturing {
+        if self.engine.is_running() || self.capturing || self.picking_location {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
 
-        egui::TopBottomPanel::top("header_panel")
-            .frame(
-                Frame::none()
-                    .fill(COLOR_BG)
-                    .inner_margin(Margin::symmetric(14.0_f32, 10.0_f32)),
-            )
-            .show(ctx, |ui| self.draw_header(ui));
-
-        egui::TopBottomPanel::bottom("control_footer")
-            .frame(
-                Frame::none()
-                    .fill(COLOR_BG)
-                    .inner_margin(Margin::symmetric(14.0_f32, 9.0_f32)),
-            )
-            .show(ctx, |ui| self.draw_footer(ui));
-
+        // Single fixed-size screen: no ScrollArea, everything fits.
         egui::CentralPanel::default()
             .frame(
                 Frame::none()
-                    .fill(COLOR_BG)
-                    .inner_margin(Margin::symmetric(12.0_f32, 4.0_f32)),
+                    .fill(COLOR_FACE)
+                    .inner_margin(Margin::symmetric(12.0_f32, 10.0_f32)),
             )
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.draw_interval_card(ui);
-                    ui.add_space(8.0_f32);
-                    self.draw_options_card(ui);
-                    ui.add_space(8.0_f32);
-                    self.draw_repeat_card(ui);
-                    ui.add_space(8.0_f32);
-                    self.draw_position_card(ui);
+                ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
+                    self.draw_interval_group(ui);
+                    ui.add_space(7.0_f32);
+                    self.draw_options_and_repeat(ui);
+                    ui.add_space(7.0_f32);
+                    self.draw_position_group(ui);
+                    ui.add_space(6.0_f32);
+
+                    // Reserved one-line status strip keeps the layout fixed.
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), 16.0_f32),
+                        Sense::hover(),
+                    );
+                    if self.status_kind != StatusKind::Ready {
+                        ui.painter_at(rect).text(
+                            rect.left_center(),
+                            Align2::LEFT_CENTER,
+                            &self.status_text,
+                            FontId::proportional(12.5_f32),
+                            self.status_kind.color(),
+                        );
+                    }
+
+                    ui.add_space(2.0_f32);
+                    self.draw_action_buttons(ui);
+                    ui.add_space(5.0_f32);
+                    ui.with_layout(Layout::top_down(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "F6 starts and stops · F8 panic stop is always armed",
+                            )
+                            .color(COLOR_TEXT_DIM)
+                            .small(),
+                        );
+                    });
                 });
             });
 

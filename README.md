@@ -1,10 +1,12 @@
 # OP Auto Clicker
 
-A Windows x64 auto-clicker written in stable Rust with an egui dashboard that
-follows the OP Auto Clicker 4.1 layout: Hours/Mins/Secs/Milliseconds interval,
-random offset, mouse button and click-type pickers, repeat rules and cursor
-position. A dedicated worker thread drives a QPC spin schedule while the UI
-stays fully responsive.
+A Windows x64 auto-clicker written in stable Rust with an egui interface that
+reproduces the authentic classic OP Auto Clicker 4.x Win32 dialog — a fixed,
+non-resizable light-gray window with group boxes, white numeric fields and
+gray push buttons, nothing scrolled: Hours/Mins/Secs/Milliseconds interval
+with the 4.1 random-offset row, mouse button and click-type pickers, repeat
+rules and cursor position with on-screen point picking. A dedicated worker
+thread drives a QPC spin schedule while the UI stays fully responsive.
 
 ## Quick start
 
@@ -23,10 +25,14 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
 
 ## Features
 
-- **OP Auto Clicker 4.1-style screen** — four familiar cards (Click Interval,
-  Click Options, Click Repeat, Cursor Position) in one compact dark window,
-  with a live Valid/Invalid indicator and a Start button that refuses invalid
-  configurations.
+- **Authentic classic OP Auto Clicker 4.x screen** — a fixed-size,
+  non-resizable light-gray Win32-style dialog (group boxes, white numeric
+  fields, gray 3D buttons) with every control visible and no scrolling:
+  Click interval with the 4.1 Random offset row, side-by-side Click options
+  and Click repeat, Cursor position with a real Pick location button
+  (click the button, then click anywhere on screen; Esc cancels), and a
+  2x2 Start/Stop/Hotkey setting/Advanced button grid. Start refuses invalid
+  configurations and Stop stays greyed until a session is running.
 - Left, right and middle mouse buttons; single, double and triple click
   types (multi-clicks use QPC-spun gaps, never sleeps).
 - Hours/Mins/Secs/Milliseconds interval fields plus 4.1's uniform

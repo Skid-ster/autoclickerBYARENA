@@ -55,6 +55,10 @@ pub const SM_YVIRTUALSCREEN: i32 = 77;
 pub const SM_CXVIRTUALSCREEN: i32 = 78;
 pub const SM_CYVIRTUALSCREEN: i32 = 79;
 
+/// Virtual-key code for the left mouse button, used by the screen-point
+/// capture flow behind the "Pick location" button.
+pub const VK_LBUTTON: i32 = 0x01;
+
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
     pub hwnd: isize,
