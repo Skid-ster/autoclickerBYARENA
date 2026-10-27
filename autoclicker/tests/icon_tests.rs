@@ -3,7 +3,7 @@
 #[path = "../src/icon.rs"]
 mod icon;
 
-use icon::{app_icon_rgba, ICON_SIZE};
+use icon::{app_icon_rgba, mog_icon_rgba, ICON_SIZE};
 
 #[test]
 fn dimensions_and_buffer_length_are_correct() {
@@ -85,5 +85,54 @@ fn accent_pixels_and_background_pixels_are_both_present() {
     assert!(
         dark_background_pixels >= 100,
         "expected a dark tile background"
+    );
+}
+
+#[test]
+fn mog_icon_shares_geometry_but_reads_hot_pink() {
+    let (default_rgba, dw, dh) = app_icon_rgba();
+    let (mog_rgba, mw, mh) = mog_icon_rgba();
+    assert_eq!((mw, mh), (dw, dh));
+    assert_eq!(mog_rgba.len(), default_rgba.len());
+
+    // Identical geometry: the alpha channel (shape + anti-aliasing) must be
+    // byte-identical between the two color ways.
+    for (i, (d, m)) in default_rgba
+        .chunks_exact(4)
+        .zip(mog_rgba.chunks_exact(4))
+        .enumerate()
+    {
+        assert_eq!(d[3], m[3], "alpha diverged at pixel {i}");
+    }
+
+    // The center dot is the solid Mog accent: hot pink, not blue.
+    let index = ((16 * mw + 16) * 4) as usize;
+    let center = [
+        mog_rgba[index],
+        mog_rgba[index + 1],
+        mog_rgba[index + 2],
+        mog_rgba[index + 3],
+    ];
+    assert_eq!(center[3], 255);
+    assert_eq!(
+        (center[0], center[1], center[2]),
+        (255, 46, 136),
+        "center dot must be the exact Mog accent"
+    );
+}
+
+#[test]
+fn mog_icon_is_visibly_different_from_the_default_icon() {
+    let (default_rgba, _, _) = app_icon_rgba();
+    let (mog_rgba, _, _) = mog_icon_rgba();
+    let mut differing = 0usize;
+    for (d, m) in default_rgba.chunks_exact(4).zip(mog_rgba.chunks_exact(4)) {
+        if d[..3] != m[..3] {
+            differing += 1;
+        }
+    }
+    assert!(
+        differing >= 200,
+        "expected a clearly recolored icon, only {differing} pixels differ"
     );
 }
