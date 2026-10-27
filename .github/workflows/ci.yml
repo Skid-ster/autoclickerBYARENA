@@ -26,8 +26,8 @@ jobs:
       - name: Format check
         run: cargo fmt --all --manifest-path autoclicker/Cargo.toml -- --check
 
-      - name: Clippy (advisory)
-        run: cargo clippy --manifest-path autoclicker/Cargo.toml
+      - name: Clippy (warnings denied)
+        run: cargo clippy --manifest-path autoclicker/Cargo.toml -- -D warnings
 
       - name: Test suite
         run: cargo test --manifest-path autoclicker/Cargo.toml -- --nocapture

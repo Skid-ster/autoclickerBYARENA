@@ -5,7 +5,41 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## OP Auto Clicker 4.1 parity round (current)
+## Polish and hardening round (current)
+
+A final quality pass over the merged 4.1-style build, driven by running
+clippy with warnings denied and re-reading every interaction:
+
+- **Application icon.** A new portable `icon.rs` generates a 32x32 RGBA
+  crosshair (two concentric rings, center dot, four cardinal ticks on a
+  dark rounded square) from signed-distance pixel math, so no binary asset
+  is committed. `main.rs` installs it through `ViewportBuilder::with_icon`;
+  four tests cover dimensions, corner transparency, center color, two-axis
+  symmetry and accent/background pixel presence. The bytes were also
+  rendered to a PNG in the sandbox and visually confirmed.
+- **Hotkey capture correctness.** The assignment dialog now acts only on a
+  fresh press made after clicking "Assign new key" (keys already held are
+  ignored, including F8 held through its rejection notice), the toggle
+  hotkey is fully inert while the dialog is listening, and a key still held
+  when capture closes cannot immediately start or stop a session.
+- **Honest session-end reporting.** The "Session complete" status is only
+  shown when a repeat-limited run actually reaches its click count; manual
+  stops and worker errors keep their own Stopping/Error status instead of
+  being overwritten.
+- **Strict CI.** The workflow now runs `cargo clippy -- -D warnings`, so
+  any new lint fails the Windows job. The only clippy findings on this
+  codebase (`unnecessary_cast` on three `HWND as isize` conversions) are
+  shim-only artifacts: the offline harness aliases `HWND` to `isize`,
+  while real windows-sys 0.52 defines it as a raw pointer where the casts
+  are required. The function carries an explanatory targeted `allow`.
+
+Verification on rustc 1.88.0 against real egui 0.27.2: zero production
+diagnostics, `cargo clippy -- -D warnings` clean for all workspace
+sources, `rustfmt --check` clean, and **44/44 tests pass** (the previous
+40 plus four icon tests). A deliberate type error injected into `app.rs`
+was rejected with E0308 and reverted cleanly.
+
+## OP Auto Clicker 4.1 parity round
 
 The dashboard was rebuilt to match the OP Auto Clicker 4.1 screen, with the
 UX discipline of the reference project
@@ -268,13 +302,14 @@ engine-b source files via `#[path]` includes against:
 
 Result on rustc 1.88.0: `cargo check` finishes with **zero diagnostics in
 the application sources** (warnings exist only inside vendored upstream
-crates and the local shims), and the real 40 integration tests pass
-(`13 + 9 + 8 + 5 + 5` across config, humanize, telemetry, hotkey and
-settings). A deliberate type error injected into `app.rs` was correctly
-rejected (E0308), proving the harness really type-checks the production
-files. The sandbox rustc (1.88) predates the `float_literal_f32_fallback`
-lint, so defect 6 cannot be reproduced locally; explicit suffixing removes
-every `f32` fallback by construction instead.
+crates and the local shims), and the real 44 integration tests pass
+(`13 + 9 + 8 + 5 + 5 + 4` across config, humanize, telemetry, hotkey,
+settings and icon). A deliberate type error injected into `app.rs` was
+correctly rejected (E0308), proving the harness really type-checks the
+production files. The sandbox rustc (1.88) predates the
+`float_literal_f32_fallback` lint, so defect 6 cannot be reproduced
+locally; explicit suffixing removes every `f32` fallback by construction
+instead.
 
 ## Static policy audits (grep-verified, current single engine)
 
@@ -300,12 +335,14 @@ Re-run after consolidation against `autoclicker/`:
   gaps, which are QPC-spun 50 ms waits that keep sampling the stop/panic
   flags.
 
-The 4.1-parity tree was re-verified in the offline harness: `cargo check`
-reports zero diagnostics in the `autoclicker/` sources against real egui
-0.27.2, all 40 integration tests pass, `rustfmt --check` is clean and a
+The current tree was re-verified in the offline harness after the
+hardening round: `cargo check` reports zero diagnostics in the
+`autoclicker/` sources against real egui 0.27.2, all 44 integration tests
+pass, `rustfmt --check` and `cargo clippy -- -D warnings` are clean and a
 negative-control type error was rejected as expected. All f32 geometry
 literals carry explicit `_f32` suffixes for rustc 1.99's
-`float_literal_f32_fallback` lint.
+`float_literal_f32_fallback` lint; the icon module uses f64 pixel math
+exclusively, so it introduces no f32 fallback at all.
 
 ## Required Windows acceptance run
 
