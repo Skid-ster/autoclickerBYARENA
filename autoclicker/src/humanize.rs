@@ -69,8 +69,7 @@ impl GaussianHumanizer {
     /// Folds external entropy (on Windows: a QueryPerformanceCounter reading)
     /// into the PRNG state and discards any cached normal sample.
     pub fn reseed(&self, extra_entropy: u64) {
-        self.state
-            .set(splitmix64(extra_entropy ^ self.state.get()));
+        self.state.set(splitmix64(extra_entropy ^ self.state.get()));
         self.spare.set(None);
     }
 
@@ -129,6 +128,20 @@ impl GaussianHumanizer {
         } else {
             config.base_interval_ms
         };
+        clamp_finite(raw, config.min_interval_ms, config.max_interval_ms)
+    }
+
+    /// Uniform jitter in `[base - offset, base + offset]`, matching the
+    /// "Random offset +- ms" control of OP Auto Clicker 4.1. A zero or
+    /// negative offset returns the exact base interval. The result is clamped
+    /// into the legal interval range so it can never reach zero or negatives.
+    pub fn next_offset_interval_ms(&self, config: &EngineConfig) -> f64 {
+        if config.random_offset_ms <= 0.0 {
+            return config.base_interval_ms;
+        }
+        let unit = self.next_unit();
+        let raw = config.base_interval_ms - config.random_offset_ms
+            + 2.0 * config.random_offset_ms * unit;
         clamp_finite(raw, config.min_interval_ms, config.max_interval_ms)
     }
 

@@ -5,6 +5,48 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
+## OP Auto Clicker 4.1 parity round (current)
+
+The dashboard was rebuilt to match the OP Auto Clicker 4.1 screen, with the
+UX discipline of the reference project
+[MarshalX/clicker-rs](https://github.com/MarshalX/clicker-rs) (live
+Valid/Invalid indicators, disabled-until-valid Start, semantic status line,
+remappable hotkey dialog, reset control). clicker-rs's internals were **not**
+adopted: its worker sleeps on the hot path, never joins its thread in
+`Drop`, and has no fixed-position, repeat-count or background mode. The
+existing QPC spin worker, atomic snapshot and SPSC telemetry were kept.
+
+New functionality, all behind the same unchanged scheduling core:
+
+- Four-card 4.1 layout: Click Interval (Hours/Mins/Secs/Milliseconds plus
+  Random offset +/- ms), Click Options (Left/Right/Middle x
+  Single/Double/Triple), Click Repeat (until stopped / N times), Cursor
+  Position (current / picked X,Y via `GetCursorPos`).
+- New portable modules `hotkey.rs` (virtual-key rules, F8/Esc reservation,
+  key names) and `settings.rs` (dependency-free, tolerant key=value
+  persistence at `%APPDATA%\op-auto-clicker\settings.conf`).
+- Right/middle dispatch for both `SendInput` and background window messages;
+  double/triple bursts with QPC-spun 50 ms inter-click gaps; uniform +/-
+  offset sampling alongside the Gaussian humanizer.
+- Default F6 start/stop hotkey, remappable through a capture dialog; F8 stays
+  the immutable panic stop.
+- Advanced window for background targeting, the nine Gaussian expert fields
+  and all telemetry (metrics, CPS sparkline, histogram, activity log).
+
+Verification on rustc 1.88.0 against the **real** egui/epaint/emath/ecolor
+0.27.2 sources: `cargo check` reports zero diagnostics in the workspace
+sources; `cargo test` passes **40/40** (the previous 23 plus 17 new tests
+covering interval helpers, offset bounds and distribution, hotkey rules,
+settings round trips and malformed-document recovery); a deliberate type
+error injected into `app.rs` was rejected with E0308 and reverted cleanly.
+`rustfmt --check` is clean and `cargo clippy` reports no lints in the
+portable or application logic — the only findings are `unnecessary_cast`
+items produced solely by the harness's `HWND = isize` shim alias; the real
+windows-sys 0.52 `HWND` is a raw pointer, where those casts are required.
+A Windows CI workflow (`.github/workflows/ci.yml`) now runs the format
+check, clippy, the full suite, a release build and uploads the exe artifact
+on a real `windows-latest` MSVC runner.
+
 ## Consolidation to a single engine
 
 The project originally shipped two feature-parallel implementations
@@ -40,6 +82,7 @@ registry. Toolchains were therefore assembled through those hosts:
 | CMake | pip wheel `cmake` | 4.4.4 |
 | Ninja | pip wheel `ninja` | 1.13.2 |
 | Rust (rustc/cargo/rust-std) | npm packages `@rustbin/*` | 1.88.0 stable |
+| rustfmt / clippy | npm packages `@rustbin/*` | 1.8.0 / 0.1.88 |
 | tree-sitter + tree-sitter-rust | pip wheels | 0.26 / 0.24.2 |
 
 ## Engine A — commands executed and results
@@ -216,20 +259,22 @@ engine-b source files via `#[path]` includes against:
 - thin local shims for `ahash` and `nohash_hasher` (only the
   `HashMap`/`HashSet`/`RandomState::with_seeds`/`hash_one` and
   `IntMap`/`IntSet`/`IsEnabled` surface these crates use),
-- signature-only stubs of `eframe` (native entry point) and `windows-sys`
-  0.52, with every FFI signature transcribed from the engine's own call
-  sites and cross-checked against the windows-rs 0.52.0 source on GitHub.
+- signature-only stubs of `eframe` (native entry point, including the real
+  0.27.2 `on_exit(&mut self, Option<&glow::Context>)` signature) and
+  `windows-sys` 0.52, with every FFI signature transcribed from the
+  engine's own call sites and cross-checked against the windows-rs 0.52.0
+  source on GitHub; the stub covers `GetCursorPos`, `GetAsyncKeyState` and
+  the right/middle button constants added in the 4.1 parity round.
 
 Result on rustc 1.88.0: `cargo check` finishes with **zero diagnostics in
-the engine-b sources** (warnings exist only inside vendored upstream
-crates), and the real 23 integration tests pass (`9 + 6 + 8`). A deliberate
-type error injected into `app.rs` was correctly rejected, proving the
-harness really type-checks the production files. The sandbox rustc (1.88)
-predates the `float_literal_f32_fallback` lint, so defect 6 cannot be
-reproduced locally; explicit suffixing removes every `f32` fallback by
-construction instead. The C++ portable translation units were rebuilt
-directly with `g++ -std=c++20 -Wall -Wextra -Wpedantic -Werror`: all three
-test binaries pass.
+the application sources** (warnings exist only inside vendored upstream
+crates and the local shims), and the real 40 integration tests pass
+(`13 + 9 + 8 + 5 + 5` across config, humanize, telemetry, hotkey and
+settings). A deliberate type error injected into `app.rs` was correctly
+rejected (E0308), proving the harness really type-checks the production
+files. The sandbox rustc (1.88) predates the `float_literal_f32_fallback`
+lint, so defect 6 cannot be reproduced locally; explicit suffixing removes
+every `f32` fallback by construction instead.
 
 ## Static policy audits (grep-verified, current single engine)
 
@@ -244,14 +289,20 @@ Re-run after consolidation against `autoclicker/`:
   waiting uses QPC plus `std::hint::spin_loop`); the only textual mentions
   are comments stating the prohibition.
 - `timeBeginPeriod(1)` paired with `timeEndPeriod(1)` via RAII.
-- F8 panic flag sampled before every click and inside every hold spin.
-- Global dispatch uses arrayed `SendInput`; background dispatch uses
-  `PostMessageW` / `SendMessageTimeoutW` with `MK_LBUTTON` and
-  `MAKELPARAM` client coordinates.
+- F8 panic flag sampled before every click and inside every hold and
+  inter-click spin; the configurable F6 toggle is polled separately and can
+  never be assigned F8 or Escape.
+- Global dispatch uses arrayed `SendInput` with left/right/middle down/up
+  flags; background dispatch uses `PostMessageW` / `SendMessageTimeoutW`
+  with the matching `WM_*BUTTON*` messages, `MK_*` flags and `MAKELPARAM`
+  client coordinates.
+- No `std::thread::sleep` exists anywhere, including double/triple-click
+  gaps, which are QPC-spun 50 ms waits that keep sampling the stop/panic
+  flags.
 
-The consolidated tree was re-verified in the offline harness after the
-rename: `cargo check` reports zero diagnostics in the `autoclicker/`
-sources against real egui 0.27.2, the 23 integration tests pass, and a
+The 4.1-parity tree was re-verified in the offline harness: `cargo check`
+reports zero diagnostics in the `autoclicker/` sources against real egui
+0.27.2, all 40 integration tests pass, `rustfmt --check` is clean and a
 negative-control type error was rejected as expected. All f32 geometry
 literals carry explicit `_f32` suffixes for rustc 1.99's
 `float_literal_f32_fallback` lint.
@@ -269,8 +320,16 @@ cargo test --release
 cargo run --release
 ```
 
-Then follow the nine-step manual checklist in `autoclicker/README.md`:
-dashboard rendering, global clicks, live Gaussian stats, invalid-config
-rejection, unfocused and minimized background targets, F8 panic stop (button
-must never stick), sub-millisecond missed-deadline accounting, and clean
-shutdown with no leaked handles.
+Then follow the eleven-step manual checklist in `autoclicker/README.md`:
+dashboard rendering, interval and random-offset behavior, right/middle and
+double/triple bursts, picked fixed coordinates, repeat-count auto-stop,
+hotkey remap and F8 reservation, settings persistence across restarts,
+unfocused and minimized background targets, F8 panic stop (button must never
+stick), and clean shutdown with no leaked handles.
+
+The repository's GitHub Actions workflow performs an additional, genuinely
+Windows-native gate on every push and pull request: `cargo fmt --check`,
+`cargo clippy`, `cargo test`, a release build on `windows-latest`
+(x86_64-pc-windows-msvc), and uploads `op_auto_clicker.exe` as a build
+artifact. Visual appearance and real click delivery remain manual
+acceptance items because they require an interactive desktop.

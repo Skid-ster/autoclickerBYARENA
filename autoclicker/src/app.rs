@@ -1,21 +1,32 @@
-//! Single-screen dark dashboard for the OP Auto Clicker.
+//! OP Auto Clicker 4.1-style dashboard.
+//!
+//! The main window mirrors the four-card 4.1 layout (Click Interval, Click
+//! Options, Click Repeat, Cursor Position) with a bottom Start/Stop/Hotkey
+//! row. Delivery internals, Gaussian humanization and the live telemetry
+//! surface live behind an Advanced window so the primary screen stays as
+//! small and familiar as the reference application.
 //!
 //! All worker interaction goes through atomics and the lock-free telemetry
 //! store. The update thread never blocks on the worker and only requests
 //! continuous repaints while a click session is actually running.
 
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-use egui::{
-    Align2, Color32, FontId, Frame, Grid, Margin, Rounding, Sense, Slider,
-    Stroke, Vec2,
+use egui::{Align2, Color32, FontId, Frame, Grid, Margin, Rounding, Sense, Stroke, Vec2};
+
+use crate::config::{
+    interval_parts_to_ms, ms_to_interval_parts, ClickType, CoordinateMode, EngineConfig, InputMode,
+    MouseButton,
 };
-
-use crate::config::{CoordinateMode, EngineConfig, InputMode};
 use crate::engine::{ClickEngine, STATE_PANIC, STATE_RUNNING, STATE_STOPPING};
+use crate::hotkey::{
+    self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, VK_ESCAPE,
+};
+use crate::settings;
 use crate::telemetry::{
-    compute_stats, ClickRecord, GRAPH_HISTORY_SIZE, HISTOGRAM_BINS,
-    SLIDING_WINDOW_LIMIT, TelemetryStats,
+    compute_stats, ClickRecord, TelemetryStats, GRAPH_HISTORY_SIZE, HISTOGRAM_BINS,
+    SLIDING_WINDOW_LIMIT,
 };
 use crate::win32::{self, WindowInfo};
 
@@ -31,25 +42,54 @@ const COLOR_DANGER: Color32 = Color32::from_rgb(248, 81, 73);
 const COLOR_WARNING: Color32 = Color32::from_rgb(210, 153, 34);
 const COLOR_TEXT: Color32 = Color32::from_rgb(230, 237, 243);
 const COLOR_TEXT_DIM: Color32 = Color32::from_rgb(139, 148, 158);
-const COLOR_CHART_GRID: Color32 =
-    Color32::from_rgba_premultiplied(48, 58, 76, 90);
-const COLOR_CHART_BAR_ALT: Color32 =
-    Color32::from_rgba_premultiplied(76, 141, 255, 110);
-const COLOR_PILL_IDLE: Color32 =
-    Color32::from_rgba_premultiplied(139, 148, 158, 40);
+const COLOR_CHART_GRID: Color32 = Color32::from_rgba_premultiplied(48, 58, 76, 90);
+const COLOR_CHART_BAR_ALT: Color32 = Color32::from_rgba_premultiplied(76, 141, 255, 110);
+const COLOR_PILL_IDLE: Color32 = Color32::from_rgba_premultiplied(139, 148, 158, 40);
 
 const LOG_LIMIT: usize = 200;
-const CPS_MIN: f64 = 0.1;
-const CPS_MAX: f64 = 50.0;
-const SIDE_PANEL_WIDTH: f32 = 372.0_f32;
+const SAVE_THROTTLE_MS: u64 = 1_000;
 
-pub struct EngineBApp {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusKind {
+    Ready,
+    Running,
+    Stopping,
+    Panic,
+    Warning,
+    Error,
+}
+
+impl StatusKind {
+    fn color(self) -> Color32 {
+        match self {
+            StatusKind::Ready => COLOR_SUCCESS,
+            StatusKind::Running => COLOR_ACCENT,
+            StatusKind::Stopping => COLOR_WARNING,
+            StatusKind::Panic => COLOR_DANGER,
+            StatusKind::Warning => COLOR_WARNING,
+            StatusKind::Error => COLOR_DANGER,
+        }
+    }
+}
+
+pub struct OpAutoClickerApp {
     engine: ClickEngine,
     config: EngineConfig,
+    prefs: AppPrefs,
+
+    // Click Interval editors (4.1 uses separate h/m/s/ms fields).
+    hours: u64,
+    minutes: u64,
+    seconds: u64,
+    millis: u64,
+    offset_ms: f64,
     repeat_limited: bool,
-    cps_editor: f64,
+
+    // Background targeting (Advanced window).
     windows: Vec<WindowInfo>,
     selected_window: Option<usize>,
+
+    // Telemetry aggregation.
     logs: Vec<String>,
     last_seen_error: Option<String>,
     sliding_window: Vec<ClickRecord>,
@@ -57,30 +97,58 @@ pub struct EngineBApp {
     cps_head: usize,
     cps_count: usize,
     stats: TelemetryStats,
-    f8_was_down: bool,
     previous_elapsed_ms: f64,
     previous_clicks: u64,
+
+    // Hotkey edge detection.
+    toggle_was_down: bool,
+    f8_was_down: bool,
+    capture_was_down: bool,
+
+    // Dialog state.
+    show_hotkey_dialog: bool,
+    capturing: bool,
+    show_advanced: bool,
+
+    // Persistence. The "last saved" fingerprints make the dirty check exact
+    // so the disk is never written while nothing changed.
+    settings_path: Option<PathBuf>,
+    settings_dirty: bool,
+    last_save: Instant,
+    last_saved_config: EngineConfig,
+    last_saved_prefs: AppPrefs,
+    was_running: bool,
+
+    status_kind: StatusKind,
+    status_text: String,
 }
 
-impl Default for EngineBApp {
+impl Default for OpAutoClickerApp {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl EngineBApp {
+impl OpAutoClickerApp {
     pub fn new() -> Self {
         let config = EngineConfig::default();
-        let cps_editor = config.target_cps();
-        Self {
+        let prefs = AppPrefs::default();
+        let (hours, minutes, seconds, millis) =
+            ms_to_interval_parts(config.base_interval_ms as u64);
+        let mut app = Self {
             engine: ClickEngine::new(),
             config,
+            prefs,
+            hours,
+            minutes,
+            seconds,
+            millis,
+            offset_ms: 0.0,
             repeat_limited: false,
-            cps_editor,
             windows: Vec::new(),
             selected_window: None,
             logs: vec![
-                "OP Auto Clicker initialized. F8 is the panic stop key."
+                "OP Auto Clicker initialized. F6 starts/stops, F8 is the panic stop key."
                     .to_string(),
             ],
             last_seen_error: None,
@@ -89,11 +157,112 @@ impl EngineBApp {
             cps_head: 0,
             cps_count: 0,
             stats: TelemetryStats::default(),
-            f8_was_down: false,
             previous_elapsed_ms: 0.0,
             previous_clicks: 0,
+            toggle_was_down: false,
+            f8_was_down: false,
+            capture_was_down: false,
+            show_hotkey_dialog: false,
+            capturing: false,
+            show_advanced: false,
+            settings_path: Self::settings_file_path(),
+            settings_dirty: false,
+            last_save: Instant::now(),
+            last_saved_config: EngineConfig::default(),
+            last_saved_prefs: AppPrefs::default(),
+            was_running: false,
+            status_kind: StatusKind::Ready,
+            status_text: "Ready — set the interval and press Start (F6).".to_string(),
+        };
+        app.load_persisted();
+        app.last_saved_config = app.config.clone();
+        app.last_saved_prefs = app.prefs;
+        app
+    }
+
+    // ------------------------------------------------------------ persistence
+
+    fn settings_file_path() -> Option<PathBuf> {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            if !appdata.is_empty() {
+                return Some(
+                    PathBuf::from(appdata)
+                        .join("op-auto-clicker")
+                        .join("settings.conf"),
+                );
+            }
+        }
+        let exe = std::env::current_exe().ok()?;
+        Some(exe.parent()?.join("settings.conf"))
+    }
+
+    fn load_persisted(&mut self) {
+        let Some(path) = self.settings_path.clone() else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let (mut config, prefs) = settings::parse_settings(&text);
+        // A window handle from a previous process can never be reused: the OS
+        // may have recycled it for an unrelated window.
+        config.target_hwnd = 0;
+        if config.validate().is_err() {
+            self.log("Saved settings failed validation; defaults kept.");
+            self.set_status(
+                StatusKind::Warning,
+                "Saved settings were invalid; factory defaults used.",
+            );
+            return;
+        }
+        self.config = config;
+        self.prefs = prefs;
+        // A hand-edited file could name an unsupported or reserved toggle
+        // key; fall back to the documented default instead of polling it.
+        if !hotkey::is_supported_toggle_vk(self.prefs.toggle_hotkey_vk) {
+            self.log("Saved hotkey code was unsupported or reserved; restored F6.");
+            self.prefs.toggle_hotkey_vk = hotkey::DEFAULT_TOGGLE_VK;
+        }
+        self.repeat_limited = self.config.max_clicks != 0;
+        self.offset_ms = self.config.random_offset_ms;
+        self.sync_interval_editors();
+        self.log(format!("Settings loaded from {}.", path.display()));
+    }
+
+    fn mark_dirty(&mut self) {
+        self.settings_dirty = true;
+    }
+
+    fn flush_settings(&mut self) {
+        self.settings_dirty = false;
+        self.last_save = Instant::now();
+        self.last_saved_config = self.config.clone();
+        self.last_saved_prefs = self.prefs;
+        let Some(path) = self.settings_path.clone() else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let payload = settings::serialize_settings(&self.config, &self.prefs);
+        if let Err(error) = std::fs::create_dir_all(parent).and_then(|_| {
+            let tmp = parent.join("settings.conf.tmp");
+            std::fs::write(&tmp, payload.as_bytes())?;
+            std::fs::rename(&tmp, &path)
+        }) {
+            self.log(format!("Settings not saved: {error}"));
         }
     }
+
+    fn maybe_autosave(&mut self) {
+        if self.settings_dirty
+            && self.last_save.elapsed() >= Duration::from_millis(SAVE_THROTTLE_MS)
+        {
+            self.flush_settings();
+        }
+    }
+
+    // ------------------------------------------------------------- status/log
 
     fn log(&mut self, line: impl Into<String>) {
         self.logs.push(line.into());
@@ -103,6 +272,13 @@ impl EngineBApp {
         }
     }
 
+    fn set_status(&mut self, kind: StatusKind, text: impl Into<String>) {
+        self.status_kind = kind;
+        self.status_text = text.into();
+    }
+
+    // -------------------------------------------------------------- styling
+
     fn apply_style(&self, ctx: &egui::Context) {
         let mut style = (*ctx.style()).clone();
         style.visuals.dark_mode = true;
@@ -111,45 +287,88 @@ impl EngineBApp {
         style.visuals.extreme_bg_color = COLOR_INPUT;
         style.visuals.window_stroke = Stroke::new(1.0_f32, COLOR_BORDER);
         style.visuals.widgets.noninteractive.bg_fill = COLOR_CARD;
-        style.visuals.widgets.noninteractive.fg_stroke =
-            Stroke::new(1.0_f32, COLOR_TEXT);
+        style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
         style.visuals.widgets.inactive.bg_fill = COLOR_INPUT;
-        style.visuals.widgets.inactive.fg_stroke =
-            Stroke::new(1.0_f32, COLOR_TEXT);
-        style.visuals.widgets.hovered.bg_fill =
-            Color32::from_rgb(38, 47, 64);
-        style.visuals.widgets.hovered.fg_stroke =
-            Stroke::new(1.0_f32, COLOR_ACCENT);
-        style.visuals.widgets.active.bg_fill =
-            Color32::from_rgb(46, 57, 78);
-        style.visuals.widgets.active.fg_stroke =
-            Stroke::new(1.0_f32, COLOR_ACCENT);
-        style.visuals.selection.bg_fill =
-            Color32::from_rgba_premultiplied(76, 141, 255, 70);
+        style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, COLOR_TEXT);
+        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(38, 47, 64);
+        style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+        style.visuals.widgets.active.bg_fill = Color32::from_rgb(46, 57, 78);
+        style.visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, COLOR_ACCENT);
+        style.visuals.selection.bg_fill = Color32::from_rgba_premultiplied(76, 141, 255, 70);
         style.visuals.hyperlink_color = COLOR_ACCENT;
-        style.visuals.widgets.noninteractive.rounding =
-            Rounding::same(10.0_f32);
+        style.visuals.widgets.noninteractive.rounding = Rounding::same(10.0_f32);
         style.visuals.widgets.inactive.rounding = Rounding::same(8.0_f32);
         style.visuals.widgets.hovered.rounding = Rounding::same(8.0_f32);
         style.visuals.widgets.active.rounding = Rounding::same(8.0_f32);
-        style.spacing.item_spacing = Vec2::new(9.0_f32, 9.0_f32);
-        style.spacing.button_padding = Vec2::new(12.0_f32, 7.0_f32);
+        style.spacing.item_spacing = Vec2::new(8.0_f32, 8.0_f32);
+        style.spacing.button_padding = Vec2::new(10.0_f32, 6.0_f32);
         ctx.set_style(style);
     }
 
-    fn poll_panic_hotkey(&mut self) {
-        let down = win32::is_f8_down();
-        if down && !self.f8_was_down && self.engine.is_running() {
+    // ----------------------------------------------------------- hotkey input
+
+    fn poll_hotkeys(&mut self) {
+        let f8_down = win32::is_f8_down();
+        if f8_down && !self.f8_was_down && self.engine.is_running() {
             self.engine.panic_stop();
+            self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
             self.log("PANIC STOP triggered by F8.");
+            self.mark_dirty();
+            self.flush_settings();
         }
-        self.f8_was_down = down;
+        self.f8_was_down = f8_down;
+
+        let toggle_down = self.prefs.hotkeys_enabled
+            && is_supported_toggle_vk(self.prefs.toggle_hotkey_vk)
+            && win32::is_vk_down(self.prefs.toggle_hotkey_vk);
+        if toggle_down && !self.toggle_was_down {
+            self.toggle_session();
+        }
+        self.toggle_was_down = toggle_down;
     }
+
+    fn poll_hotkey_capture(&mut self) {
+        let escape_down = win32::is_vk_down(VK_ESCAPE);
+        let hit = hotkey::capturable_vks()
+            .into_iter()
+            .find(|vk| win32::is_vk_down(*vk));
+        self.capture_was_down = escape_down || hit.is_some();
+
+        if escape_down {
+            self.capturing = false;
+            self.set_status(StatusKind::Ready, "Hotkey assignment cancelled.");
+            return;
+        }
+        let Some(vk) = hit else { return };
+        if is_reserved_panic_vk(vk) {
+            self.set_status(
+                StatusKind::Warning,
+                "F8 is reserved for Panic Stop and cannot be reassigned.",
+            );
+            self.log("Hotkey assignment rejected: F8 is reserved for panic stop.");
+            return;
+        }
+        if is_supported_toggle_vk(vk) {
+            self.prefs.toggle_hotkey_vk = vk;
+            self.capturing = false;
+            let name = vk_display_name(vk);
+            self.set_status(
+                StatusKind::Ready,
+                format!("Start/Stop hotkey set to {name}."),
+            );
+            self.log(format!("Start/Stop hotkey changed to {name}."));
+            self.mark_dirty();
+            self.flush_settings();
+        }
+    }
+
+    // ------------------------------------------------------------- engine I/O
 
     fn surface_engine_errors(&mut self) {
         if let Some(error) = self.engine.last_error() {
             if Some(&error) != self.last_seen_error.as_ref() {
                 self.log(format!("Engine error: {error}"));
+                self.set_status(StatusKind::Error, format!("Error: {error}"));
                 self.last_seen_error = Some(error);
             }
         }
@@ -186,17 +405,41 @@ impl EngineBApp {
         }
     }
 
+    fn toggle_session(&mut self) {
+        if self.engine.is_running() {
+            self.engine.request_stop();
+            self.set_status(StatusKind::Stopping, "Stopping…");
+            self.log("Stop requested via hotkey.");
+            self.mark_dirty();
+            self.flush_settings();
+        } else {
+            self.handle_start();
+        }
+    }
+
     fn handle_start(&mut self) {
         if self.config.input_mode == InputMode::BackgroundHwnd {
             let Some(index) = self.selected_window else {
+                self.set_status(
+                    StatusKind::Warning,
+                    "Select a target window in Advanced first.",
+                );
                 self.log("Start rejected: select a target window first.");
                 return;
             };
             let Some(info) = self.windows.get(index) else {
+                self.set_status(
+                    StatusKind::Warning,
+                    "Target list is stale; press Refresh in Advanced.",
+                );
                 self.log("Start rejected: target list is stale, refresh it.");
                 return;
             };
             if !win32::is_valid_window(info.hwnd) {
+                self.set_status(
+                    StatusKind::Warning,
+                    "Selected window no longer exists; pick another.",
+                );
                 self.log("Start rejected: selected window handle is invalid.");
                 return;
             }
@@ -212,24 +455,87 @@ impl EngineBApp {
                 self.sliding_window.clear();
                 self.previous_elapsed_ms = 0.0;
                 self.previous_clicks = 0;
+                self.last_seen_error = None;
+                self.set_status(
+                    StatusKind::Running,
+                    format!(
+                        "Running at {:.2} CPS — {} button, {} click.",
+                        self.config.target_cps(),
+                        self.config.mouse_button.label().to_lowercase(),
+                        self.config.click_type.label().to_lowercase()
+                    ),
+                );
                 self.log(format!(
                     "Click session started at {:.2} CPS.",
                     self.config.target_cps()
                 ));
             }
-            Err(error) => self.log(format!("Start rejected: {error}")),
+            Err(error) => {
+                self.set_status(StatusKind::Error, format!("Start rejected: {error}"));
+                self.log(format!("Start rejected: {error}"));
+            }
         }
     }
 
-    fn card<R>(
-        ui: &mut egui::Ui,
-        add: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> R {
+    fn reset_to_defaults(&mut self) {
+        self.engine.request_stop();
+        self.config = EngineConfig::default();
+        self.prefs = AppPrefs::default();
+        self.repeat_limited = false;
+        self.offset_ms = 0.0;
+        self.selected_window = None;
+        self.sync_interval_editors();
+        self.set_status(StatusKind::Ready, "Factory defaults restored.");
+        self.log("Configuration reset to factory defaults.");
+        self.mark_dirty();
+        self.flush_settings();
+    }
+
+    // ---------------------------------------------------------- interval math
+
+    fn sync_interval_editors(&mut self) {
+        let total = self.config.base_interval_ms.round().max(0.0) as u64;
+        let (hours, minutes, seconds, millis) = ms_to_interval_parts(total);
+        self.hours = hours;
+        self.minutes = minutes;
+        self.seconds = seconds;
+        self.millis = millis;
+    }
+
+    fn commit_interval_editors(&mut self) {
+        let total = interval_parts_to_ms(self.hours, self.minutes, self.seconds, self.millis);
+        if total > 0 {
+            self.config.base_interval_ms = total as f64;
+        }
+        self.config.random_offset_ms = self.offset_ms;
+    }
+
+    /// Compares the live configuration against the last flushed fingerprint.
+    fn detect_settings_changes(&mut self) {
+        if self.config != self.last_saved_config || self.prefs != self.last_saved_prefs {
+            self.mark_dirty();
+        }
+    }
+
+    fn interval_total_ms(&self) -> u64 {
+        interval_parts_to_ms(self.hours, self.minutes, self.seconds, self.millis)
+    }
+
+    fn validation_message(&self) -> Option<String> {
+        if self.interval_total_ms() == 0 {
+            return Some("Interval must be at least 1 millisecond.".to_string());
+        }
+        self.config.validate().err()
+    }
+
+    // ------------------------------------------------------------ small parts
+
+    fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
         Frame::group(ui.style())
             .fill(COLOR_CARD)
             .stroke(Stroke::new(1.0_f32, COLOR_BORDER))
             .rounding(Rounding::same(10.0_f32))
-            .inner_margin(Margin::same(13.0_f32))
+            .inner_margin(Margin::same(12.0_f32))
             .show(ui, add)
             .inner
     }
@@ -241,39 +547,50 @@ impl EngineBApp {
                 .strong()
                 .size(12.5_f32),
         );
-        ui.add_space(5.0_f32);
-    }
-
-    fn hint(ui: &mut egui::Ui, text: &str) {
-        ui.add_space(3.0_f32);
-        ui.label(
-            egui::RichText::new(text)
-                .color(COLOR_TEXT_DIM)
-                .small(),
-        );
+        ui.add_space(4.0_f32);
     }
 
     fn status_pill(ui: &mut egui::Ui, text: &str, color: Color32, soft: Color32) {
-        let font = FontId::proportional(13.5_f32);
+        let font = FontId::proportional(12.5_f32);
         let galley = ui.painter().layout_no_wrap(text.to_string(), font, color);
-        let size = galley.size() + Vec2::new(26.0_f32, 10.0_f32);
+        let size = galley.size() + Vec2::new(22.0_f32, 8.0_f32);
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 9.0_f32, soft);
         painter.rect_stroke(rect, 9.0_f32, Stroke::new(1.0_f32, color));
         painter.text(
-            rect.min + Vec2::new(13.0_f32, 5.0_f32),
+            rect.min + Vec2::new(11.0_f32, 4.0_f32),
             Align2::LEFT_TOP,
             text,
-            FontId::proportional(13.5_f32),
+            FontId::proportional(12.5_f32),
             color,
         );
     }
 
-    // ------------------------------------------------------------------ header
+    fn validity_indicator(ui: &mut egui::Ui, error: Option<&str>) {
+        let (color, text) = match error {
+            None => (COLOR_SUCCESS, "\u{2022} Valid"),
+            Some(_) => (COLOR_DANGER, "\u{2022} Invalid"),
+        };
+        ui.label(
+            egui::RichText::new(text)
+                .color(color)
+                .strong()
+                .size(12.5_f32),
+        );
+    }
+
+    fn numbered_field(ui: &mut egui::Ui, value: &mut u64, max: u64, width: f32) {
+        ui.add_sized(
+            [width, 22.0_f32],
+            egui::DragValue::new(value).clamp_range(0..=max),
+        );
+    }
+
+    // ---------------------------------------------------------------- header
 
     fn draw_header(&mut self, ui: &mut egui::Ui) {
-        let (text, color, soft) = match self.engine.state() {
+        let (pill_text, pill_color, pill_soft) = match self.engine.state() {
             STATE_RUNNING => (
                 "RUNNING",
                 COLOR_SUCCESS,
@@ -285,7 +602,7 @@ impl EngineBApp {
                 Color32::from_rgba_premultiplied(210, 153, 34, 42),
             ),
             STATE_PANIC => (
-                "PANIC STOP",
+                "PANIC",
                 COLOR_DANGER,
                 Color32::from_rgba_premultiplied(248, 81, 73, 42),
             ),
@@ -296,133 +613,395 @@ impl EngineBApp {
                 ui.label(
                     egui::RichText::new("OP Auto Clicker")
                         .color(COLOR_TEXT)
-                        .size(21.0_f32)
+                        .size(19.0_f32)
                         .strong(),
-                );
-                ui.label(
-                    egui::RichText::new("Rust edition")
-                        .color(COLOR_TEXT_DIM)
-                        .small(),
                 );
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                Self::status_pill(ui, text, color, soft);
+                Self::status_pill(ui, pill_text, pill_color, pill_soft);
             });
         });
-        ui.add_space(6.0_f32);
+        ui.add_space(2.0_f32);
         ui.horizontal_wrapped(|ui| {
             let counters = [
                 format!("Clicks: {}", self.engine.click_count()),
                 format!("Elapsed: {:.2} s", self.engine.elapsed_ms() / 1000.0),
                 format!("Actual CPS: {:.2}", self.stats.actual_cps),
-                format!("Missed: {}", self.engine.missed_count()),
             ];
             for (i, counter) in counters.iter().enumerate() {
                 if i > 0 {
-                    ui.add_space(14.0_f32);
+                    ui.add_space(12.0_f32);
                 }
-                ui.label(
-                    egui::RichText::new(counter).color(COLOR_TEXT_DIM),
-                );
+                ui.label(egui::RichText::new(counter).color(COLOR_TEXT_DIM).small());
             }
         });
-        if self.engine.priority_denied() {
-            ui.add_space(3.0_f32);
+        ui.add_space(3.0_f32);
+        ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new(
-                    "Warning: THREAD_PRIORITY_TIME_CRITICAL was denied by the OS.",
-                )
-                .color(COLOR_WARNING)
-                .small(),
+                egui::RichText::new("\u{2022}")
+                    .color(self.status_kind.color())
+                    .size(13.0_f32),
             );
-        }
+            ui.label(
+                egui::RichText::new(&self.status_text)
+                    .color(self.status_kind.color())
+                    .size(13.0_f32),
+            );
+        });
     }
 
-    // ------------------------------------------------------------- left column
+    // --------------------------------------------------------- the four cards
 
-    fn draw_controls(&mut self, ui: &mut egui::Ui) {
-        // Click rate.
+    fn draw_interval_card(&mut self, ui: &mut egui::Ui) {
         Self::card(ui, |ui| {
-            Self::section_title(ui, "CLICK RATE");
-            if ui
-                .add(
-                    Slider::new(&mut self.cps_editor, CPS_MIN..=CPS_MAX)
-                        .text("Clicks per second")
-                        .fixed_decimals(2),
-                )
-                .changed()
-                && self.cps_editor > 0.0
-            {
-                self.config.base_interval_ms = 1000.0 / self.cps_editor;
-            }
-            ui.label(
-                egui::RichText::new(format!(
-                    "{:.2} ms between clicks",
-                    self.config.base_interval_ms
-                ))
-                .color(COLOR_TEXT_DIM)
-                .small(),
-            );
-        });
-        ui.add_space(9.0_f32);
-
-        // Click options.
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "CLICK OPTIONS");
+            Self::section_title(ui, "CLICK INTERVAL");
             ui.horizontal(|ui| {
-                ui.radio_value(
-                    &mut self.config.input_mode,
-                    InputMode::GlobalSendInput,
-                    "Global (SendInput)",
-                );
-                ui.radio_value(
-                    &mut self.config.input_mode,
-                    InputMode::BackgroundHwnd,
-                    "Background (window)",
+                let fields: [(&str, &mut u64, u64); 4] = [
+                    ("Hours", &mut self.hours, 99),
+                    ("Mins", &mut self.minutes, 59),
+                    ("Secs", &mut self.seconds, 59),
+                    ("Milliseconds", &mut self.millis, 999),
+                ];
+                for (label, value, max) in fields {
+                    ui.vertical(|ui| {
+                        Self::numbered_field(ui, value, max, 66.0_f32);
+                        ui.label(
+                            egui::RichText::new(label)
+                                .color(COLOR_TEXT_DIM)
+                                .size(11.5_f32),
+                        );
+                    });
+                    ui.add_space(4.0_f32);
+                }
+            });
+            ui.add_space(4.0_f32);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Random offset \u{00B1}").color(COLOR_TEXT));
+                ui.add_sized(
+                    [90.0_f32, 22.0_f32],
+                    egui::DragValue::new(&mut self.offset_ms)
+                        .speed(1.0)
+                        .clamp_range(0.0..=10_000.0)
+                        .fixed_decimals(1)
+                        .suffix(" ms"),
                 );
             });
             ui.add_space(4.0_f32);
-
-            if self.config.input_mode == InputMode::GlobalSendInput {
-                let fixed =
-                    self.config.coordinate_mode == CoordinateMode::FixedScreen;
-                egui::ComboBox::from_label("Position")
-                    .selected_text(if fixed {
-                        "Fixed screen coordinates"
-                    } else {
-                        "Current cursor position"
-                    })
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.config.coordinate_mode,
-                            CoordinateMode::CurrentCursor,
-                            "Current cursor position",
-                        );
-                        ui.selectable_value(
-                            &mut self.config.coordinate_mode,
-                            CoordinateMode::FixedScreen,
-                            "Fixed screen coordinates",
-                        );
-                    });
-                if fixed {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::DragValue::new(&mut self.config.fixed_x)
-                                .clamp_range(-100000..=100000)
-                                .prefix("X: "),
-                        );
-                        ui.add(
-                            egui::DragValue::new(&mut self.config.fixed_y)
-                                .clamp_range(-100000..=100000)
-                                .prefix("Y: "),
-                        );
-                    });
-                }
-                Self::hint(
-                    ui,
-                    "Hardware-level input that works in any application.",
+            let total = self.interval_total_ms();
+            let error = self.validation_message();
+            ui.horizontal(|ui| {
+                let cps = if total > 0 {
+                    1000.0 / total as f64
+                } else {
+                    0.0
+                };
+                ui.label(
+                    egui::RichText::new(format!("{total} ms \u{00B7} {cps:.2} CPS"))
+                        .color(COLOR_TEXT_DIM)
+                        .small(),
                 );
-            } else {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    Self::validity_indicator(ui, error.as_deref());
+                });
+            });
+            if let Some(message) = &error {
+                ui.label(egui::RichText::new(message).color(COLOR_WARNING).small());
+            }
+        });
+    }
+
+    fn draw_options_card(&mut self, ui: &mut egui::Ui) {
+        Self::card(ui, |ui| {
+            Self::section_title(ui, "CLICK OPTIONS");
+            Grid::new("click_options_grid")
+                .num_columns(2)
+                .spacing(Vec2::new(10.0_f32, 8.0_f32))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("Mouse button").color(COLOR_TEXT_DIM));
+                    egui::ComboBox::from_id_source("mouse_button_combo")
+                        .selected_text(self.config.mouse_button.label())
+                        .show_ui(ui, |ui| {
+                            for button in MouseButton::all() {
+                                ui.selectable_value(
+                                    &mut self.config.mouse_button,
+                                    button,
+                                    button.label(),
+                                );
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label(egui::RichText::new("Click type").color(COLOR_TEXT_DIM));
+                    egui::ComboBox::from_id_source("click_type_combo")
+                        .selected_text(self.config.click_type.label())
+                        .show_ui(ui, |ui| {
+                            for kind in ClickType::all() {
+                                ui.selectable_value(
+                                    &mut self.config.click_type,
+                                    kind,
+                                    kind.label(),
+                                );
+                            }
+                        });
+                    ui.end_row();
+                });
+        });
+    }
+
+    fn draw_repeat_card(&mut self, ui: &mut egui::Ui) {
+        Self::card(ui, |ui| {
+            Self::section_title(ui, "CLICK REPEAT");
+            ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut self.repeat_limited, true, "Repeat");
+                ui.add_sized(
+                    [110.0_f32, 22.0_f32],
+                    egui::DragValue::new(&mut self.config.max_clicks)
+                        .clamp_range(1..=1_000_000_000),
+                );
+                ui.label(egui::RichText::new("times").color(COLOR_TEXT_DIM));
+            });
+            if self.repeat_limited && self.config.max_clicks == 0 {
+                self.config.max_clicks = 100;
+            }
+            if !self.repeat_limited {
+                self.config.max_clicks = 0;
+            }
+        });
+    }
+
+    fn draw_position_card(&mut self, ui: &mut egui::Ui) {
+        Self::card(ui, |ui| {
+            Self::section_title(ui, "CURSOR POSITION");
+            ui.radio_value(
+                &mut self.config.coordinate_mode,
+                CoordinateMode::CurrentCursor,
+                "Current location",
+            );
+            ui.horizontal(|ui| {
+                ui.radio_value(
+                    &mut self.config.coordinate_mode,
+                    CoordinateMode::FixedScreen,
+                    "Pick location",
+                );
+                let fixed = self.config.coordinate_mode == CoordinateMode::FixedScreen;
+                ui.add_enabled_ui(fixed, |ui| {
+                    ui.add_sized(
+                        [86.0_f32, 22.0_f32],
+                        egui::DragValue::new(&mut self.config.fixed_x)
+                            .clamp_range(-100_000..=100_000)
+                            .prefix("X: "),
+                    );
+                    ui.add_sized(
+                        [86.0_f32, 22.0_f32],
+                        egui::DragValue::new(&mut self.config.fixed_y)
+                            .clamp_range(-100_000..=100_000)
+                            .prefix("Y: "),
+                    );
+                    if ui.button("Pick").clicked() {
+                        match win32::get_cursor_pos() {
+                            Some((x, y)) => {
+                                self.config.fixed_x = x as i64;
+                                self.config.fixed_y = y as i64;
+                                self.set_status(
+                                    StatusKind::Ready,
+                                    format!("Picked screen position ({x}, {y})."),
+                                );
+                                self.log(format!("Fixed position picked: ({x}, {y})."));
+                                self.mark_dirty();
+                                self.flush_settings();
+                            }
+                            None => {
+                                self.set_status(
+                                    StatusKind::Error,
+                                    "GetCursorPos failed; enter X/Y manually.",
+                                );
+                                self.log(
+                                    "Pick location failed: GetCursorPos returned no position.",
+                                );
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    }
+
+    // ---------------------------------------------------------------- footer
+
+    fn draw_footer(&mut self, ui: &mut egui::Ui) {
+        let running = self.engine.is_running();
+        let config_ok = self.validation_message().is_none();
+        let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(!running && config_ok, |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(format!("Start ({hotkey_name})"))
+                                .strong()
+                                .color(Color32::WHITE)
+                                .size(14.0_f32),
+                        )
+                        .fill(COLOR_SUCCESS)
+                        .min_size(Vec2::new(118.0_f32, 36.0_f32)),
+                    )
+                    .clicked()
+                {
+                    self.handle_start();
+                }
+            });
+            ui.add_enabled_ui(running, |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(format!("Stop ({hotkey_name})"))
+                                .strong()
+                                .color(COLOR_WARNING)
+                                .size(14.0_f32),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::new(1.5_f32, COLOR_WARNING))
+                        .min_size(Vec2::new(118.0_f32, 36.0_f32)),
+                    )
+                    .clicked()
+                {
+                    self.engine.request_stop();
+                    self.set_status(StatusKind::Stopping, "Stopping…");
+                    self.log("Graceful stop requested.");
+                    self.mark_dirty();
+                    self.flush_settings();
+                }
+            });
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Panic (F8)")
+                            .strong()
+                            .color(Color32::WHITE)
+                            .size(14.0_f32),
+                    )
+                    .fill(COLOR_DANGER)
+                    .min_size(Vec2::new(104.0_f32, 36.0_f32)),
+                )
+                .clicked()
+            {
+                self.engine.panic_stop();
+                self.set_status(StatusKind::Panic, "Panic stop triggered from dashboard.");
+                self.log("PANIC STOP triggered from dashboard.");
+                self.mark_dirty();
+                self.flush_settings();
+            }
+            ui.separator();
+            if ui.button("Hotkey setting…").clicked() {
+                self.show_hotkey_dialog = true;
+                self.capturing = false;
+            }
+            if ui.button("Reset").clicked() {
+                self.reset_to_defaults();
+            }
+            if ui.button("Advanced…").clicked() {
+                self.show_advanced = true;
+            }
+        });
+    }
+
+    // ---------------------------------------------------------- hotkey dialog
+
+    fn draw_hotkey_dialog(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_hotkey_dialog;
+        let mut should_close = false;
+        egui::Window::new("Hotkey setting")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(340.0_f32)
+            .show(ctx, |ui| {
+                ui.checkbox(&mut self.prefs.hotkeys_enabled, "Enable global hotkey");
+                ui.add_space(6.0_f32);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Start/Stop hotkey: {}",
+                        vk_display_name(self.prefs.toggle_hotkey_vk)
+                    ))
+                    .color(COLOR_TEXT)
+                    .strong(),
+                );
+                ui.add_space(6.0_f32);
+                if self.capturing {
+                    ui.label(
+                        egui::RichText::new(
+                            "Press any key to assign it…  (Esc cancels)",
+                        )
+                        .color(COLOR_WARNING),
+                    );
+                } else if ui.button("Assign new key…").clicked() {
+                    self.capturing = true;
+                    self.capture_was_down = false;
+                }
+                ui.add_space(6.0_f32);
+                ui.label(
+                    egui::RichText::new(
+                        "Supported: F1–F24, A–Z, 0–9 and Space. F8 is permanently reserved for Panic Stop.",
+                    )
+                    .color(COLOR_TEXT_DIM)
+                    .small(),
+                );
+                ui.add_space(8.0_f32);
+                if ui.button("Close").clicked() {
+                    should_close = true;
+                }
+            });
+        if self.capturing {
+            self.poll_hotkey_capture();
+        }
+        if !open || should_close {
+            self.show_hotkey_dialog = false;
+            self.capturing = false;
+            self.mark_dirty();
+            self.flush_settings();
+        }
+    }
+
+    // ------------------------------------------------------------ advanced UI
+
+    fn draw_advanced_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_advanced;
+        egui::Window::new("Advanced — delivery, humanization & telemetry")
+            .open(&mut open)
+            .default_size(Vec2::new(520.0_f32, 620.0_f32))
+            .min_width(440.0_f32)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.draw_delivery_section(ui);
+                    ui.add_space(8.0_f32);
+                    self.draw_humanization_section(ui);
+                    ui.add_space(8.0_f32);
+                    self.draw_telemetry_section(ui);
+                });
+            });
+        if !open {
+            self.show_advanced = false;
+        }
+    }
+
+    fn draw_delivery_section(&mut self, ui: &mut egui::Ui) {
+        Self::card(ui, |ui| {
+            Self::section_title(ui, "INPUT DELIVERY & TARGETING");
+            ui.radio_value(
+                &mut self.config.input_mode,
+                InputMode::GlobalSendInput,
+                "Global (SendInput) — works in any application",
+            );
+            ui.radio_value(
+                &mut self.config.input_mode,
+                InputMode::BackgroundHwnd,
+                "Background (posted window messages)",
+            );
+            if self.config.input_mode == InputMode::BackgroundHwnd {
+                ui.add_space(4.0_f32);
                 ui.horizontal(|ui| {
                     let selected = self
                         .selected_window
@@ -434,10 +1013,8 @@ impl EngineBApp {
                         .show_ui(ui, |ui| {
                             if self.windows.is_empty() {
                                 ui.label(
-                                    egui::RichText::new(
-                                        "List is empty — press Refresh",
-                                    )
-                                    .color(COLOR_TEXT_DIM),
+                                    egui::RichText::new("List is empty — press Refresh")
+                                        .color(COLOR_TEXT_DIM),
                                 );
                             }
                             for (index, info) in self.windows.iter().enumerate() {
@@ -448,12 +1025,12 @@ impl EngineBApp {
                                     if info.minimized { " (minimized)" } else { "" }
                                 );
                                 if ui
-                                    .selectable_label(
-                                        self.selected_window == Some(index),
-                                        label,
-                                    )
+                                    .selectable_label(self.selected_window == Some(index), label)
                                     .clicked()
                                 {
+                                    // The per-frame fingerprint check flushes
+                                    // this change to disk; no mutable call can
+                                    // live inside the immutable window iter.
                                     self.selected_window = Some(index);
                                     self.config.target_hwnd = info.hwnd;
                                 }
@@ -472,14 +1049,16 @@ impl EngineBApp {
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.add(
+                    ui.add_sized(
+                        [110.0_f32, 22.0_f32],
                         egui::DragValue::new(&mut self.config.client_x)
-                            .clamp_range(0..=100000)
+                            .clamp_range(0..=100_000)
                             .prefix("Client X: "),
                     );
-                    ui.add(
+                    ui.add_sized(
+                        [110.0_f32, 22.0_f32],
                         egui::DragValue::new(&mut self.config.client_y)
-                            .clamp_range(0..=100000)
+                            .clamp_range(0..=100_000)
                             .prefix("Client Y: "),
                     );
                 });
@@ -487,111 +1066,74 @@ impl EngineBApp {
                     &mut self.config.background_synchronous,
                     "Synchronous delivery (SendMessageTimeoutW)",
                 );
-                Self::hint(
-                    ui,
-                    "Clicks land in unfocused or minimized windows via posted WM_MOUSE messages.",
-                );
             }
         });
-        ui.add_space(9.0_f32);
+    }
 
-        // Repeat.
+    fn draw_humanization_section(&mut self, ui: &mut egui::Ui) {
         Self::card(ui, |ui| {
-            Self::section_title(ui, "REPEAT");
-            ui.radio_value(&mut self.repeat_limited, false, "Until stopped");
-            ui.radio_value(
-                &mut self.repeat_limited,
-                true,
-                "Stop after a number of clicks",
-            );
-            if self.repeat_limited {
-                if self.config.max_clicks == 0 {
-                    self.config.max_clicks = 100;
-                }
-                ui.add(
-                    egui::DragValue::new(&mut self.config.max_clicks)
-                        .clamp_range(1..=1_000_000_000)
-                        .prefix("Click count: "),
-                );
-            } else {
-                self.config.max_clicks = 0;
-            }
-        });
-        ui.add_space(9.0_f32);
-
-        // Humanization with advanced fields behind one disclosure.
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "HUMANIZATION");
+            Self::section_title(ui, "GAUSSIAN HUMANIZATION (EXPERT)");
             ui.checkbox(
                 &mut self.config.humanize_enabled,
                 "Enable Gaussian humanization",
             );
-            ui.collapsing("Advanced timing & humanization", |ui| {
+            ui.collapsing("Advanced timing & humanization fields", |ui| {
                 ui.add_space(3.0_f32);
-                ui.add(
-                    egui::DragValue::new(&mut self.config.base_interval_ms)
-                        .speed(0.5)
-                        .clamp_range(0.05..=10000.0)
-                        .fixed_decimals(4)
-                        .suffix(" ms base interval"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.config.sigma_ms)
-                        .speed(0.5)
-                        .clamp_range(0.0..=1000.0)
-                        .fixed_decimals(4)
-                        .suffix(" ms interval sigma"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.config.sigma_percent)
-                        .speed(1.0)
-                        .clamp_range(0.0..=100.0)
-                        .fixed_decimals(2)
-                        .suffix(" % interval sigma"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.config.min_interval_ms)
-                        .speed(0.5)
-                        .clamp_range(0.05..=10000.0)
-                        .fixed_decimals(4)
-                        .suffix(" ms min interval"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.config.max_interval_ms)
-                        .speed(10.0)
-                        .clamp_range(1.0..=60000.0)
-                        .fixed_decimals(4)
-                        .suffix(" ms max interval"),
-                );
-                ui.add_space(6.0_f32);
-                ui.add(
-                    egui::DragValue::new(&mut self.config.hold_mean_ms)
-                        .speed(1.0)
-                        .clamp_range(0.0..=5000.0)
-                        .fixed_decimals(3)
-                        .suffix(" ms hold mean"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.config.hold_sigma_ms)
-                        .speed(0.5)
-                        .clamp_range(0.0..=1000.0)
-                        .fixed_decimals(3)
-                        .suffix(" ms hold sigma"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.config.hold_min_ms)
-                        .speed(0.5)
-                        .clamp_range(0.0..=5000.0)
-                        .fixed_decimals(3)
-                        .suffix(" ms hold min"),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.config.hold_max_ms)
-                        .speed(5.0)
-                        .clamp_range(1.0..=10000.0)
-                        .fixed_decimals(3)
-                        .suffix(" ms hold max"),
-                );
+                let fields: [(&str, &mut f64, f64, f64); 9] = [
+                    (
+                        "Base interval (ms)",
+                        &mut self.config.base_interval_ms,
+                        0.05,
+                        10_000.0,
+                    ),
+                    (
+                        "Interval sigma (ms)",
+                        &mut self.config.sigma_ms,
+                        0.0,
+                        1_000.0,
+                    ),
+                    (
+                        "Interval sigma (%)",
+                        &mut self.config.sigma_percent,
+                        0.0,
+                        100.0,
+                    ),
+                    (
+                        "Min interval (ms)",
+                        &mut self.config.min_interval_ms,
+                        0.05,
+                        10_000.0,
+                    ),
+                    (
+                        "Max interval (ms)",
+                        &mut self.config.max_interval_ms,
+                        1.0,
+                        60_000.0,
+                    ),
+                    (
+                        "Hold mean (ms)",
+                        &mut self.config.hold_mean_ms,
+                        0.0,
+                        5_000.0,
+                    ),
+                    (
+                        "Hold sigma (ms)",
+                        &mut self.config.hold_sigma_ms,
+                        0.0,
+                        1_000.0,
+                    ),
+                    ("Hold min (ms)", &mut self.config.hold_min_ms, 0.0, 5_000.0),
+                    ("Hold max (ms)", &mut self.config.hold_max_ms, 1.0, 10_000.0),
+                ];
+                for (label, value, low, high) in fields {
+                    ui.add(
+                        egui::DragValue::new(value)
+                            .speed(0.5)
+                            .clamp_range(low..=high)
+                            .fixed_decimals(4)
+                            .prefix(format!("{label}: ")),
+                    );
+                }
                 ui.add_space(6.0_f32);
                 match self.config.validate() {
                     Ok(()) => ui.label(
@@ -612,13 +1154,77 @@ impl EngineBApp {
         });
     }
 
-    // ------------------------------------------------------------ right column
+    fn draw_telemetry_section(&mut self, ui: &mut egui::Ui) {
+        Self::card(ui, |ui| {
+            Self::section_title(ui, "LIVE METRICS");
+            Grid::new("metrics_grid")
+                .num_columns(2)
+                .spacing(Vec2::new(18.0_f32, 8.0_f32))
+                .show(ui, |ui| {
+                    let metric = |ui: &mut egui::Ui, label: &str, value: String| {
+                        ui.label(egui::RichText::new(label).color(COLOR_TEXT_DIM));
+                        ui.label(egui::RichText::new(value).color(COLOR_TEXT));
+                        ui.end_row();
+                    };
+                    metric(ui, "Actual CPS", format!("{:.3}", self.stats.actual_cps));
+                    metric(
+                        ui,
+                        "Interval mean",
+                        format!("{:.4} ms", self.stats.mean_interval_ms),
+                    );
+                    metric(
+                        ui,
+                        "Interval sigma",
+                        format!("{:.4} ms", self.stats.sigma_interval_ms),
+                    );
+                    metric(
+                        ui,
+                        "Consistency (+/-10%)",
+                        format!("{:.2} %", self.stats.consistency_pct),
+                    );
+                    metric(
+                        ui,
+                        "Missed deadlines",
+                        self.stats.missed_deadlines.to_string(),
+                    );
+                    metric(
+                        ui,
+                        "Ring buffer dropped",
+                        self.engine.telemetry().dropped_records().to_string(),
+                    );
+                });
+        });
+        ui.add_space(8.0_f32);
+        Self::card(ui, |ui| self.draw_cps_graph(ui));
+        ui.add_space(8.0_f32);
+        Self::card(ui, |ui| self.draw_histogram(ui));
+        ui.add_space(8.0_f32);
+        Self::card(ui, |ui| {
+            Self::section_title(ui, "RECENT ACTIVITY");
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .max_height(180.0_f32)
+                .show(ui, |ui| {
+                    for line in &self.logs {
+                        let warning = line.contains("PANIC")
+                            || line.contains("rejected")
+                            || line.contains("error")
+                            || line.contains("Warning")
+                            || line.contains("failed");
+                        let color = if warning {
+                            COLOR_WARNING
+                        } else {
+                            COLOR_TEXT_DIM
+                        };
+                        ui.label(egui::RichText::new(line).color(color).small());
+                    }
+                });
+        });
+    }
 
     fn draw_cps_graph(&self, ui: &mut egui::Ui) {
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), 168.0_f32),
-            Sense::hover(),
-        );
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 150.0_f32), Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 10.0_f32, COLOR_INPUT);
 
@@ -641,25 +1247,14 @@ impl EngineBApp {
         if self.cps_count > 1 {
             let mut previous = egui::Pos2::ZERO;
             for i in 0..self.cps_count {
-                let index = (self.cps_head
-                    + self.cps_history.len()
-                    - self.cps_count
-                    + i)
+                let index = (self.cps_head + self.cps_history.len() - self.cps_count + i)
                     % self.cps_history.len();
-                let x = rect.left()
-                    + rect.width() * i as f32
-                        / (self.cps_history.len() - 1) as f32;
-                let normalized =
-                    (self.cps_history[index] / max_cps).clamp(0.0, 1.0) as f32;
-                let y = rect.bottom()
-                    - 10.0_f32
-                    - normalized * (rect.height() - 22.0_f32);
+                let x = rect.left() + rect.width() * i as f32 / (self.cps_history.len() - 1) as f32;
+                let normalized = (self.cps_history[index] / max_cps).clamp(0.0, 1.0) as f32;
+                let y = rect.bottom() - 10.0_f32 - normalized * (rect.height() - 22.0_f32);
                 let current = egui::pos2(x, y);
                 if i > 0 {
-                    painter.line_segment(
-                        [previous, current],
-                        Stroke::new(2.0_f32, COLOR_ACCENT),
-                    );
+                    painter.line_segment([previous, current], Stroke::new(2.0_f32, COLOR_ACCENT));
                 }
                 previous = current;
             }
@@ -674,10 +1269,8 @@ impl EngineBApp {
     }
 
     fn draw_histogram(&self, ui: &mut egui::Ui) {
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), 150.0_f32),
-            Sense::hover(),
-        );
+        let (rect, _) =
+            ui.allocate_exact_size(Vec2::new(ui.available_width(), 130.0_f32), Sense::hover());
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 10.0_f32, COLOR_INPUT);
 
@@ -692,14 +1285,13 @@ impl EngineBApp {
         let gap = 3.0_f32;
         let bar_width = rect.width() / HISTOGRAM_BINS as f32 - gap;
         for bin in 0..HISTOGRAM_BINS {
-            let height = rect.height()
-                * self.stats.histogram[bin] as f32
-                / max_bin
-                * 0.78_f32;
-            let x =
-                rect.left() + 8.0_f32 + bin as f32 * (bar_width + gap);
-            let color =
-                if bin % 2 == 0 { COLOR_ACCENT } else { COLOR_CHART_BAR_ALT };
+            let height = rect.height() * self.stats.histogram[bin] as f32 / max_bin * 0.78_f32;
+            let x = rect.left() + 8.0_f32 + bin as f32 * (bar_width + gap);
+            let color = if bin % 2 == 0 {
+                COLOR_ACCENT
+            } else {
+                COLOR_CHART_BAR_ALT
+            };
             painter.rect_filled(
                 egui::Rect::from_min_size(
                     egui::pos2(x, rect.bottom() - height - 10.0_f32),
@@ -717,156 +1309,59 @@ impl EngineBApp {
             COLOR_TEXT_DIM,
         );
     }
-
-    fn draw_analytics(&mut self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "LIVE METRICS");
-            Grid::new("metrics_grid")
-                .num_columns(2)
-                .spacing(Vec2::new(22.0_f32, 9.0_f32))
-                .show(ui, |ui| {
-                    let metric =
-                        |ui: &mut egui::Ui, label: &str, value: String| {
-                            ui.label(
-                                egui::RichText::new(label).color(COLOR_TEXT_DIM),
-                            );
-                            ui.label(
-                                egui::RichText::new(value).color(COLOR_TEXT),
-                            );
-                            ui.end_row();
-                        };
-                    metric(ui, "Actual CPS", format!("{:.3}", self.stats.actual_cps));
-                    metric(ui, "Interval mean", format!("{:.4} ms", self.stats.mean_interval_ms));
-                    metric(ui, "Interval sigma", format!("{:.4} ms", self.stats.sigma_interval_ms));
-                    metric(ui, "Consistency (+/-10%)", format!("{:.2} %", self.stats.consistency_pct));
-                    metric(ui, "Missed deadlines", self.stats.missed_deadlines.to_string());
-                    metric(ui, "Ring buffer dropped", self.engine.telemetry().dropped_records().to_string());
-                });
-            ui.label(
-                egui::RichText::new(format!(
-                    "Observed range: {:.4} .. {:.4} ms",
-                    self.stats.min_interval_ms, self.stats.max_interval_ms
-                ))
-                .color(COLOR_TEXT_DIM)
-                .small(),
-            );
-        });
-        ui.add_space(9.0_f32);
-        Self::card(ui, |ui| self.draw_cps_graph(ui));
-        ui.add_space(9.0_f32);
-        Self::card(ui, |ui| self.draw_histogram(ui));
-    }
-
-    fn draw_activity(&self, ui: &mut egui::Ui) {
-        Self::card(ui, |ui| {
-            Self::section_title(ui, "RECENT ACTIVITY");
-            let height = (ui.available_height() - 8.0_f32).max(80.0_f32);
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .max_height(height)
-                .show(ui, |ui| {
-                    for line in &self.logs {
-                        let warning = line.contains("PANIC")
-                            || line.contains("rejected")
-                            || line.contains("error")
-                            || line.contains("Warning");
-                        let color =
-                            if warning { COLOR_WARNING } else { COLOR_TEXT_DIM };
-                        ui.label(
-                            egui::RichText::new(line).color(color).small(),
-                        );
-                    }
-                });
-        });
-    }
-
-    fn draw_footer(&mut self, ui: &mut egui::Ui) {
-        let running = self.engine.is_running();
-        let width = ui.available_width();
-        let gap = ui.spacing().item_spacing.x;
-        let start_width = (width - 2.0_f32 * gap) * 0.5_f32;
-        let small_width = (width - 2.0_f32 * gap) * 0.25_f32;
-
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(!running, |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("START")
-                                .strong()
-                                .color(Color32::WHITE)
-                                .size(15.0_f32),
-                        )
-                        .fill(COLOR_SUCCESS)
-                        .min_size(Vec2::new(start_width, 42.0_f32)),
-                    )
-                    .clicked()
-                {
-                    self.handle_start();
-                }
-            });
-            ui.add_enabled_ui(running, |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("STOP")
-                                .strong()
-                                .color(COLOR_WARNING)
-                                .size(15.0_f32),
-                        )
-                        .fill(Color32::TRANSPARENT)
-                        .stroke(Stroke::new(1.5_f32, COLOR_WARNING))
-                        .min_size(Vec2::new(small_width, 42.0_f32)),
-                    )
-                    .clicked()
-                {
-                    self.engine.request_stop();
-                    self.log("Graceful stop requested.");
-                }
-            });
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("PANIC STOP (F8)")
-                            .strong()
-                            .color(Color32::WHITE)
-                            .size(15.0_f32),
-                    )
-                    .fill(COLOR_DANGER)
-                    .min_size(Vec2::new(small_width, 42.0_f32)),
-                )
-                .clicked()
-            {
-                self.engine.panic_stop();
-                self.log("PANIC STOP triggered from dashboard.");
-            }
-        });
-    }
 }
 
-impl eframe::App for EngineBApp {
+impl eframe::App for OpAutoClickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_style(ctx);
-        self.poll_panic_hotkey();
+        self.poll_hotkeys();
         self.surface_engine_errors();
         if self.engine.is_running() {
             if let Err(error) = self.engine.update_config(&self.config) {
                 if self.last_seen_error.as_deref() != Some(error.as_str()) {
                     self.log(format!("Engine error: {error}"));
+                    self.set_status(StatusKind::Error, format!("Error: {error}"));
                     self.last_seen_error = Some(error);
                 }
             }
         }
         self.drain_and_aggregate();
+
+        // Detect natural session completion (repeat count reached) so the
+        // status line and persistence react even without a button press.
+        if self.was_running && !self.engine.is_running() {
+            if self.engine.state() != STATE_PANIC {
+                self.set_status(
+                    StatusKind::Ready,
+                    format!(
+                        "Session complete: {} clicks delivered.",
+                        self.engine.click_count()
+                    ),
+                );
+                self.log(format!(
+                    "Session finished after {} clicks.",
+                    self.engine.click_count()
+                ));
+            }
+            self.mark_dirty();
+            self.flush_settings();
+        }
+        self.was_running = self.engine.is_running();
+
+        self.commit_interval_editors();
+        self.detect_settings_changes();
+        self.maybe_autosave();
         if self.engine.is_running() {
             ctx.request_repaint_after(Duration::from_millis(50));
+        } else if self.capturing {
+            ctx.request_repaint_after(Duration::from_millis(16));
         }
 
         egui::TopBottomPanel::top("header_panel")
             .frame(
                 Frame::none()
                     .fill(COLOR_BG)
-                    .inner_margin(Margin::symmetric(16.0_f32, 12.0_f32)),
+                    .inner_margin(Margin::symmetric(14.0_f32, 10.0_f32)),
             )
             .show(ctx, |ui| self.draw_header(ui));
 
@@ -874,36 +1369,38 @@ impl eframe::App for EngineBApp {
             .frame(
                 Frame::none()
                     .fill(COLOR_BG)
-                    .inner_margin(Margin::symmetric(16.0_f32, 10.0_f32)),
+                    .inner_margin(Margin::symmetric(14.0_f32, 9.0_f32)),
             )
             .show(ctx, |ui| self.draw_footer(ui));
-
-        egui::SidePanel::left("controls_panel")
-            .exact_width(SIDE_PANEL_WIDTH)
-            .resizable(true)
-            .frame(
-                Frame::none()
-                    .fill(COLOR_BG)
-                    .inner_margin(Margin::symmetric(14.0_f32, 6.0_f32)),
-            )
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.draw_controls(ui);
-                });
-            });
 
         egui::CentralPanel::default()
             .frame(
                 Frame::none()
                     .fill(COLOR_BG)
-                    .inner_margin(Margin::symmetric(6.0_f32, 6.0_f32)),
+                    .inner_margin(Margin::symmetric(12.0_f32, 4.0_f32)),
             )
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.draw_analytics(ui);
-                    ui.add_space(9.0_f32);
-                    self.draw_activity(ui);
+                    self.draw_interval_card(ui);
+                    ui.add_space(8.0_f32);
+                    self.draw_options_card(ui);
+                    ui.add_space(8.0_f32);
+                    self.draw_repeat_card(ui);
+                    ui.add_space(8.0_f32);
+                    self.draw_position_card(ui);
                 });
             });
+
+        if self.show_hotkey_dialog {
+            self.draw_hotkey_dialog(ctx);
+        }
+        if self.show_advanced {
+            self.draw_advanced_window(ctx);
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.settings_dirty = true;
+        self.flush_settings();
     }
 }

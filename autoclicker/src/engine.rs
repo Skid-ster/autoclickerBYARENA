@@ -12,20 +12,25 @@ use std::thread::{self, JoinHandle};
 use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
-use crate::config::{AtomicConfigSnapshot, CoordinateMode, EngineConfig, InputMode};
+use crate::config::{AtomicConfigSnapshot, CoordinateMode, EngineConfig, InputMode, MouseButton};
 use crate::humanize;
 use crate::telemetry::{ClickRecord, TelemetryStore};
 use crate::timing::{self, ScopedTimerResolution, SpinResult};
 use crate::win32::{
-    self, make_lparam, make_mouse_input, MK_LBUTTON, MOUSEEVENTF_ABSOLUTE,
-    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE,
+    self, make_lparam, make_mouse_input, MK_LBUTTON, MK_MBUTTON, MK_RBUTTON, MOUSEEVENTF_ABSOLUTE,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP,
 };
 
 pub const STATE_IDLE: i32 = 0;
 pub const STATE_RUNNING: i32 = 1;
 pub const STATE_STOPPING: i32 = 2;
 pub const STATE_PANIC: i32 = 3;
+
+/// Gap between the down/up bursts of a double or triple click. Spun on the
+/// QPC deadline (never a sleep) so stop and panic flags stay responsive.
+const INTER_CLICK_GAP_MS: f64 = 50.0;
 
 struct RectCache {
     left: AtomicI32,
@@ -82,6 +87,12 @@ pub struct ClickEngine {
     wake_handle: isize,
 }
 
+impl Default for ClickEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClickEngine {
     pub fn new() -> Self {
         let wake_handle = win32::create_manual_reset_event().expect("event creation");
@@ -120,9 +131,7 @@ impl ClickEngine {
         self.shared.stop.store(false, Ordering::Release);
         self.shared.panic.store(false, Ordering::Release);
         self.shared.config.store(config);
-        self.shared
-            .state
-            .store(STATE_RUNNING, Ordering::Release);
+        self.shared.state.store(STATE_RUNNING, Ordering::Release);
         win32::set_event(self.wake_handle).map_err(|e| e.to_string())
     }
 
@@ -223,11 +232,7 @@ fn clamp_client(value: i64, low: i32, high: i32) -> i32 {
     value.clamp(low as i64, (high - 1) as i64) as i32
 }
 
-fn dispatch_background(
-    shared: &Shared,
-    config: &EngineConfig,
-    phase: Phase,
-) -> Result<(), String> {
+fn dispatch_background(shared: &Shared, config: &EngineConfig, phase: Phase) -> Result<(), String> {
     let hwnd = config.target_hwnd;
     if !win32::is_valid_window(hwnd) {
         return Err("Target window was lost before the click burst".to_string());
@@ -248,19 +253,22 @@ fn dispatch_background(
         y = clamp_client(y, rect.1, rect.3) as i64;
     }
     let lparam = make_lparam(x as i32, y as i32);
+    let (down_message, up_message, button_wparam) = match config.mouse_button {
+        MouseButton::Left => (WM_LBUTTONDOWN, WM_LBUTTONUP, MK_LBUTTON),
+        MouseButton::Right => (WM_RBUTTONDOWN, WM_RBUTTONUP, MK_RBUTTON),
+        MouseButton::Middle => (WM_MBUTTONDOWN, WM_MBUTTONUP, MK_MBUTTON),
+    };
     let deliver = |message: u32, wparam: usize| -> Result<(), String> {
         if config.background_synchronous {
-            win32::send_message_timeout(hwnd, message, wparam, lparam)
-                .map_err(|e| e.to_string())
+            win32::send_message_timeout(hwnd, message, wparam, lparam).map_err(|e| e.to_string())
         } else {
-            win32::post_message(hwnd, message, wparam, lparam)
-                .map_err(|e| e.to_string())
+            win32::post_message(hwnd, message, wparam, lparam).map_err(|e| e.to_string())
         }
     };
     match phase {
         Phase::Move => deliver(WM_MOUSEMOVE, 0),
-        Phase::Down => deliver(WM_LBUTTONDOWN, MK_LBUTTON),
-        Phase::Up => deliver(WM_LBUTTONUP, 0),
+        Phase::Down => deliver(down_message, button_wparam),
+        Phase::Up => deliver(up_message, 0),
     }
 }
 
@@ -271,6 +279,11 @@ enum Phase {
 }
 
 fn dispatch_global(config: &EngineConfig, phase: Phase) -> Result<(), String> {
+    let (down_flag, up_flag) = match config.mouse_button {
+        MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+    };
     let inputs: Vec<INPUT> = match phase {
         Phase::Move => Vec::new(), // moves are folded into the down burst
         Phase::Down => {
@@ -281,18 +294,20 @@ fn dispatch_global(config: &EngineConfig, phase: Phase) -> Result<(), String> {
                         win32::normalize_virtual_x(config.fixed_x),
                         win32::normalize_virtual_y(config.fixed_y),
                     ),
-                    make_mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0),
+                    make_mouse_input(down_flag, 0, 0),
                 ]
             } else {
-                vec![make_mouse_input(MOUSEEVENTF_LEFTDOWN, 0, 0)]
+                vec![make_mouse_input(down_flag, 0, 0)]
             }
         }
-        Phase::Up => vec![make_mouse_input(MOUSEEVENTF_LEFTUP, 0, 0)],
+        Phase::Up => vec![make_mouse_input(up_flag, 0, 0)],
     };
     if inputs.is_empty() {
         return Ok(());
     }
-    win32::send_inputs(&inputs).map(|_| ()).map_err(|e| e.to_string())
+    win32::send_inputs(&inputs)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 fn run_click_session(shared: &Shared) {
@@ -314,59 +329,83 @@ fn run_click_session(shared: &Shared) {
     let mut next_deadline = session_start;
     let mut sequence: u64 = 0;
 
-    while !shared.stop.load(Ordering::Acquire)
-        && !shared.panic.load(Ordering::Acquire)
-    {
+    while !shared.stop.load(Ordering::Acquire) && !shared.panic.load(Ordering::Acquire) {
         let config = shared.config.load();
         if config.max_clicks != 0 && sequence >= config.max_clicks {
             break;
         }
 
-        let interval_ms =
-            humanize::with_thread_humanizer(|h| h.next_interval_ms(&config));
-        let hold_ms =
-            humanize::with_thread_humanizer(|h| h.next_hold_ms(&config));
+        // A positive 4.1-style random offset selects uniform jitter around the
+        // base interval; otherwise the Gaussian humanizer rules apply.
+        let interval_ms = humanize::with_thread_humanizer(|h| {
+            if config.random_offset_ms > 0.0 {
+                h.next_offset_interval_ms(&config)
+            } else {
+                h.next_interval_ms(&config)
+            }
+        });
+        let hold_ms = humanize::with_thread_humanizer(|h| h.next_hold_ms(&config));
         let target_tick = next_deadline + timing::ms_to_ticks(interval_ms);
         let already_late = timing::qpc_now() > target_tick;
 
-        let wait = timing::spin_until_deadline(
-            target_tick,
-            &shared.stop,
-            &shared.panic,
-        );
+        let wait = timing::spin_until_deadline(target_tick, &shared.stop, &shared.panic);
         if wait != SpinResult::DeadlineReached {
             break;
         }
 
         let background = config.input_mode == InputMode::BackgroundHwnd;
-        let down_result = if background {
-            dispatch_background(shared, &config, Phase::Move)
-                .and_then(|_| dispatch_background(shared, &config, Phase::Down))
-        } else {
-            dispatch_global(&config, Phase::Down)
-        };
-        if let Err(error) = down_result {
+        let mut burst_failed: Option<String> = None;
+        let mut interrupted = false;
+
+        // Single, double and triple clicks share one loop: one down/hold/up
+        // burst per repetition, separated by a short QPC-spun gap. The button
+        // is always released, even when stop or panic fires during the hold.
+        for burst_index in 0..config.click_type.burst_count() {
+            let down_result = if background {
+                dispatch_background(shared, &config, Phase::Move)
+                    .and_then(|_| dispatch_background(shared, &config, Phase::Down))
+            } else {
+                dispatch_global(&config, Phase::Down)
+            };
+            if let Err(error) = down_result {
+                burst_failed = Some(error);
+                break;
+            }
+
+            let hold_deadline = timing::qpc_now() + timing::ms_to_ticks(hold_ms);
+            let hold_wait = timing::spin_until_deadline(hold_deadline, &shared.stop, &shared.panic);
+
+            // The button must always be released, even on panic/stop.
+            let up_result = if background {
+                dispatch_background(shared, &config, Phase::Up)
+            } else {
+                dispatch_global(&config, Phase::Up)
+            };
+            if let Err(error) = up_result {
+                burst_failed = Some(error);
+                break;
+            }
+            if hold_wait != SpinResult::DeadlineReached {
+                interrupted = true;
+                break;
+            }
+
+            if burst_index + 1 < config.click_type.burst_count() {
+                let gap_deadline = timing::qpc_now() + timing::ms_to_ticks(INTER_CLICK_GAP_MS);
+                let gap_wait =
+                    timing::spin_until_deadline(gap_deadline, &shared.stop, &shared.panic);
+                if gap_wait != SpinResult::DeadlineReached {
+                    interrupted = true;
+                    break;
+                }
+            }
+        }
+
+        if let Some(error) = burst_failed {
             publish_error(shared, error);
             break;
         }
-
-        let hold_deadline = timing::qpc_now() + timing::ms_to_ticks(hold_ms);
-        let hold_wait = timing::spin_until_deadline(
-            hold_deadline,
-            &shared.stop,
-            &shared.panic,
-        );
-
-        // The button must always be released, even on panic/stop.
-        let up_result = if background {
-            dispatch_background(shared, &config, Phase::Up)
-        } else {
-            dispatch_global(&config, Phase::Up)
-        };
-        if let Err(error) = up_result {
-            publish_error(shared, error);
-        }
-        if hold_wait != SpinResult::DeadlineReached {
+        if interrupted {
             break;
         }
 

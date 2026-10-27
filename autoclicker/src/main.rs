@@ -1,9 +1,9 @@
 //! OP Auto Clicker binary entry point.
 //!
-//! The platform-independent modules (`config`, `humanize`, `telemetry`) compile
-//! on every platform so their integration tests run anywhere; the Win32 worker
-//! and egui dashboard are compiled only on Windows, where the required APIs
-//! exist.
+//! The platform-independent modules (`config`, `hotkey`, `humanize`,
+//! `settings`, `telemetry`) compile on every platform so their integration
+//! tests run anywhere; the Win32 worker and egui dashboard are compiled only
+//! on Windows, where the required APIs exist.
 
 // Some spec-required Win32 wrappers (for example ClientToScreen and the event
 // wait constants) are part of the FFI surface even when the current UI does
@@ -11,7 +11,9 @@
 #![allow(dead_code)]
 
 mod config;
+mod hotkey;
 mod humanize;
+mod settings;
 mod telemetry;
 
 #[cfg(windows)]
@@ -27,15 +29,15 @@ mod win32;
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([980.0, 700.0])
-            .with_min_inner_size([860.0, 600.0])
+            .with_inner_size([470.0, 700.0])
+            .with_min_inner_size([420.0, 600.0])
             .with_title("OP Auto Clicker"),
         ..Default::default()
     };
     eframe::run_native(
         "OP Auto Clicker",
         options,
-        Box::new(|_creation_context| Box::new(app::EngineBApp::new())),
+        Box::new(|_creation_context| Box::new(app::OpAutoClickerApp::new())),
     )
 }
 
