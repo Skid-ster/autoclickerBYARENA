@@ -93,27 +93,27 @@ impl EngineBApp {
         style.visuals.extreme_bg_color = Color32::from_rgb(13, 16, 32);
         style.visuals.widgets.noninteractive.bg_fill = COLOR_PANEL;
         style.visuals.widgets.noninteractive.fg_stroke =
-            Stroke::new(1.0, Color32::from_rgb(224, 230, 245));
+            Stroke::new(1.0_f32, Color32::from_rgb(224, 230, 245));
         style.visuals.widgets.inactive.bg_fill =
             Color32::from_rgb(26, 32, 56);
         style.visuals.widgets.inactive.fg_stroke =
-            Stroke::new(1.0, Color32::from_rgb(224, 230, 245));
+            Stroke::new(1.0_f32, Color32::from_rgb(224, 230, 245));
         style.visuals.widgets.hovered.bg_fill =
             Color32::from_rgb(36, 44, 74);
-        style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, COLOR_CYAN);
+        style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, COLOR_CYAN);
         style.visuals.widgets.active.bg_fill =
             Color32::from_rgb(46, 56, 92);
         style.visuals.widgets.active.fg_stroke =
-            Stroke::new(1.0, COLOR_CYAN);
+            Stroke::new(1.0_f32, COLOR_CYAN);
         style.visuals.selection.bg_fill =
             Color32::from_rgba_unmultiplied(255, 43, 214, 90);
         style.visuals.hyperlink_color = COLOR_CYAN;
-        style.spacing.item_spacing = Vec2::new(10.0, 8.0);
-        style.spacing.button_padding = Vec2::new(10.0, 6.0);
-        style.visuals.widgets.noninteractive.rounding = 8.0.into();
-        style.visuals.widgets.inactive.rounding = 6.0.into();
-        style.visuals.widgets.hovered.rounding = 6.0.into();
-        style.visuals.widgets.active.rounding = 6.0.into();
+        style.spacing.item_spacing = Vec2::new(10.0_f32, 8.0_f32);
+        style.spacing.button_padding = Vec2::new(10.0_f32, 6.0_f32);
+        style.visuals.widgets.noninteractive.rounding = 8.0_f32.into();
+        style.visuals.widgets.inactive.rounding = 6.0_f32.into();
+        style.visuals.widgets.hovered.rounding = 6.0_f32.into();
+        style.visuals.widgets.active.rounding = 6.0_f32.into();
         ctx.set_style(style);
     }
 
@@ -436,7 +436,7 @@ impl EngineBApp {
                 }
             });
             egui::ScrollArea::vertical()
-                .max_height(120.0)
+                .max_height(120.0_f32)
                 .show(ui, |ui| {
                     if self.windows.is_empty() {
                         ui.label(egui::RichText::new("No windows enumerated yet.").color(COLOR_DIM));
@@ -470,21 +470,21 @@ impl EngineBApp {
             let running = self.engine.is_running();
             ui.add_enabled_ui(!running, |ui| {
                 if ui
-                    .add(egui::Button::new("START").fill(Color32::from_rgba_unmultiplied(57, 255, 136, 90)).min_size(Vec2::new(140.0, 36.0)))
+                    .add(egui::Button::new("START").fill(Color32::from_rgba_unmultiplied(57, 255, 136, 90)).min_size(Vec2::new(140.0_f32, 36.0_f32)))
                     .clicked()
                 {
                     self.handle_start();
                 }
             });
             if ui
-                .add(egui::Button::new("STOP").fill(Color32::from_rgba_unmultiplied(255, 191, 0, 90)).min_size(Vec2::new(140.0, 36.0)))
+                .add(egui::Button::new("STOP").fill(Color32::from_rgba_unmultiplied(255, 191, 0, 90)).min_size(Vec2::new(140.0_f32, 36.0_f32)))
                 .clicked()
             {
                 self.engine.request_stop();
                 self.log("Graceful stop requested.");
             }
             if ui
-                .add(egui::Button::new("PANIC STOP (F8)").fill(Color32::from_rgba_unmultiplied(255, 70, 90, 110)).min_size(Vec2::new(180.0, 36.0)))
+                .add(egui::Button::new("PANIC STOP (F8)").fill(Color32::from_rgba_unmultiplied(255, 70, 90, 110)).min_size(Vec2::new(180.0_f32, 36.0_f32)))
                 .clicked()
             {
                 self.engine.panic_stop();
@@ -495,16 +495,16 @@ impl EngineBApp {
 
     fn draw_cps_graph(&self, ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), 130.0),
+            Vec2::new(ui.available_width(), 130.0_f32),
             Sense::hover(),
         );
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 8.0, COLOR_PANEL);
+        painter.rect_filled(rect, 8.0_f32, COLOR_PANEL);
         for step in 1..4 {
-            let y = rect.top() + rect.height() * step as f32 / 4.0;
+            let y = rect.top() + rect.height() * step as f32 / 4.0_f32;
             painter.line_segment(
-                [egui::pos2(rect.left() + 4.0, y), egui::pos2(rect.right() - 4.0, y)],
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 229, 255, 28)),
+                [egui::pos2(rect.left() + 4.0_f32, y), egui::pos2(rect.right() - 4.0_f32, y)],
+                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(0, 229, 255, 28)),
             );
         }
         let mut max_cps = (self.config.target_cps() * 1.25).max(1.0);
@@ -518,52 +518,54 @@ impl EngineBApp {
                     % self.cps_history.len();
                 let x = rect.left()
                     + rect.width() * i as f32 / (self.cps_history.len() - 1) as f32;
-                let normalized = (self.cps_history[index] / max_cps).clamp(0.0, 1.0);
-                let y = rect.bottom() - 6.0 - normalized * (rect.height() - 16.0);
+                let normalized =
+                    (self.cps_history[index] / max_cps).clamp(0.0, 1.0) as f32;
+                let y = rect.bottom() - 6.0_f32
+                    - normalized * (rect.height() - 16.0_f32);
                 let current = egui::pos2(x, y);
                 if i > 0 {
-                    painter.line_segment([previous, current], Stroke::new(2.0, COLOR_CYAN));
+                    painter.line_segment([previous, current], Stroke::new(2.0_f32, COLOR_CYAN));
                 }
                 previous = current;
             }
         }
         painter.text(
-            rect.left_top() + Vec2::new(8.0, 4.0),
+            rect.left_top() + Vec2::new(8.0_f32, 4.0_f32),
             egui::Align2::LEFT_TOP,
             "REAL-TIME CPS",
-            FontId::proportional(12.0),
+            FontId::proportional(12.0_f32),
             COLOR_DIM,
         );
     }
 
     fn draw_histogram(&self, ui: &mut egui::Ui) {
         let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), 130.0),
+            Vec2::new(ui.available_width(), 130.0_f32),
             Sense::hover(),
         );
         let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 8.0, COLOR_PANEL);
+        painter.rect_filled(rect, 8.0_f32, COLOR_PANEL);
         let max_bin = self.stats.histogram.iter().copied().max().unwrap_or(0).max(1) as f32;
-        let gap = 2.0;
+        let gap = 2.0_f32;
         let bar_width = rect.width() / HISTOGRAM_BINS as f32 - gap;
         for (bin, count) in self.stats.histogram.iter().enumerate() {
-            let height = rect.height() * *count as f32 / max_bin * 0.82;
-            let x = rect.left() + 4.0 + bin as f32 * (bar_width + gap);
+            let height = rect.height() * *count as f32 / max_bin * 0.82_f32;
+            let x = rect.left() + 4.0_f32 + bin as f32 * (bar_width + gap);
             let color = if bin % 2 == 0 { COLOR_MAGENTA } else { COLOR_CYAN };
             painter.rect_filled(
                 egui::Rect::from_min_size(
-                    egui::pos2(x, rect.bottom() - height - 6.0),
+                    egui::pos2(x, rect.bottom() - height - 6.0_f32),
                     Vec2::new(bar_width, height),
                 ),
-                3.0,
+                3.0_f32,
                 color,
             );
         }
         painter.text(
-            rect.left_top() + Vec2::new(8.0, 4.0),
+            rect.left_top() + Vec2::new(8.0_f32, 4.0_f32),
             egui::Align2::LEFT_TOP,
             "INTERVAL HISTOGRAM (ms)",
-            FontId::proportional(12.0),
+            FontId::proportional(12.0_f32),
             COLOR_DIM,
         );
     }
@@ -572,7 +574,7 @@ impl EngineBApp {
         egui::Frame::group(ui.style()).fill(COLOR_PANEL).show(ui, |ui| {
             ui.label(egui::RichText::new("LIVE PERFORMANCE ANALYTICS").color(COLOR_DIM));
             ui.separator();
-            Grid::new("stat_grid").num_columns(2).spacing(Vec2::new(20.0, 6.0)).show(ui, |ui| {
+            Grid::new("stat_grid").num_columns(2).spacing(Vec2::new(20.0_f32, 6.0_f32)).show(ui, |ui| {
                 ui.label("Actual CPS");
                 ui.label(format!("{:.3}", self.stats.actual_cps));
                 ui.end_row();
@@ -600,7 +602,7 @@ impl EngineBApp {
             });
             ui.separator();
             self.draw_cps_graph(ui);
-            ui.add_space(6.0);
+            ui.add_space(6.0_f32);
             self.draw_histogram(ui);
         });
     }
@@ -611,7 +613,7 @@ impl EngineBApp {
             ui.separator();
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
-                .max_height(140.0)
+                .max_height(140.0_f32)
                 .show(ui, |ui| {
                     for line in &self.logs {
                         let warning = line.contains("PANIC")
