@@ -254,6 +254,8 @@ struct ThemeText {
     complete_prefix: &'static str,
     /// Prefix of the session-started log entry.
     log_started_prefix: &'static str,
+    /// Idle line shown in the status strip before anything has happened.
+    status_idle: &'static str,
 }
 
 static CLASSIC_TEXT: ThemeText = ThemeText {
@@ -271,6 +273,7 @@ static CLASSIC_TEXT: ThemeText = ThemeText {
     stopping_line: "Stopping…",
     complete_prefix: "Session complete",
     log_started_prefix: "Click session started",
+    status_idle: "Ready.",
 };
 
 static MOG_TEXT: ThemeText = ThemeText {
@@ -288,6 +291,7 @@ static MOG_TEXT: ThemeText = ThemeText {
     stopping_line: "Aura cooling down…",
     complete_prefix: "Mogging complete — everyone brutally frame-mogged",
     log_started_prefix: "Mogging session started — looksmaxxing",
+    status_idle: "Ready to mog. Aura fully charged.",
 };
 
 /// Logical (point) size of the fixed main window; the Settings window's
@@ -1742,9 +1746,20 @@ impl eframe::App for OpAutoClickerApp {
         self.commit_interval_editors();
         self.detect_settings_changes();
         self.maybe_autosave();
-        if self.engine.is_running() || self.capturing || self.picking_location {
-            ctx.request_repaint_after(Duration::from_millis(16));
-        }
+        // Heartbeat repaint — this is what keeps the GLOBAL hotkeys alive.
+        // F6/F8 are polled via GetAsyncKeyState once per UI frame, but egui
+        // is event-driven: without a standing repaint request the app stops
+        // producing frames the moment it is idle or unfocused, and the poll
+        // silently stops running (F6 appeared completely dead unless the
+        // window was being interacted with). Interactive states keep the
+        // fast 16 ms tick; idle keeps a light 50 ms tick so an F6 press
+        // from inside a game is noticed within one poll interval.
+        let heartbeat = if self.engine.is_running() || self.capturing || self.picking_location {
+            Duration::from_millis(16)
+        } else {
+            Duration::from_millis(50)
+        };
+        ctx.request_repaint_after(heartbeat);
 
         // Single fixed-size screen: no ScrollArea, everything fits. The top
         // margin leaves room for the first group title, which rides half
@@ -1770,15 +1785,23 @@ impl eframe::App for OpAutoClickerApp {
                         Vec2::new(ui.available_width(), 16.0_f32),
                         Sense::hover(),
                     );
-                    if self.status_kind != StatusKind::Ready {
-                        ui.painter_at(rect).text(
-                            rect.left_center(),
-                            Align2::LEFT_CENTER,
-                            &self.status_text,
-                            FontId::proportional(12.5_f32),
-                            self.status_kind.color(pal),
-                        );
-                    }
+                    // Ready-kind messages (session complete, defaults
+                    // restored, …) are painted too — they used to be
+                    // skipped entirely, which silently hid them. An empty
+                    // status (fresh start) shows the theme's idle line so
+                    // the strip is never a dead blank.
+                    let shown: &str = if self.status_text.is_empty() {
+                        self.theme_text().status_idle
+                    } else {
+                        &self.status_text
+                    };
+                    ui.painter_at(rect).text(
+                        rect.left_center(),
+                        Align2::LEFT_CENTER,
+                        shown,
+                        FontId::proportional(12.5_f32),
+                        self.status_kind.color(pal),
+                    );
 
                     ui.add_space(2.0_f32);
                     self.draw_action_buttons(ui);

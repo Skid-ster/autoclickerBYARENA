@@ -252,6 +252,13 @@ previous session is never reused.
    reports completion.
 7. Open Hotkey setting, assign F7, close the dialog: F7 now starts and stops
    the session; trying to assign F8 is rejected; Esc cancels capture.
+   Crucially, test this **unfocused**: click into another app (or a game)
+   and press the hotkey — the session must start and stop from there too,
+   because the app keeps polling on a 20 Hz heartbeat even while idle and
+   in the background. On launch the status strip shows the theme's idle
+   line ("Ready." / "Ready to mog. Aura fully charged.") rather than
+   sitting blank, and Ready-kind confirmations like "Session complete: 25
+   clicks delivered." or "Factory defaults restored." are visibly painted.
 8. Close and reopen the app: every setting (interval, offset, button, type,
    repeat, position, hotkey, theme, window scale) is restored from
    `%APPDATA%`.
