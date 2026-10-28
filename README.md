@@ -87,7 +87,11 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   so a size you chose by dragging is never forced back down. Both choices restyle
   every window (main screen, Hotkey dialog and Settings window), are
   remembered across restarts, and all themes share the exact same layout,
-  so switching never moves a control.
+  so switching never moves a control. The three dark themes render the
+  group boxes as subtly elevated cards over deeper sunken fields and a
+  recessed status readout, and the status dot gives one short pulse
+  whenever the app changes state, so Start/Stop/pick transitions are
+  visible without reading the text.
   (The native OS title bar follows the Windows app mode — black when
   Windows is in dark app mode; eframe/egui 0.27 cannot recolor native
   window chrome, so picking a dark-family theme is the way to make the

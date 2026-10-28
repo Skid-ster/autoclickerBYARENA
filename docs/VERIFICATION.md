@@ -5,7 +5,116 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Adaptive scale and wide layout round (current)
+## Visual depth and acknowledgement round (current)
+
+A pure paint-and-state polish round: no layout metric, engine,
+scheduler, dispatch, telemetry or settings-semantic change. The diff is
+confined to `autoclicker/src/app.rs`. The north star, in the user's
+words, was "absolute best looking, FULLY stable" — so every change here
+is either a palette value proven by a contrast script, or paint
+confined inside geometry that already existed, or a self-terminating
+state acknowledgement. Nothing can move a control.
+
+What changed:
+
+- **Elevated group cards (dark themes).** Each group box now fills with
+  a new explicit `group_fill` palette surface one step above the panel
+  (Dark 40 on 32, OLED 12 on black, Matrix (13,23,13) on (8,14,8)),
+  carries a 1 px inner top rim light, and drops a restrained shadow
+  reserved *before* the frame paints (a `Shape::Noop` slot on the same
+  paint layer, filled once the frame rect exists, so it can never land
+  on top of contents). The shadow is skipped where it is invisible or
+  un-native: OLED's pure-black face and the Classic theme. Classic's
+  `group_fill` equals its `face`, so its group paint is byte-identical
+  to the previous round. The title backdrop — which straddles the
+  panel above the border and the card below it — is now painted in two
+  halves split at the border midline, each half in its own surface
+  color, so the native caption break stays seamless on the layered
+  surfaces (in Classic both halves are the same color by construction).
+- **Deeper sunken fields (dark themes).** With the cards raised, input
+  fields dropped below the panel instead (Dark 44→30, OLED 18→8,
+  Matrix (12,24,12)→(7,15,7), with matching disabled variants), so the
+  depth ordering reads consistently: fields sink, cards sit, buttons
+  rise. Field text contrast went *up* (Dark 11.71→13.98:1).
+- **Crisper structure lines (dark themes).** Group and button borders
+  were raised so every dark-theme border now clears the 3.0:1 non-text
+  guideline against both surfaces it touches (they previously sat at
+  2.2–2.9:1). Classic's borders are the literal Windows colors and
+  stay (grouping there is redundantly encoded by caption + spacing).
+  Disabled-control text — WCAG-exempt, but on screen constantly — was
+  brightened in the dark themes without losing the disabled read.
+- **Sunken status well (dark themes).** The status strip paints a
+  recessed `well_fill` plate with a group-colored hairline inside the
+  long-reserved 16 px strip. The dot and text coordinates are
+  untouched; Classic keeps the flat native status line.
+- **Status acknowledgement pulse.** When the status *kind* changes
+  (not on same-kind message churn), the state dot swells once and a
+  ring expands off it, easing out over 280 ms, then returns to exactly
+  its resting 3.5 px radius. Paint-only: a single `f64` timestamp, a
+  pure progress helper, and the existing repaint heartbeat holds its
+  fast 16 ms tick only while the pulse is live, so the motion is
+  smooth without a permanent fast idle and cannot stick — the helper
+  returns `None` outside the 280 ms window by construction. It
+  composes with the Running dot's alpha breathing (radius vs alpha)
+  instead of replacing it.
+- **Pressed-button bevel inverts.** A pressed hand-painted button now
+  draws its inner top line dark instead of pale — a pushed native
+  button catches shadow on its top edge, not light.
+- **Hover help.** Pick location, Hotkey setting, Record & Playback and
+  Settings gained one-line hover tooltips (zero layout surface).
+
+Deliberately rejected this round, with reasons: a panel gradient and a
+theme-switch crossfade (the title backdrop straddles two surfaces, and
+`palette()` returns `&'static Palette` so closures can hold it across
+mutable calls — an interpolated owned palette would mean a broad
+borrow-model refactor for a 280 ms effect); eased layout/zoom
+transitions (layout-moving motion is out of contract and would put the
+calibrated floor geometry at risk); new typography (font *metrics* are
+layout). Each rejection keeps the stability budget spent where it
+shows every frame.
+
+Contrast (recomputed by script over every enabled text/surface pair
+the new surfaces touch, plus borders; sRGB luminance, no eyeballing):
+worst enabled text per theme — Classic 4.71:1 (unchanged), Dark 5.50:1
+(dim on card), OLED 6.61:1 (dim on card), Matrix 5.02:1 (dim on card);
+all ≥4.5:1. Worst dark-theme non-text border 3.10:1 (all ≥3.0:1, up
+from 2.2–2.9:1). Disabled-control text, WCAG-exempt, improved in every
+dark theme (minima 2.96→3.25 Dark, 3.15→3.46 OLED, 2.47→2.86 Matrix).
+
+Verification (Linux harness: the workspace compiled against real
+egui/epaint 0.27.2 with a shim eframe/windows-sys; probes assert on
+painted shapes from headless frames):
+
+- 68 unit tests pass unweakened; `cargo fmt --check` clean; clippy
+  `--lib -- -D warnings` exit 0; the diff adds no `unwrap`/`expect`,
+  no TODO/stub markers, and touches no file other than `app.rs` plus
+  docs.
+- New paint probe (per theme): exactly four group frames painted in
+  `group_fill` with the new border; both backdrop halves present and
+  meeting at border-top + 0.5; exactly one 14 px status well in the
+  dark themes and none in Classic; card shadows present in Dark and
+  Matrix, absent in Classic and OLED; the resting dot is exactly one
+  3.5 px circle. Pulse lifecycle: after a pick-arm/pick-cancel kind
+  change at idle, the repaint heartbeat holds ≤16 ms and a ring/dot
+  beyond 3.5 px paints; after 0.5 s of frames the heartbeat is back
+  at 50 ms and the dot is exactly 3.5 px again. Pressed Start paints
+  a dark top bevel, hovered a light one. A sustained hover paints the
+  Pick-location tooltip text.
+- Regression probes, all green: layout (floor geometry and theme
+  metric identity across all four themes, grown-narrow cap and
+  vertical symmetry, wide band 880 centered with the three-abreast
+  equal-height row at tier ×1.40), interact (real click start/stop
+  cycle, disabled painting, hotkey dialog), viewport (restore
+  command, maximized persistence silence, user-resize silence,
+  1600×972 physical @1.25 DPI feeding 1024 pt at tier ×1.25).
+
+Still honestly unobserved, as always: how the card shadow, rim light
+and pulse *feel* on a real Windows display at real frame pacing, and
+whether the well's hairline reads as intended under Windows'
+compositor. The geometry claims above are assertions over painted
+shapes; the aesthetic claim awaits the user's eyes.
+
+## Adaptive scale and wide layout round
 
 At large window sizes the corrected composition still presented a
 fixed-size dialog centered in otherwise empty space (visible in the
