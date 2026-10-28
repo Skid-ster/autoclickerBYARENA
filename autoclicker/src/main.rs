@@ -38,15 +38,19 @@ fn main() -> eframe::Result<()> {
     });
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            // Fixed-size classic window: every control fits without
-            // scrolling. 560x448 logical points hugs the content with ~10 px
-            // to spare below the footer row (content bottom measured
-            // headlessly through the real egui 0.27.2 engine across all six
-            // themes). The in-app Settings window can zoom the UI; the app
-            // then re-applies this same logical size so the physical window
-            // scales with the chosen percentage.
-            .with_inner_size(app::MAIN_WINDOW_SIZE)
-            .with_resizable(false)
+            // Naturally resizable classic window: a resizable native frame
+            // (WS_THICKFRAME | WS_MAXIMIZEBOX) is what gives edge/corner
+            // drag, double-click maximize, Aero Snap, Win+arrow and Snap
+            // Layouts, all with OS grips and cursors and no custom
+            // hit-testing. The window opens at the size the user last
+            // chose (sanitized through the tolerant settings parser) and
+            // the classic 560x456 footprint is declared as the minimum, so
+            // the shell itself refuses any size — drag or snap — where a
+            // control would no longer fit. Everything stays visible
+            // without scrolling at every reachable size.
+            .with_inner_size(app::OpAutoClickerApp::persisted_window_size())
+            .with_min_inner_size(app::MAIN_WINDOW_SIZE)
+            .with_resizable(true)
             .with_icon(icon)
             .with_title("MacroClicker"),
         ..Default::default()

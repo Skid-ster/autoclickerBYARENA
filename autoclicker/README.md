@@ -2,9 +2,9 @@
 
 **MacroClicker** — a Windows x64 auto-clicker written in stable Rust with an
 egui interface that reproduces the authentic classic OP Auto Clicker 4.x
-Win32 dialog — a fixed,
-non-resizable light-gray window with native-style group boxes and push
-buttons, every control visible without scrolling. It is backed by a
+Win32 dialog — a naturally resizable light-gray window (the classic size
+is the enforced minimum) with native-style group boxes and push
+buttons, every control visible without scrolling at any window size. It is backed by a
 dedicated QPC spin-scheduled worker thread, uniform/Gaussian timing jitter,
 global `SendInput` injection and background HWND message delivery.
 
@@ -40,7 +40,7 @@ cargo run --release
 cargo test --release
 ```
 
-Eight integration test binaries run platform-independent logic (67 tests):
+Eight integration test binaries run platform-independent logic (68 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -64,13 +64,14 @@ Eight integration test binaries run platform-independent logic (67 tests):
   firing a burst of instant make-up clicks, strictly monotonic deadlines,
   saturating arithmetic at the extremes and the slack-boundary behavior.
 - `hotkey_tests` — supported virtual-key ranges, F8/Esc reservation, display
-  names, the default F6/Classic-theme/100 % preferences, theme key/label
-  stability and the window-scale sanitizer.
+  names, the default F6/Classic-theme/100 %/classic-size preferences, theme
+  key/label stability and the window-scale and window-size sanitizers.
 - `settings_tests` — full serialization round trip, tolerance of unknown
   keys, sections and comments, per-field recovery from malformed values,
   round trips for all four themes, fallback to the default theme for
-  retired theme keys, legacy `dark_mode` migration precedence and
-  `ui_scale` clamping.
+  retired theme keys, legacy `dark_mode` migration precedence,
+  `ui_scale` clamping and window-size round trip, clamping to
+  [560x456, 4x that] and per-dimension garbage/non-finite tolerance.
 - `icon_tests` — dimensions, transparent rounded corners, solid accent
   center, two-axis symmetry, the presence of both accent and background
   pixels, anti-aliased edges with a fully opaque core, and byte-for-byte
@@ -81,9 +82,22 @@ and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window is a pixel-faithful, fixed-size (560x456 logical points,
-non-resizable, non-scrolling) recreation of the classic OP Auto Clicker 4.x
-dialog. The **Settings…** button in the bottom-right corner opens a
+The main window is a pixel-faithful, non-scrolling recreation of the
+classic OP Auto Clicker 4.x dialog that resizes like any normal Windows
+app: drag any edge to push or pull it, grab any corner, double-click or
+maximize from the title bar, and use Win+arrow keys and Snap Layouts.
+The classic 560x456 logical-point size is declared to the OS as the
+minimum, so neither a drag nor a snap can take the window below the size
+where every control fits. Growing the window is designed, not stretched:
+group boxes and the 2x2 button grid share the extra width up to a
+736-point content cap (beyond that the content column centers instead of
+producing over-wide buttons), extra height becomes breathing room
+distributed between the groups, and field widths, paddings, fonts and
+control heights never change — so the status strip, buttons and footer
+stay anchored to the bottom. The size you leave the window at is saved
+to the settings file and restored on the next launch (maximized state
+is never saved as a raw size: restoring comes back at your last normal
+size). The **Settings…** button in the bottom-right corner opens a
 Settings window with two persisted choices:
 
 **Theme** — four complete themes, each tuned so every text, status and
@@ -100,21 +114,22 @@ accent color clears a WCAG 4.5:1 contrast ratio against its background:
 - **Terminal green** — green-on-black phosphor-terminal colors.
 
 **Window scale** — 75 / 100 / 125 / 150 / 175 / 200 %. The UI zoom factor
-follows the percentage and the app then re-applies its fixed logical size,
-so the physical window really grows or shrinks and no control is ever cut
-off (the resize lands one frame after the zoom, once egui reports the new
-factor as applied).
+follows the percentage; one frame later, once egui reports the new factor
+as applied, the app re-declares the 560x456-point minimum (egui-winit
+converts points to physical pixels with the new zoom, so the physical
+floor grows with the percentage) and enlarges the window only if the new
+zoom left it below that floor. A window you dragged larger is never
+forced back down by a scale change, and no control is ever cut off.
 
 Legacy settings files from the dark-mode-only build are still honored:
 `dark_mode=true` loads as the Dark theme, `dark_mode=false` as Classic, and
 a modern `theme=` key always wins over the legacy boolean.
 
-All four themes share every layout metric, so switching never moves a
-control.
-In both, the bordered group boxes draw their titles on a face-colored gap
+All four themes share every layout metric at every window size, so
+switching never moves a control.
+The bordered group boxes draw their titles on a face-colored gap
 that breaks the top border, exactly like the native `BS_GROUPBOX` control,
-and the viewport height hugs the content with roughly 11 px below the
-footer row.
+and at the classic size the window hugs the content exactly as before.
 
 One honest platform note: the native OS title bar belongs to Windows, not
 to the app — it follows the system app mode (black when Windows 11 is in
@@ -185,8 +200,8 @@ previous session is never reused.
 
 | File | Responsibility |
 | --- | --- |
-| `src/main.rs` | `eframe::run_native` entry point, viewport setup, platform gating |
-| `src/app.rs` | Classic Win32-style egui dialog (fixed-size, non-scrolling), Settings and hotkey windows, macro record/playback flow, hotkey polling, location pick, settings persistence |
+| `src/main.rs` | `eframe::run_native` entry point, native resizable viewport with persisted size and classic minimum, platform gating |
+| `src/app.rs` | Classic Win32-style egui dialog (resizable above the classic 560x456 floor, non-scrolling), window-size restore/observation, Settings and hotkey windows, macro record/playback flow, hotkey polling, location pick, settings persistence |
 | `src/engine.rs` | Dedicated worker thread, atomic config snapshot, time-critical priority, RAII timer resolution, QPC spin loop, single/double/triple bursts, panic checks |
 | `src/timing.rs` | QPC wrappers, `timeBeginPeriod(1)` RAII guard, `spin_loop` spin wait (no sleep) |
 | `src/win32.rs` | Narrow FFI wrappers for `SendInput`, `PostMessageW`, `SendMessageTimeoutW`, `GetCursorPos`, `GetAsyncKeyState`, `EnumWindows`, events and QPC; each unsafe block has a SAFETY comment |
@@ -235,9 +250,11 @@ previous session is never reused.
 
 ## Manual acceptance checklist
 
-1. Run `cargo run --release`; the fixed-size light-gray classic window
-   appears with every control visible (no scrollbars, cannot be resized) and
+1. Run `cargo run --release`; the light-gray classic window
+   appears with every control visible (no scrollbars) and
    stays responsive while idle; Stop is greyed out until a session runs.
+   The window carries a normal resizable frame: the right resize cursor
+   appears on every edge and diagonal arrows on the corners.
 2. Leave the defaults (100 ms, Left, Single, Repeat until stopped, Current
    location), press Start or F6: clicks register in a text editor at ~10 CPS;
    the status line updates and Stop becomes enabled.
@@ -262,7 +279,8 @@ previous session is never reused.
    "Session complete — 25 clicks delivered." or "Factory defaults
    restored." are visibly painted.
 8. Close and reopen the app: every setting (interval, offset, button, type,
-   repeat, position, hotkey, theme, window scale) is restored from
+   repeat, position, hotkey, theme, window scale and the window size from
+   step 17) is restored from
    `%APPDATA%`.
 9. Open Settings… and press **Reset all settings to factory defaults**:
    every control returns to its default (100 ms, Left, Single, repeat
@@ -279,9 +297,11 @@ previous session is never reused.
     "Stopping…". While running, the status dot pulses gently; hovering
     any enabled button lifts it slightly with a soft shadow; pressing it
     sits it back down.
-13. Still in Settings…, set Window scale to 150 %: the window grows and
-    every control stays fully visible; set it back to 100 % and the window
-    returns to its original size; both choices survive a restart.
+13. Still in Settings…, set Window scale to 150 % with the window at its
+    smallest size: the window grows and every control stays fully
+    visible. Drag the window generously larger, then switch the scale
+    between 100 % and 150 %: the scale change must never shrink the
+    window back down; both scale choices survive a restart.
 14. Close the window: the worker is signaled, joined and its event handle
     closed cleanly.
 15. The title bar and taskbar read "MacroClicker" in every theme.
@@ -292,3 +312,17 @@ previous session is never reused.
     "Playback complete" appears. Playback honors F8 panic and the Stop
     button (a manual stop reports "Playback stopped — N clicks
     delivered."); "Play until stopped" loops until stopped.
+17. Resizing: drag each edge in and out, then a corner toward the middle
+    and back out: the window follows with the OS resize cursors and
+    stops dead at the classic 560x456 size — it must not go smaller, and
+    every control stays whole at the limit. Pull the window wide: only
+    the group boxes and bottom buttons widen (fields keep their width);
+    pull it tall: only the gaps between groups grow, with the buttons
+    and footer staying at the bottom. On a large monitor maximize the
+    window: the content column centers instead of stretching forever.
+    Double-click the title bar and use Win+arrow / Snap Layouts: snap
+    left and right must work on normal desktop resolutions (a snap zone
+    narrower than 560 points is refused, which is expected). Leave the
+    window at a non-standard size, close and reopen: it comes back at
+    that size. Maximize, close and reopen: it comes back unmaximized at
+    the last normal dragged size.

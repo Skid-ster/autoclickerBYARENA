@@ -5,7 +5,146 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Polish and hardening round (current)
+## Natural window resizing round (current)
+
+The main window stopped being fixed-size and now resizes the way every
+normal Windows app does, with the classic 560x456 dialog as the floor.
+No engine, scheduling, dispatch, telemetry or validation code changed
+(engine, win32, timing, config, humanize, telemetry, schedule and macro
+files are untouched); the behavioral additions are the persisted window
+size, two viewport commands and the live-size observer.
+
+Mechanics, verified against the upstream egui 0.27.2 sources rather than
+assumed:
+
+- **Native frame + declared floor.** `main.rs` now uses
+  `ViewportBuilder::with_resizable(true)` and
+  `with_min_inner_size(MAIN_WINDOW_SIZE)` (egui
+  `crates/egui/src/viewport.rs` builder methods `with_resizable` /
+  `with_min_inner_size`), opening at
+  `OpAutoClickerApp::persisted_window_size()`. A resizable frame is the
+  `WS_THICKFRAME | WS_MAXIMIZEBOX` window, so edge/corner drag,
+  title-bar maximize, Win+arrow and Snap Layouts come from the OS with
+  no custom hit-testing, and winit feeds the minimum into
+  `WM_GETMINMAXINFO` so neither dragging nor snapping can go below the
+  size where every control fits. Deliberately no maximum size:
+  maximize and snap stay unrestricted.
+- **Growth is designed, metrics are shared.** Extra width is shared by
+  the group boxes (frames already reflow to available width), the
+  side-by-side `ui.columns(2)` pair and the footer button grid (already
+  width-derived); every hard-coded field width, padding, font size and
+  control height stays fixed. Past a 736-point content cap (floor
+  content 536 + 200) the side margin grows symmetrically so the column
+  centers instead of buttons widening without limit. Extra height is
+  split evenly into the three gaps above the status strip, so no
+  control gets taller and the status/buttons/footer block stays
+  anchored to the bottom. Both helpers reduce to the original metrics
+  at 560x456 (12-point margins, 7/7/6 gaps) and depend only on window
+  size, so all four themes measure identically.
+- **Scale composition without double-scaling (documented decision).**
+  The task wording ("re-issue MinInnerSize with the scaled floor") was
+  resolved against the code: egui-winit converts every viewport size
+  from points to physical pixels with the *current* pixels-per-point
+  (zoom x native) when handling `ViewportCommand::MinInnerSize`
+  (`crates/egui-winit/src/lib.rs`, the MinInnerSize arm multiplies by
+  `pixels_per_point`). The app therefore re-issues the floor in points
+  (560x456) one frame after a zoom change — the physical floor rescales
+  downstream; multiplying in the app as well would double-scale it.
+  On that same settled frame a pending startup/factory-reset restore
+  applies the persisted size verbatim, while a plain scale change only
+  grows the window when the new zoom left its point size below the
+  floor (egui rescales the settle frame's `screen_rect` by the
+  old/new zoom ratio, `crates/egui/src/context.rs` — the viewport
+  probe traces both branches exactly). An enlarged window is never
+  forced back down.
+- **Persistence.** New `[ui] window_width=` / `window_height=` keys
+  through the same tolerant parser and atomic writer. The live size is
+  read from `ctx.input(|i| i.screen_rect)` each frame, sanitized in the
+  portable prefs module (non-finite/missing keeps the floor per
+  dimension; finite values round to whole points and clamp to
+  [floor, 4x floor] = up to 2240x1824) and flows through the existing
+  dirty fingerprint plus 1-second autosave throttle and the on-exit
+  flush, so a drag-resize writes at most once per second. Maximized,
+  minimized and fullscreen sizes are never recorded (checked via
+  `i.viewport().maximized` etc.), and observation pauses during
+  restore/zoom transitions behind a 750 ms settle deadline that always
+  expires — every new transient state terminally resolves even if the
+  OS refuses the exact requested size. Factory reset re-arms the
+  restore, returning the window to the classic size at 100 %.
+
+Design research (2025/2026 sources read before touching pixels) changed
+no palette, type or motion values: the surviving, already-shipped set
+(purposeful 150–300 ms feedback motion, depth that encodes
+interactivity, semantic status dot, per-theme contrast discipline) was
+re-confirmed and kept; glass/liquid-glass, immersive 3D, oversized
+typography and AI chrome were rejected for a classic utility dialog.
+The unchanged palettes were re-audited arithmetically (relative
+luminance over every actually-painted text/status/accent pairing,
+including button text on idle/hover/pressed fills): zero pairs below
+4.5:1; worst cases are Classic success-on-face 4.71:1, Dark
+danger-on-face 5.63:1, OLED dim-on-face 7.10:1, Terminal dim-on-face
+5.34:1.
+
+Verification (Linux harness, rustc/cargo 1.88.0 via `@rustbin` at
+`/tmp/sysroot`, real egui/epaint/emath/ecolor 0.27.2 plus vendored
+parking_lot, libc, cfg-if, scopeguard, ab-glyph, owned-ttf-parser,
+ttf-parser, smallvec and headless ahash/nohash-hasher/windows-sys/eframe
+shims at `/tmp/eb-real` + `/tmp/eb-vendor`, repo sources symlinked,
+tests copied verbatim):
+
+- `cargo fmt --all -- --check` clean in the repo crate.
+- **68/68 tests pass** standalone via bare `rustc --test` *and* under
+  `cargo test` in the harness (config 13, humanize 9, telemetry 8,
+  settings 9 — the new window-size round-trip/clamp/garbage test —
+  hotkey 7, icon 6, schedule 7, macro 9). The full round-trip test now
+  also carries a non-default 720x560 size; no test was weakened.
+- `cargo clippy --lib -- -D warnings` clean for the harness library
+  (the real `app.rs`/`engine.rs`/`win32.rs` against real egui);
+  warnings exist only inside vendored upstream/shim crates and are
+  capped as dependency lints. A deliberate type error injected into
+  `app.rs` was rejected (E0308/E0277) and reverted cleanly.
+- Layout probe drives the real `App::update` through
+  `egui::Context::run` for all four themes at 560x456, 720x560 and
+  1000x720: painted extent stays inside the window at every size,
+  every core control text is painted, control text heights are
+  identical across sizes, the footer bottom gap is a constant 19.25 pt
+  at all sizes, the group-title left edge is 21.0 pt at floor/mid and
+  141.0 pt at large (12 or 132 margin + 9 title offset — the cap and
+  centering measured, not asserted blind), button text centers move
+  exactly with the shared extra width, all four themes produce
+  byte-identical coordinates per size, and the idle heartbeat is
+  10/10 frames per combination.
+- Interaction probe (floor and 1000x720) locates controls by painted
+  text and clicks with synthesized pointer events: the footer is two
+  aligned rows (Start/Stop over Hotkey setting/Record & Playback) with
+  column centers matching to < 2 pt, the 3.5 pt semantic status dot is
+  painted beside the status text, Settings opens with the factory
+  reset, the theme dropdown lists exactly the four shipped themes,
+  and "Advanced", "Mog" and "Vaporwave" are never painted. A fit probe
+  confirms the Settings window (including the longer scale hint) stays
+  inside the floor window.
+- Viewport probe inspects the actual `ViewportCommand`s: startup
+  emits `MinInnerSize([560 456])` + `InnerSize([720 560])` exactly
+  once and then silence while idle; a 100 % -> 150 % change that stays
+  above the floor emits only the re-declared `MinInnerSize`; the same
+  change from the floor emits `MinInnerSize` + one
+  `InnerSize([560 456])` growth; a live 720x560 size is written to
+  `settings.conf` on exit while a maximized 1000x720 leaves the floor
+  values untouched. A builder probe compiles `main.rs`'s exact
+  `ViewportBuilder` chain against real egui and asserts
+  `inner_size`, `min_inner_size` and `resizable` carry the intended
+  values (the binary entry itself is finally compiled by the
+  windows-latest CI job).
+- Marker sweep over `src/` + `tests/` clean, no sleep in any click
+  path, banned legacy input APIs only in the pre-existing prohibition
+  comment, no new runtime `unwrap`/`expect`.
+
+Not proven headlessly and not claimed: the physical drag/snap/maximize
+feel, snap-zone refusal under 560 points, restore-after-maximize, and
+title-bar behavior on a real Windows desktop — these are step 17 of
+the manual acceptance checklist in `autoclicker/README.md`.
+
+## Polish and hardening round
 
 A final quality pass over the merged 4.1-style build, driven by running
 clippy with warnings denied and re-reading every interaction:

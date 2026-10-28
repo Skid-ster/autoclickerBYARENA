@@ -2,8 +2,9 @@
 
 **MacroClicker** is a Windows x64 auto-clicker written in stable Rust with an
 egui interface that reproduces the authentic classic OP Auto Clicker 4.x
-Win32 dialog — a fixed, non-resizable light-gray window (with four
-persisted themes and a 75–200 % window scale)
+Win32 dialog — a naturally resizable light-gray window whose classic
+560x456 size is the enforced minimum (with four
+persisted themes, a 75–200 % window scale and a remembered window size)
 with group boxes, sunken numeric fields and classic push buttons, nothing
 scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
 row, mouse button and click-type pickers, repeat rules, cursor position
@@ -27,7 +28,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
 | Dedicated panic key (F8) always reserved | No | Yes |
 | Four themes + 75–200 % window scaling | No | Yes |
-| Open source with Windows CI and 67 automated tests | No | Yes |
+| Open source with Windows CI and 68 automated tests | No | Yes |
 
 ## Quick start
 
@@ -46,16 +47,23 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 
 ## Features
 
-- **Authentic classic OP Auto Clicker 4.x screen** — a fixed-size,
-  non-resizable light-gray Win32-style dialog (group boxes, white numeric
+- **Authentic classic OP Auto Clicker 4.x screen** — a naturally
+  resizable light-gray Win32-style dialog (group boxes, white numeric
   fields, gray 3D buttons) with every control visible and no scrolling:
+  drag any edge or corner, maximize, or snap with Win+arrow / Snap
+  Layouts, exactly like any normal Windows app. The classic 560x456 size
+  is the OS-enforced minimum, so the window can never shrink far enough
+  to hide a control; making it larger only widens the group boxes and
+  the button grid (up to a sensible cap, then the content centers) and
+  adds breathing room between the groups, while every control keeps its
+  exact size. The size you choose is remembered across restarts.
   Click interval with the 4.1 Random offset row, side-by-side Click options
   and Click repeat, Cursor position with a real Pick location button
   (click the button, then click anywhere on screen; Esc cancels), and the
   4.1 button rows — Start/Stop, then Hotkey setting/Record & Playback.
   Start refuses invalid configurations
-  and Stop stays greyed until a session is running. The 560x456 viewport
-  hugs the content; the group-box titles sit on the face color and break
+  and Stop stays greyed until a session is running. The group-box titles
+  sit on the face color and break
   the top border like the native control, and every numeric field and
   dropdown keeps readable contrast in all states.
 - **Record & Playback that actually replays** — press Record and use the
@@ -71,8 +79,9 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   bottom-right corner opens a Settings window with a theme picker (Classic
   light, Dark, Midnight OLED and Terminal green — every one tuned to a
   WCAG 4.5:1 contrast floor for all text, status and accent colors) and a
-  window-scale picker (75–200 %): the whole UI zooms and the window
-  resizes itself so every control stays visible. Both choices restyle
+  window-scale picker (75–200 %): the whole UI zooms and the window only
+  ever grows — and only if the controls would otherwise no longer fit —
+  so a size you chose by dragging is never forced back down. Both choices restyle
   every window (main screen, Hotkey dialog and Settings window), are
   remembered across restarts, and all themes share the exact same layout,
   so switching never moves a control.
@@ -107,7 +116,7 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 67 unit tests over platform-independent modules, plus a Windows CI
+- 68 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
 
