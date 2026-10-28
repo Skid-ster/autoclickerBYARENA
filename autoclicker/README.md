@@ -81,7 +81,7 @@ and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window is a pixel-faithful, fixed-size (560x480 logical points,
+The main window is a pixel-faithful, fixed-size (560x456 logical points,
 non-resizable, non-scrolling) recreation of the classic OP Auto Clicker 4.x
 dialog. The **Settings…** button in the bottom-right corner opens a
 Settings window with two persisted choices:
@@ -94,7 +94,7 @@ Settings window with two persisted choices:
   dropdown lists), gray 3D push buttons.
 - **Dark** — the same dialog in Windows 11 dark-dialog colors: `#202020`
   face, `#2C2C2C` sunken fields with light text, matching dropdowns,
-  buttons, group borders and chart colors in the Advanced window.
+  buttons and group borders.
 - **Midnight OLED** — a pure-black variant of Dark for OLED screens.
 - **Terminal green** — green-on-black phosphor-terminal colors.
 - **Vaporwave** — pastel pink/purple light colors with a hot-pink accent.
@@ -158,7 +158,8 @@ theme renames the window at runtime.)
   doubles as "Cancel pick" while armed), plus white X/Y boxes.
 - **2x2 push-button grid** — **Start (F6)** and **Stop (F6)** (Stop is
   greyed out until a session is running; Start is disabled while running or
-  while the interval is invalid), then **Hotkey setting** and **Advanced…**.
+  while the interval is invalid), then **Hotkey setting** and
+  **Record & Playback**.
 - A single reserved one-line status strip under the group boxes shows
   semantic colored state (Ready / Running / Stopping / Panic / Warning /
   Error) without ever changing the window layout, and a status-bar style
@@ -176,17 +177,10 @@ listening. Hotkeys use `GetAsyncKeyState`, so they work while the window is
 unfocused. A generated crosshair icon is set on the window (title bar,
 taskbar and Alt-Tab) without shipping any binary asset.
 
-The **Advanced…** window keeps every power-user feature off the faithful
-main screen (it is the only scrollable surface in the application):
-
-- Global `SendInput` vs background window-message delivery, with a
-  refreshable target-window picker, client coordinates and synchronous
-  delivery option.
-- Gaussian humanization with all nine expert fields and live validation.
-- Live telemetry: metrics grid, real-time CPS sparkline, interval histogram
-  and the recent-activity log.
-- **Reset all settings to factory defaults** lives at the bottom of this
-  window so the main dialog keeps its exact classic control set.
+There is no diagnostics surface: every clicking control lives on the one
+main screen, and the Settings window carries only the theme picker, the
+window-scale picker and **Reset all settings to factory defaults**, so the
+main dialog keeps its exact classic control set.
 
 Settings persist automatically to
 `%APPDATA%\op-auto-clicker\settings.conf` (a hand-editable, tolerant
@@ -198,7 +192,7 @@ previous session is never reused.
 | File | Responsibility |
 | --- | --- |
 | `src/main.rs` | `eframe::run_native` entry point, viewport setup, platform gating |
-| `src/app.rs` | Classic Win32-style egui dialog (fixed-size, non-scrolling), Advanced and hotkey windows, hotkey polling, location pick, settings persistence, telemetry painting |
+| `src/app.rs` | Classic Win32-style egui dialog (fixed-size, non-scrolling), Settings and hotkey windows, macro record/playback flow, hotkey polling, location pick, settings persistence |
 | `src/engine.rs` | Dedicated worker thread, atomic config snapshot, time-critical priority, RAII timer resolution, QPC spin loop, single/double/triple bursts, panic checks |
 | `src/timing.rs` | QPC wrappers, `timeBeginPeriod(1)` RAII guard, `spin_loop` spin wait (no sleep) |
 | `src/win32.rs` | Narrow FFI wrappers for `SendInput`, `PostMessageW`, `SendMessageTimeoutW`, `GetCursorPos`, `GetAsyncKeyState`, `EnumWindows`, events and QPC; each unsafe block has a SAFETY comment |
@@ -235,7 +229,9 @@ previous session is never reused.
   `MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE` with virtual-screen normalized
   0..65535 mapping. Left, right and middle buttons use their respective
   down/up flags; the injected count is checked against the request.
-- Background mode validates the HWND, caches the client rectangle in atomics
+- The engine-level background delivery path (retained in `src/engine.rs`
+  and `src/win32.rs`, not exposed in the UI) validates the HWND, caches
+  the client rectangle in atomics
   for minimized targets, clamps client coordinates, then delivers
   `WM_MOUSEMOVE`, the button-specific down message (`WM_LBUTTONDOWN`,
   `WM_RBUTTONDOWN` or `WM_MBUTTONDOWN` with the matching `MK_*` flag) and its
@@ -252,8 +248,8 @@ previous session is never reused.
    location), press Start or F6: clicks register in a text editor at ~10 CPS;
    the status line updates and Stop becomes enabled.
 3. Tick Random offset (the magnitude box shows 40 ms): observed intervals
-   vary uniformly between 60 ms and 140 ms (visible in the Advanced
-   histogram); unticking it restores exact timing.
+   vary uniformly between 60 ms and 140 ms; unticking it restores exact
+   timing.
 4. Choose Right button and Double click: each repetition sends two right
    down/up bursts; Triple sends three.
 5. Pick location: press Pick location (the button becomes "Cancel pick"),
@@ -274,9 +270,10 @@ previous session is never reused.
 8. Close and reopen the app: every setting (interval, offset, button, type,
    repeat, position, hotkey, theme, window scale) is restored from
    `%APPDATA%`.
-9. In Advanced, switch to background mode, Refresh, select an unfocused
-   Notepad window: client-coordinate clicks land while Notepad stays
-   unfocused; a dead HWND produces a visible target-loss error.
+9. Open Settings… and press **Reset all settings to factory defaults**:
+   every control returns to its default (100 ms, Left, Single, repeat
+   until stopped, Current location, F6, Classic light at 100 %) and the
+   status strip confirms "Factory defaults restored."
 10. Press F8 mid-run: the session stops within one interval, the status turns
     red and no mouse button remains stuck.
 11. Open Settings…, pick each theme in turn: every window restyles in
@@ -301,9 +298,3 @@ previous session is never reused.
     every spot is clicked in order twice with your original rhythm, then
     "Playback complete" appears. Playback honors F8 panic and the Stop
     button; "Play until stopped" loops until stopped.
-17. Open Advanced… and watch the Real-time CPS chart during a session with
-    a fixed interval (Random offset 0, humanization off): the line stays
-    flat at the target CPS — one sample per click from the worker's own
-    measured click-to-click gap — and "Missed deadlines" stays at or near
-    zero. Turning on Random offset or humanization makes the line wander
-    by design, tracking the intervals actually produced.

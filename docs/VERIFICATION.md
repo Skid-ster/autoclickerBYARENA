@@ -497,6 +497,59 @@ Real-time CPS line is flat at the target rate with "Missed deadlines" at
 or near zero. With Random offset or humanization enabled the line wanders
 by design because the produced intervals genuinely vary.
 
+## Diagnostics removal + stability round (Advanced window retired)
+
+User-requested follow-up to the MacroClicker round: remove the Advanced
+button and the entire Advanced window ("nobody will be needing diagnostics
+on their autoclicker") and maximize stability. Engine modules are
+untouched; only UI surfaces changed.
+
+What was removed from `src/app.rs` (UI only):
+
+- The **Advanced…** button and the whole Advanced window: the delivery
+  section (SendInput vs background window-message targeting UI), the
+  expert Gaussian humanization section, the telemetry dashboard (metrics
+  grid, real-time CPS sparkline, interval histogram) and the session log
+  view.
+- The per-frame telemetry drain/aggregate pass in `update()` — the UI no
+  longer does any per-click bookkeeping work per frame, which removes the
+  main steady-state allocation/scan cost while a session runs.
+- The window-enumeration state (`windows`, `selected_window`) and all
+  chart ring buffers (`cps_history`, sliding-window sample queue, stats).
+
+What was kept, deliberately:
+
+- `src/telemetry.rs`, the background delivery path in `src/engine.rs` /
+  `src/win32.rs` and `src/humanize.rs` stay intact with their tests (the
+  core-equivalence constraint); they are simply not exposed in the UI.
+- **Reset all settings to factory defaults** moved from the Advanced
+  window to the bottom of the Settings window.
+- The session log Vec stays capped at 200 entries (it is no longer
+  rendered; the cap keeps memory bounded).
+
+Stability hardening:
+
+- `sanitize_loaded_config()` runs at startup after settings load: a
+  persisted config from an older build that selected background delivery,
+  synchronous delivery or expert humanization is reset to the supported
+  surface (global SendInput, no target HWND, humanization off) before the
+  saved-fingerprint snapshot, so a stale file can never start the app in
+  a mode the UI cannot display or undo.
+- `handle_start` pins the same delivery invariants on every start.
+- The main window returned to a tighter 560x456 (the third footer button
+  row is gone; the status strip now hosts the small Settings… button).
+
+Verification (Linux harness, rustc 1.88.0, real egui 0.27.2):
+
+- All 67 module tests pass standalone and in the harness, unchanged.
+- `cargo clippy --lib -- -D warnings` clean; `cargo fmt --check` clean.
+- Layout probe: all six themes paint within 560x456 with no overflow and
+  the 10/10 idle repaint heartbeat intact.
+- Interaction probe: the footer grid is exactly Start (F6) / Stop (F6) /
+  Hotkey setting / Record & Playback in two aligned rows, the string
+  "Advanced" is never painted, and clicking Settings… opens the Settings
+  window containing the relocated factory-reset button.
+
 ## MacroClicker rebrand + Record & Playback round (fully beating 4.1)
 
 User request: keep the look "super super" matched to OP Auto Clicker 4.1,
