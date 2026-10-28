@@ -9,6 +9,12 @@
 // wait constants) are part of the FFI surface even when the current UI does
 // not call them; keep those deliberately complete.
 #![allow(dead_code)]
+// Release builds are GUI-subsystem binaries: launching the exe by any means
+// (Explorer double-click, shortcut, `cargo run --release`) opens ONLY the
+// application window, and Windows never allocates a console window next to
+// it. Debug builds keep the console so development diagnostics stay visible
+// in the terminal that launched them.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
 mod hotkey;
