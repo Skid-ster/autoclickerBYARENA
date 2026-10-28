@@ -34,8 +34,9 @@ best-designed and most stable utility of its kind. Two goals, in order:
   **All themes share every layout metric** — switching may never move,
   hide, or resize a control. Classic must stay faithful to the native
   Win32 4.1 dialog; craft goes into the dark family.
-- 68 module tests across 8 test binaries (config 13, macro 9,
-  humanize 9, settings 9, telemetry 8, hotkey 7, schedule 7, icon 6).
+- 77 module tests across 9 test binaries (config 13, macro 9,
+  humanize 9, settings 9, update 9, telemetry 8, hotkey 7, schedule 7,
+  icon 6).
   They must pass **unweakened**. You may replace a test only when the
   feature it covers is removed by explicit user request, and the
   replacement must be equally strict.

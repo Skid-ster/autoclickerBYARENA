@@ -156,6 +156,12 @@ pub struct AppPrefs {
     /// row with a single row of action buttons. Off restores the fixed
     /// classic composition at every size.
     pub auto_scale: bool,
+    /// Ask GitHub once per launch whether a newer release exists (a
+    /// single HTTPS GET of the public latest-release metadata; nothing
+    /// about the user or their settings is sent). The Updates window
+    /// can always check manually, and checking never downloads or
+    /// installs anything on its own.
+    pub check_updates: bool,
     /// Last user-chosen inner window width, sanitized to
     /// [WINDOW_MIN_WIDTH, 4x WINDOW_MIN_WIDTH]. Measured in
     /// step-independent points: the point width the window has with
@@ -178,6 +184,7 @@ impl Default for AppPrefs {
             theme: AppTheme::Classic,
             ui_scale_percent: UI_SCALE_DEFAULT,
             auto_scale: true,
+            check_updates: true,
             window_width: WINDOW_MIN_WIDTH,
             window_height: WINDOW_MIN_HEIGHT,
         }

@@ -28,14 +28,17 @@ Everything 4.1 does, plus the parts it cannot:
 | Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
 | Dedicated panic key (F8) always reserved | No | Yes |
 | Five themes + 75–200 % window scaling | No | Yes |
-| Open source with Windows CI and 68 automated tests | No | Yes |
+| Built-in update check against GitHub releases | No | Yes — one click to the download page |
+| Open source with Windows CI and 77 automated tests | No | Yes |
 
 ## Download
 
 Don't want to build? Grab the ready-to-run **`macro_clicker.exe`** from the
 [GitHub Releases page](https://github.com/Skid-ster/autoclickerBYARENA/releases)
 — every version tag is compiled by the Windows CI workflow (format, clippy,
-all 68 tests, release build) and published there automatically.
+all 77 tests, release build) and published there automatically. The app
+can also check for you: the **Updates…** button in its footer opens an
+update checker that compares your version with the latest release.
 No installer; just download and run. (GitHub displays the file's SHA-256
 fingerprint right under the download link if you want to verify your copy.)
 
@@ -135,7 +138,7 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 68 unit tests over platform-independent modules, plus a Windows CI
+- 77 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
 

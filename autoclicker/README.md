@@ -40,7 +40,7 @@ cargo run --release
 cargo test --release
 ```
 
-Eight integration test binaries run platform-independent logic (68 tests):
+Nine integration test binaries run platform-independent logic (77 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -76,6 +76,10 @@ Eight integration test binaries run platform-independent logic (68 tests):
   center, two-axis symmetry, the presence of both accent and background
   pixels, anti-aliased edges with a fully opaque core, and byte-for-byte
   deterministic generation of the procedural 32x32 application icon.
+- `update_tests` — version parsing and ordering (including `v`-prefixes,
+  padded components and unorderable-tag refusal), latest-release JSON
+  tag extraction, and the full upgrade decision (available / up to date /
+  clean error) over canned GitHub responses.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
@@ -191,7 +195,13 @@ bar agree.
   Error) without ever changing the window layout, and a status-bar style
   footer row: a short key reminder on the left (it tracks the actual
   assigned hotkey, e.g. "F6 start/stop · F8 emergency stop") and the
-  **Settings…** button on the right.
+  **Updates…** and **Settings…** buttons on the right. The Updates
+  window shows the running version and whether the newest GitHub
+  release is newer (checked once per launch over HTTPS, or on demand
+  with **Check now**, and it can be switched off there); its
+  **Download update…** button stays greyed out until an update is
+  actually available, then opens the release page in the browser —
+  the app deliberately never replaces its own binary.
 
 Every push button is painted with full interaction feedback: the fill,
 border and elevation all track the pointer (an eased ~180 ms hover lift
@@ -354,3 +364,12 @@ previous session is never reused.
     window at a non-standard size, close and reopen: it comes back at
     that size. Maximize, close and reopen: it comes back unmaximized at
     the last normal dragged size.
+18. Open **Updates…**: it shows the current version; with the machine
+    online press **Check now** — it resolves within a few seconds to
+    "You're up to date" (or names a newer version if one exists, with
+    **Download update…** enabled and opening the release page in the
+    browser). **Download update…** must be greyed out whenever no
+    update is known. Disconnect the network and press **Check now**:
+    the window must settle on a "Couldn't check" message, never spin
+    forever. Untick **Check for updates on startup**, restart the app:
+    no check happens until **Check now** is pressed.

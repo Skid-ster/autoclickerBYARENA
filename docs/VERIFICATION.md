@@ -5,7 +5,63 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Finished-exe round: GUI subsystem, embedded icon and metadata (current)
+## Built-in updater round (current)
+
+The user asked for an in-app updater: notice when a new release
+exists, offer an update button that sits blanked out with "no new
+updates available" while current, in its own separate tab/button.
+Shipped (version 1.1.0):
+
+- **Check**: one HTTPS GET to
+  `api.github.com/repos/Skid-ster/autoclickerBYARENA/releases/latest`
+  over the OS WinHTTP stack (`win32::https_get_text`) — system
+  proxy (automatic detection), TLS and certificate validation from
+  Windows, no new crates (two added `windows-sys` features).
+  User-Agent is `MacroClicker/<version>`; nothing else about the
+  user is sent. 10 s timeouts, 256 KiB body cap, non-200 is a
+  clean failure. The decision logic is a new platform-free
+  `update` module: tolerant scan of the JSON `tag_name`, numeric
+  version ordering, and refusal to guess on anything unorderable.
+- **Orchestration**: a detached worker thread reports exactly one
+  verdict over an mpsc channel; the UI state
+  (NotChecked → Checking → UpToDate / Available / Failed) always
+  terminally resolves — even a disconnected channel lands in
+  Failed, never an eternal spinner. Runs once per launch by
+  default (new persisted `check_updates` preference, toggle in
+  the Updates window) and manually via "Check now".
+- **UI**: an **Updates…** button beside Settings… in the footer —
+  it relabels itself green "Update available!" when a check has
+  proven a newer release — opening an Updates window with the
+  current version, the status line, **Check now**, and
+  **Download update…** greyed out until an update is actually
+  available. Download opens the GitHub latest-release page
+  (ShellExecuteW) in the browser.
+- **Deliberate boundary**: the app never downloads or replaces
+  its own binary. Self-swapping a running unsigned exe is how
+  installs get bricked; instead the button lands the user on the
+  exact release and they replace one file (settings in
+  `%APPDATA%` persist). Source builders keep their
+  `git pull` + `cargo build` flow — the check tells them when.
+
+Verification: 9 new `update_tests` (version parse/order, JSON tag
+extraction incl. garbage refusal, the full evaluate decision) —
+77 tests total, run green locally per-suite with standalone
+`rustc --test` (the suites path-include platform-free modules,
+which update.rs was designed to be), plus rustfmt clean.
+Windows-only compile/clippy coverage for the WinHTTP and egui
+wiring is CI's, as usual; WinHTTP signatures were confirmed
+against the windows-sys 0.52 documentation before writing the
+FFI, and the CI "Verify GUI subsystem" step still guards the
+shipped binary.
+
+Still honestly unobserved: the live round trip from a real
+Windows desktop (WinHTTP against api.github.com through a home
+router, a proxy, or a captive portal), the Updates window's
+visuals on hardware, and GitHub rate limiting under enthusiastic
+"Check now" use (60 unauthenticated requests/hour/IP — the 403
+path degrades to the Failed state by design).
+
+## Finished-exe round: GUI subsystem, embedded icon and metadata
 
 Two reports about the first published release: launching the
 downloaded exe opened a **console window next to the app**, and the
