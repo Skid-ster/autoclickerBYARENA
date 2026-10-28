@@ -41,7 +41,7 @@ fn full_round_trip_preserves_every_field() {
         toggle_hotkey_vk: VK_F7,
         hotkeys_enabled: false,
         random_offset_enabled: true,
-        theme: AppTheme::Vaporwave,
+        theme: AppTheme::Matrix,
         ui_scale_percent: 150,
     };
 
@@ -174,11 +174,19 @@ fn legacy_dark_mode_files_map_onto_the_theme() {
 
     // A newer theme key wins over the legacy boolean regardless of order.
     let (_, prefs) = parse_settings(
-        "theme=mog
+        "theme=oled
 dark_mode=false
 ",
     );
-    assert_eq!(prefs.theme, AppTheme::Mog);
+    assert_eq!(prefs.theme, AppTheme::Oled);
+
+    // Keys from retired experimental themes are tolerated but ignored, so
+    // an old file can never resurrect a theme that no longer ships.
+    let (_, prefs) = parse_settings(
+        "theme=mog
+",
+    );
+    assert_eq!(prefs.theme, AppTheme::Classic);
 }
 
 #[test]

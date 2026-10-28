@@ -37,8 +37,12 @@ fn theme_keys_and_labels_are_stable_and_unique() {
     }
     let keys: std::collections::HashSet<_> = AppTheme::all().iter().map(|t| t.key()).collect();
     assert_eq!(keys.len(), AppTheme::all().len(), "keys must be unique");
-    assert_eq!(AppTheme::Mog.label(), "MogClicker");
+    assert_eq!(AppTheme::Oled.label(), "Midnight OLED");
     assert_eq!(AppTheme::from_key("comic_sans"), None);
+    // Retired experimental themes must no longer parse: a persisted file
+    // that still names them falls back to the default theme instead.
+    assert_eq!(AppTheme::from_key("mog"), None);
+    assert_eq!(AppTheme::from_key("vaporwave"), None);
 }
 
 #[test]
