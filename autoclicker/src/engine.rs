@@ -145,11 +145,11 @@ impl ClickEngine {
             return Err("Macro playback requires global SendInput delivery.".to_string());
         }
         config.validate()?;
-        *self.shared.macro_steps.lock().expect("macro mutex") = steps;
+        *lock_recovering(&self.shared.macro_steps) = steps;
         self.shared.telemetry.reset();
         self.shared.last_elapsed.store(0, Ordering::Release);
         self.shared.priority_denied.store(false, Ordering::Release);
-        *self.shared.error.lock().expect("error mutex") = None;
+        *lock_recovering(&self.shared.error) = None;
         self.shared.stop.store(false, Ordering::Release);
         self.shared.panic.store(false, Ordering::Release);
         self.shared.config.store(config);
@@ -206,8 +206,27 @@ impl ClickEngine {
         self.shared.priority_denied.load(Ordering::Acquire)
     }
 
+    /// True while the dedicated click worker thread is alive. The worker
+    /// is spawned once and parks between sessions, so `false` means the
+    /// thread died (a defensive check — the worker contains no panicking
+    /// paths by design) and the engine can no longer deliver clicks.
+    pub fn worker_alive(&self) -> bool {
+        self.worker
+            .as_ref()
+            .map(|handle| !handle.is_finished())
+            .unwrap_or(false)
+    }
+
+    /// Forces the engine back to the idle state after the UI detects a
+    /// dead worker mid-session, so Start/Stop enablement and the status
+    /// strip recover instead of reporting a running session forever.
+    pub fn force_idle(&self) {
+        self.shared.stop.store(true, Ordering::Release);
+        self.shared.state.store(STATE_IDLE, Ordering::Release);
+    }
+
     pub fn last_error(&self) -> Option<String> {
-        self.shared.error.lock().expect("error mutex").clone()
+        lock_recovering(&self.shared.error).clone()
     }
 
     pub fn telemetry(&self) -> Arc<TelemetryStore> {
@@ -228,8 +247,19 @@ impl Drop for ClickEngine {
     }
 }
 
+/// Locks a mutex and recovers the inner data if the lock is poisoned.
+/// A panic on the other side of these locks must never cascade a second
+/// panic into this thread: the protected values (macro sequence, error
+/// string) are plain data that stays valid even if the writer died
+/// mid-update, so recovering is strictly safer than crashing the UI.
+fn lock_recovering<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn publish_error(shared: &Shared, message: impl Into<String>) {
-    *shared.error.lock().expect("error mutex") = Some(message.into());
+    *lock_recovering(&shared.error) = Some(message.into());
 }
 
 fn worker_loop(shared: Arc<Shared>) {
@@ -350,7 +380,7 @@ fn run_click_session(shared: &Shared) {
     humanize::reseed_thread_humanizer(session_start as u64);
     // One clone of the macro sequence at session entry; the click loop
     // itself never touches the lock.
-    let macro_steps = shared.macro_steps.lock().expect("macro mutex").clone();
+    let macro_steps = lock_recovering(&shared.macro_steps).clone();
     let mut next_deadline = session_start;
     let mut previous_completion: Option<i64> = None;
     let mut sequence: u64 = 0;

@@ -96,7 +96,14 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 - Dedicated click worker thread — the render thread never runs timing code;
   QPC spin scheduling with no sleep calls, idle parking on a Win32
   manual-reset event, RAII `timeBeginPeriod(1)` and time-critical thread
-  priority with verified failure reporting.
+  priority with verified failure reporting. A UI-side watchdog detects a
+  dead worker thread and recovers the controls instead of reporting a
+  running session forever, engine locks recover from poisoning rather
+  than cascading panics, and settings are written atomically
+  (temp file + rename) so a crash can never corrupt them.
+- A semantic status dot leads the status strip (shape and position carry
+  the state, not color alone) and breathes gently while a session runs;
+  every status change ends in an explicit confirmation line.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
