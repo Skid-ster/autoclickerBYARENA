@@ -27,7 +27,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Record & Playback | Yes | Yes — exact positions, buttons **and gaps**, loop counts, F8 panic mid-playback |
 | Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
 | Dedicated panic key (F8) always reserved | No | Yes |
-| Four themes + 75–200 % window scaling | No | Yes |
+| Five themes + 75–200 % window scaling | No | Yes |
 | Open source with Windows CI and 68 automated tests | No | Yes |
 
 ## Quick start
@@ -55,9 +55,10 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   is the OS-enforced minimum, so the window can never shrink far enough
   to hide a control; making it larger widens the group boxes and the
   button grid so every border stays flush with the content edges, and
-  past set widths the whole interface steps up in scale — the widest
-  step also rearranges the middle groups three-across with a single
-  row of action buttons — so a big window is filled, never just
+  past set sizes the whole interface steps up in scale — growing the
+  window taller steps it up just like growing it wider (the wide step
+  also rearranges the middle groups three-across with a single row
+  of action buttons) — so a big window is filled, never just
   centered in. A Settings toggle turns the adaptation off. The size
   you choose is remembered across restarts.
   Click interval with the 4.1 Random offset row, side-by-side Click options
@@ -78,9 +79,9 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   exact buttons, positions and delays, drift-free, loop N times or until
   stopped, and F8 panic-stops instantly mid-playback. Up to 2048 steps
   per macro.
-- **Four themes + window scaling** — a **Settings…** button in the
+- **Five themes + window scaling** — a **Settings…** button in the
   bottom-right corner opens a Settings window with a theme picker (Classic
-  light, Dark, Midnight OLED and Terminal green — every one tuned to a
+  light, Dark, Midnight OLED, Terminal green and the modern Aurora — every one tuned to a
   WCAG 4.5:1 contrast floor for all text, status and accent colors) and a
   window-scale picker (75–200 %): the whole UI zooms and the window only
   ever grows — and only if the controls would otherwise no longer fit —

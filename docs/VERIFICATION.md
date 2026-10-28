@@ -5,7 +5,127 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Visual depth and acknowledgement round (current)
+## Two-dimensional scaling and Aurora theme round (current)
+
+The user's screenshot after the visual-depth round showed the real
+scaling bug precisely: a very tall window (roughly 910x1400) with the
+whole interface sitting small in the vertical middle, empty panels
+above and below. The scale-step system from the adaptive round voted
+on window **width only**, so a window grown tall never earned a larger
+step. The user also asked for research into how OP Auto Clicker 4.1
+does scaling, the most stable possible design, and sanctioned a
+"super modern theme". All three landed here. Engine, scheduler,
+dispatch and telemetry are untouched; the diff is `app.rs` (step
+decision + one palette) and `hotkey.rs` (one theme variant).
+
+### Research findings (what "OP 4.1 scaling" actually is)
+
+- **OP Auto Clicker 4.1 does no in-app scaling at all.** The 4.1
+  release notes and feature pages list exactly two additions — Random
+  offset and Record & Playback — over a fixed-size dialog
+  (https://opautoclicker.io/features.html,
+  https://opautoclicker.io/download.html). It is a .NET Framework
+  4.7.2 application whose support pages treat Windows DPI scaling as
+  an external condition ("restart Windows after a DPI change, then
+  re-pick your click location",
+  https://www.opauto-clicker.com/auto-clicker-not-working). Its
+  "scaling" is whatever Windows does to a fixed dialog: PerMonitorV2
+  if the manifest asks, bitmap stretching if not. There is no
+  window-size-driven presentation to imitate — our resizable window
+  already exceeds it, and the right lesson from OP is the opposite
+  of dynamism: a fixed dialog never surprises anyone, so every
+  dynamic behavior we add must be provably incapable of surprising
+  (no feedback loops, no fighting the user's chosen size).
+- **egui's model is already the stable one, and we already use it.**
+  `pixels_per_point = zoom_factor * native_pixels_per_point`; the
+  native factor comes from the OS and must never be fought, while all
+  app-level zoom is expressed through `zoom_factor` so it survives
+  monitor changes (https://github.com/emilk/egui/issues/3602,
+  https://docs.rs/egui/latest/egui/struct.Context.html). winit puts
+  the process in Per-Monitor-V2 awareness — the mode Microsoft
+  recommends (https://learn.microsoft.com/en-us/windows/win32/hidpi/dpi-awareness-context)
+  and WinForms guidance uniformly endorses for per-monitor support
+  (https://comcomponent.com/en/blog/winforms-high-dpi-guide/).
+- The stability rules the step system already followed remain the
+  design constraints: decide from **zoom-invariant measures**
+  (neutral points = live points x total zoom = physical size at
+  native scaling) so feedback is mathematically impossible;
+  hysteresis on every threshold; steps apply only after the size
+  settles. This round changes *what votes*, not those rules.
+
+### The fix: both axes vote, height is fit-capped
+
+- The tier table (800/1024/1440 engage, 744/968/1384 release,
+  x1.10/x1.25/x1.40) is unchanged. Width votes through it exactly as
+  before (`tier_for_extent` is the old `auto_zoom_for` body verbatim).
+  Height now votes too, converted to width-equivalent neutral points
+  by the floor dialog's aspect ratio (560/456), so one table, one
+  hysteresis implementation, and "twice the floor's height" means the
+  same as "twice its width".
+- **The height vote is fit-capped**: it may not exceed the largest
+  tier that keeps live points at or above the 560x456 floor on both
+  axes under the user's own percentage. Without the cap, a tall
+  narrow window's height vote would push live width under the OS
+  minimum and the window would be grown wider than the user chose —
+  the exact surprise OP's fixed dialog never inflicts. Width-earned
+  steps are *not* capped (pre-existing, verified behavior: user 150 %
+  in a short wide window still totals x2.10, and the long-standing
+  grow-only floor correction covers that case).
+- The cold-start step (`initial_auto_zoom`, used by the window
+  builder size and by first-frame state) runs the same two-axis rule
+  with rising edges only, so the opening frame and the settled frame
+  always agree. Persistence is untouched: sizes are still recorded
+  as live points x applied step and restored by dividing the opening
+  step back out — the formula never cared which axis earned the step.
+- Rejected alternatives, with reasons: a **continuous** fit-zoom
+  (zoom = clamped size ratio) would re-zoom on every drag frame,
+  re-tessellate constantly, and thread a continuous value through
+  the discrete persistence conversions — felt instability for zero
+  benefit; a **fourth tier** (x1.60) was deferred rather than
+  shipped uncalibrated; **uncapped** height votes and height-driven
+  wide layout were rejected above.
+
+Measured on the harness (physical-pixel rigs, real egui 0.27.2):
+910x1400 @100 % settles at step x1.40 feeding 650x1000 points (the
+screenshot case, previously x1.10); portrait 700x1200 fit-caps at
+x1.25 feeding exactly the 560x960 floor with the physical size
+untouched; 150 % in 1500x900 still totals x2.10; the persisted tall
+size opens pre-divided at [650, 1000] and opens verbatim with the
+Settings toggle off. All previous scale/layout probe expectations
+hold unchanged (1280x777 neutral -> x1.25, wide band, tiers at
+1920 points).
+
+### Aurora modern theme
+
+A fifth theme (Settings key `aurora`, label "Aurora modern"): deep
+indigo-slate surfaces (#12131B face, #1B1D29 cards, #0E0F16 sunken
+fields, #0C0D13 status well) with a violet accent/title (#9F8CFF).
+It inherits the full dark depth system (cards, shadow, rim light,
+well, pulse) automatically — themes are pure palette values.
+Contrast proofed by script over every enabled pair: worst text
+6.11:1 (title/accent on card), every border >= 3.0:1 against both
+adjacent surfaces (group 3.38/3.06, button 3.49/3.16), disabled text
+3.44:1 (best of the dark family). Theme tests iterate
+`AppTheme::all()`, so the new key/label round-trips are covered with
+no test edits; the layout probe now asserts floor metric identity
+across **five** themes, and the paint probe asserts Aurora's four
+cards, split backdrop, well, shadows and resting dot from painted
+shapes.
+
+Verification: `cargo fmt --check` clean; 68 unit tests pass
+unweakened; clippy `--lib -- -D warnings` exit 0; paint, layout,
+interact and viewport probes all pass including the new tall,
+portrait, user-percent and opening-step cases above; the diff adds
+no `unwrap`/`expect` and no TODO markers. Windows CI (fmt, clippy
+with warnings denied, tests, release build) re-verifies on MSVC.
+
+Still honestly unobserved: how the new height votes *feel* during a
+real Windows drag (the settle-debounce should make them land once,
+after the drag, like the width votes — but frame pacing on real
+hardware is the user's to judge), and how Aurora reads on a real
+panel.
+
+## Visual depth and acknowledgement round
 
 A pure paint-and-state polish round: no layout metric, engine,
 scheduler, dispatch, telemetry or settings-semantic change. The diff is

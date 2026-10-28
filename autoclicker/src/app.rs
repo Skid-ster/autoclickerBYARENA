@@ -187,6 +187,38 @@ static MATRIX_PALETTE: Palette = Palette {
     selection_bg: Color32::from_rgba_premultiplied(0, 70, 36, 150),
 };
 
+// Modern deep-indigo look: layered blue-slate surfaces, violet accent.
+// Every value proofed by contrast script (see docs/VERIFICATION.md):
+// worst enabled text pair 6.11:1, every border >= 3.0:1 on both
+// surfaces it touches.
+static AURORA_PALETTE: Palette = Palette {
+    dark: true,
+    face: Color32::from_rgb(18, 19, 27),
+    button: Color32::from_rgb(37, 40, 56),
+    button_disabled: Color32::from_rgb(25, 27, 37),
+    button_border: Color32::from_rgb(98, 106, 140),
+    hover_fill: Color32::from_rgb(45, 49, 68),
+    pressed_fill: Color32::from_rgb(55, 60, 84),
+    input_bg: Color32::from_rgb(14, 15, 22),
+    input_disabled: Color32::from_rgb(21, 23, 32),
+    group_fill: Color32::from_rgb(27, 29, 41),
+    well_fill: Color32::from_rgb(12, 13, 19),
+    group_border: Color32::from_rgb(96, 104, 136),
+    input_border: Color32::from_rgb(124, 134, 168),
+    text: Color32::from_rgb(233, 235, 246),
+    group_title: Color32::from_rgb(159, 140, 255),
+    text_dim: Color32::from_rgb(160, 166, 190),
+    text_disabled: Color32::from_rgb(105, 111, 134),
+    accent: Color32::from_rgb(159, 140, 255),
+    success: Color32::from_rgb(92, 224, 150),
+    danger: Color32::from_rgb(251, 113, 133),
+    warning: Color32::from_rgb(252, 211, 77),
+    chart_bg: Color32::from_rgb(11, 12, 18),
+    chart_grid: Color32::from_rgb(42, 46, 64),
+    chart_bar_alt: Color32::from_rgba_premultiplied(64, 52, 120, 110),
+    selection_bg: Color32::from_rgba_premultiplied(52, 42, 104, 150),
+};
+
 /// Logical (point) floor size of the main window: the exact classic
 /// footprint, declared to the OS as the minimum inner size so the window
 /// can never shrink to a size where a control would not fit. Larger
@@ -231,6 +263,12 @@ const MAIN_WIDE_FILL_HEIGHT: f32 = 372.0_f32;
 /// band restores the previous step. The gap between the two edges is
 /// the hysteresis that keeps a window parked on a boundary from
 /// flip-flopping scales.
+/// Both window axes feed the same table: the height is converted to
+/// width-equivalent neutral points (scaled by the floor's aspect
+/// ratio), so a tall narrow window earns the same steps a wide one
+/// does. The height's vote is fit-capped (see `auto_zoom_for`) so it
+/// can never force the OS to grow the window past the size the user
+/// chose.
 const AUTO_ZOOM_TIERS: [(f32, f32, f32); 3] = [
     (800.0_f32, 744.0_f32, 1.10_f32),
     (1024.0_f32, 968.0_f32, 1.25_f32),
@@ -496,10 +534,14 @@ impl OpAutoClickerApp {
             return MAIN_WINDOW_SIZE;
         };
         let (_, prefs) = settings::parse_settings(&text);
-        // Persisted widths are step-independent points; the step
+        // Persisted sizes are step-independent points; the step
         // thresholds are neutral points, one user-factor further.
-        let neutral_width = prefs.window_width as f32 * (prefs.ui_scale_percent as f32 / 100.0_f32);
-        let auto = Self::initial_auto_zoom(neutral_width, prefs.auto_scale);
+        let user_factor = prefs.ui_scale_percent as f32 / 100.0_f32;
+        let neutral = Vec2::new(
+            prefs.window_width as f32 * user_factor,
+            prefs.window_height as f32 * user_factor,
+        );
+        let auto = Self::initial_auto_zoom(neutral, user_factor, prefs.auto_scale);
         [
             (prefs.window_width as f32 / auto).max(MAIN_WINDOW_SIZE[0]),
             (prefs.window_height as f32 / auto).max(MAIN_WINDOW_SIZE[1]),
@@ -540,13 +582,16 @@ impl OpAutoClickerApp {
         self.offset_ms = self.config.random_offset_ms;
         // Open at the scale step (and layout) the persisted size calls
         // for, so the first frames don't start small and then step up.
-        // Persisted widths are step-independent points; the thresholds
+        // Persisted sizes are step-independent points; the thresholds
         // are neutral points, one user-factor further.
-        let neutral_width =
-            self.prefs.window_width as f32 * (self.prefs.ui_scale_percent as f32 / 100.0_f32);
-        self.auto_zoom = Self::initial_auto_zoom(neutral_width, self.prefs.auto_scale);
+        let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
+        let neutral = Vec2::new(
+            self.prefs.window_width as f32 * user_factor,
+            self.prefs.window_height as f32 * user_factor,
+        );
+        self.auto_zoom = Self::initial_auto_zoom(neutral, user_factor, self.prefs.auto_scale);
         self.tier_candidate = self.auto_zoom;
-        self.wide_layout = self.prefs.auto_scale && Self::wide_layout_for(neutral_width, false);
+        self.wide_layout = self.prefs.auto_scale && Self::wide_layout_for(neutral.x, false);
         self.sync_interval_editors();
         self.log(format!("Settings loaded from {}.", path.display()));
     }
@@ -630,6 +675,7 @@ impl OpAutoClickerApp {
             AppTheme::Dark => &DARK_PALETTE,
             AppTheme::Oled => &OLED_PALETTE,
             AppTheme::Matrix => &MATRIX_PALETTE,
+            AppTheme::Aurora => &AURORA_PALETTE,
         }
     }
 
@@ -1095,37 +1141,94 @@ impl OpAutoClickerApp {
         (gap_extra, top_pad)
     }
 
-    /// The window-driven scale factor for a neutral-point window
-    /// width, with per-step hysteresis against the currently applied
-    /// factor: a step engages at its upper edge and only releases below
-    /// its lower edge, so a width parked inside the band holds whatever
-    /// step it arrived with.
-    fn auto_zoom_for(base_width: f32, current: f32) -> f32 {
-        if !base_width.is_finite() || base_width <= 0.0_f32 {
+    /// One axis of the scale-step decision: maps a neutral-point
+    /// extent (already expressed in width-equivalent points) through
+    /// the tier table, with per-step hysteresis against the currently
+    /// applied factor — a step engages at its upper edge and only
+    /// releases below its lower edge, so an extent parked inside the
+    /// band holds whatever step it arrived with.
+    fn tier_for_extent(extent: f32, current: f32) -> f32 {
+        if !extent.is_finite() || extent <= 0.0_f32 {
             return current;
         }
         let mut target = 1.0_f32;
         for &(engage, disengage, factor) in &AUTO_ZOOM_TIERS {
             let threshold = if current >= factor { disengage } else { engage };
-            if base_width >= threshold {
+            if extent >= threshold {
                 target = target.max(factor);
             }
         }
         target
     }
 
-    /// The scale step to open with for a neutral-point width. Rising
-    /// edges only: on a cold start there is no previous step for
-    /// hysteresis to protect.
-    fn initial_auto_zoom(base_width: f32, enabled: bool) -> f32 {
-        if !enabled || !base_width.is_finite() {
+    /// The width-equivalent neutral extent of the window height: the
+    /// height scaled by the floor dialog's aspect ratio, so both axes
+    /// speak the same tier-table language — a window grown to twice
+    /// the floor's height votes exactly like one grown to twice its
+    /// width.
+    fn height_equivalent(base_height: f32) -> f32 {
+        base_height * (MAIN_WINDOW_SIZE[0] / MAIN_WINDOW_SIZE[1])
+    }
+
+    /// The largest tier that keeps the live point size at or above the
+    /// floor on BOTH axes under the user's own zoom percentage. A
+    /// larger step would push live points under the declared OS
+    /// minimum on one axis and the window would be grown to compensate
+    /// — acceptable when the user's own percentage dictates it (that
+    /// grow-only correction predates the step system), never as a
+    /// surprise side effect of an automatic height-driven step.
+    fn largest_fittable_step(base: Vec2, user_factor: f32) -> f32 {
+        if !user_factor.is_finite()
+            || user_factor <= 0.0_f32
+            || !base.x.is_finite()
+            || !base.y.is_finite()
+        {
             return 1.0_f32;
         }
+        let cap = (base.x / MAIN_WINDOW_SIZE[0]).min(base.y / MAIN_WINDOW_SIZE[1]) / user_factor;
         AUTO_ZOOM_TIERS
             .iter()
-            .filter(|&&(engage, _, _)| base_width >= engage)
             .map(|&(_, _, factor)| factor)
+            .filter(|&factor| factor <= cap)
             .fold(1.0_f32, f32::max)
+    }
+
+    /// The window-driven scale factor for a neutral-point window size.
+    /// Width votes exactly as it always has; height votes through the
+    /// same table in width-equivalent points, fit-capped so a tall
+    /// window earns real steps (the previous width-only rule left a
+    /// tall narrow window at the smallest scale, floating in empty
+    /// space) without ever outvoting the physical size the user
+    /// chose. Every input is a neutral-point extent or a persisted
+    /// preference, so the result cannot feed back into itself.
+    fn auto_zoom_for(base: Vec2, user_factor: f32, current: f32) -> f32 {
+        if !base.x.is_finite() || !base.y.is_finite() || base.x <= 0.0_f32 || base.y <= 0.0_f32 {
+            return current;
+        }
+        let width_step = Self::tier_for_extent(base.x, current);
+        let height_step = Self::tier_for_extent(Self::height_equivalent(base.y), current);
+        width_step.max(height_step.min(Self::largest_fittable_step(base, user_factor)))
+    }
+
+    /// The scale step to open with for a neutral-point window size.
+    /// Rising edges only on both axes: on a cold start there is no
+    /// previous step for hysteresis to protect. The height vote takes
+    /// the same fit cap as the running decision, so the opening frame
+    /// and the settled frame agree about which step a size deserves.
+    fn initial_auto_zoom(base: Vec2, user_factor: f32, enabled: bool) -> f32 {
+        if !enabled || !base.x.is_finite() || !base.y.is_finite() {
+            return 1.0_f32;
+        }
+        let rising = |extent: f32| {
+            AUTO_ZOOM_TIERS
+                .iter()
+                .filter(|&&(engage, _, _)| extent >= engage)
+                .map(|&(_, _, factor)| factor)
+                .fold(1.0_f32, f32::max)
+        };
+        let width_step = rising(base.x);
+        let height_step = rising(Self::height_equivalent(base.y));
+        width_step.max(height_step.min(Self::largest_fittable_step(base, user_factor)))
     }
 
     /// Wide layout for a neutral-point width, with the same
@@ -1191,7 +1294,7 @@ impl OpAutoClickerApp {
     }
 
     /// Window-driven presentation: derives the layout mode and the
-    /// target scale step from the neutral-point window width (live
+    /// target scale step from the neutral-point window size (live
     /// points times the total applied zoom — invariant under the very
     /// zoom changes it drives, which is what makes feedback impossible,
     /// and under user-scale changes too, so re-picking a percentage
@@ -1220,7 +1323,11 @@ impl OpAutoClickerApp {
         let base = size * ctx.zoom_factor();
         self.wide_layout = self.prefs.auto_scale && Self::wide_layout_for(base.x, self.wide_layout);
         let target = if self.prefs.auto_scale {
-            Self::auto_zoom_for(base.x, self.auto_zoom)
+            Self::auto_zoom_for(
+                base,
+                self.prefs.ui_scale_percent as f32 / 100.0_f32,
+                self.auto_zoom,
+            )
         } else {
             1.0_f32
         };

@@ -42,15 +42,18 @@ pub enum AppTheme {
     Oled,
     /// Green-on-black terminal look.
     Matrix,
+    /// Deep indigo modern look with a violet accent.
+    Aurora,
 }
 
 impl AppTheme {
-    pub fn all() -> [AppTheme; 4] {
+    pub fn all() -> [AppTheme; 5] {
         [
             AppTheme::Classic,
             AppTheme::Dark,
             AppTheme::Oled,
             AppTheme::Matrix,
+            AppTheme::Aurora,
         ]
     }
 
@@ -61,6 +64,7 @@ impl AppTheme {
             AppTheme::Dark => "dark",
             AppTheme::Oled => "oled",
             AppTheme::Matrix => "matrix",
+            AppTheme::Aurora => "aurora",
         }
     }
 
@@ -73,6 +77,7 @@ impl AppTheme {
             "dark" => Some(AppTheme::Dark),
             "oled" => Some(AppTheme::Oled),
             "matrix" => Some(AppTheme::Matrix),
+            "aurora" => Some(AppTheme::Aurora),
             _ => None,
         }
     }
@@ -84,6 +89,7 @@ impl AppTheme {
             AppTheme::Dark => "Dark",
             AppTheme::Oled => "Midnight OLED",
             AppTheme::Matrix => "Terminal green",
+            AppTheme::Aurora => "Aurora modern",
         }
     }
 }
