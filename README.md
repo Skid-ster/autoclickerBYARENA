@@ -29,8 +29,8 @@ Everything 4.1 does, plus the parts it cannot:
 | Dedicated panic key (F8) always reserved | No | Yes |
 | Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
 | Five themes + 75–200 % window scaling | No | Yes |
-| Built-in update check against GitHub releases | No | Yes — one click to the download page |
-| Open source with Windows CI and 77 automated tests | No | Yes |
+| Built-in update check against GitHub releases | No | Yes — shows installed/latest/last-checked, then one click downloads the EXE |
+| Open source with Windows CI and 82 automated tests | No | Yes |
 
 \* Resizing/scaling is the researched part: OP's public 4.1 feature
 pages list no resize or UI-scale feature; the winget-catalogued 4.1
@@ -45,9 +45,14 @@ later closed builds are not public, so no stronger claim is made.
 Don't want to build? Grab the ready-to-run **`macro_clicker.exe`** from the
 [GitHub Releases page](https://github.com/Skid-ster/autoclickerBYARENA/releases)
 — every version tag is compiled by the Windows CI workflow (format, clippy,
-all 77 tests, release build) and published there automatically. The app
-can also check for you: the **Updates…** button in its footer opens an
-update checker that compares your version with the latest release.
+all 82 tests, release build) and published there automatically.
+CI also refuses a version tag unless the tag, Cargo package version
+and the EXE's embedded FileVersion all agree, so the in-app checker
+can never be pointed at a mislabelled release. The app can also
+check for you: the **Updates…** button in its footer opens an update
+checker showing the installed version, the latest version GitHub
+reported and when it last checked; a newer release turns the footer
+button into **Update vX.Y.Z** and enables a direct EXE download.
 No installer; just download and run. (GitHub displays the file's SHA-256
 fingerprint right under the download link if you want to verify your copy.)
 
@@ -152,7 +157,7 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 77 unit tests over platform-independent modules, plus a Windows CI
+- 82 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
 

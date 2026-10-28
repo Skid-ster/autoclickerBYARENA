@@ -52,7 +52,13 @@ jobs:
           if ($subsystem -ne 2) { throw "exe subsystem is $subsystem, expected 2 (Windows GUI, no console)" }
           $vi = (Get-Item $exe).VersionInfo
           if ($vi.ProductName -ne "MacroClicker") { throw "embedded version metadata missing (ProductName='$($vi.ProductName)')" }
-          Write-Host "Subsystem=$subsystem (Windows GUI) ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) Size=$((Get-Item $exe).Length) bytes"
+          $cargoVersionMatch = Select-String -Path "autoclicker/Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if ($null -eq $cargoVersionMatch) { throw "could not read package version from autoclicker/Cargo.toml" }
+          $packageVersion = $cargoVersionMatch.Matches[0].Groups[1].Value
+          if ($packageVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Cargo package version '$packageVersion' is not a strict X.Y.Z release version" }
+          if ($vi.FileVersion -ne $packageVersion -and !$vi.FileVersion.StartsWith("$packageVersion.")) { throw "exe FileVersion '$($vi.FileVersion)' does not match Cargo package version '$packageVersion'" }
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$packageVersion") { throw "release tag '${{ github.ref_name }}' does not match Cargo package version 'v$packageVersion'" }
+          Write-Host "Subsystem=$subsystem (Windows GUI) ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) PackageVersion=$packageVersion Size=$((Get-Item $exe).Length) bytes"
 
       - name: Upload release binary
         uses: actions/upload-artifact@v4

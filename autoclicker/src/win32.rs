@@ -440,13 +440,23 @@ impl Drop for HttpHandle {
 /// endpoint into a clean error instead of an unbounded allocation.
 const HTTPS_BODY_LIMIT: usize = 256 * 1024;
 
+/// Hard ceiling on the whole body-read phase. The per-operation
+/// WinHTTP timeouts bound each individual call; this bounds a
+/// hostile or merely glacial endpoint that would otherwise keep a
+/// background worker (and a "Checking…" UI) alive indefinitely by
+/// trickling bytes forever.
+const HTTPS_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Performs one HTTPS GET via WinHTTP — the OS HTTP stack, so system
 /// proxy settings, TLS and certificate validation all come from
 /// Windows — and returns the body decoded as text. Synchronous and
-/// bounded (10 s timeouts, [`HTTPS_BODY_LIMIT`]): callers run it on a
-/// worker thread. Every handle closes on every path and every
+/// bounded (10 s per-operation timeouts, [`HTTPS_BODY_LIMIT`],
+/// [`HTTPS_READ_DEADLINE`]): callers run it on a worker thread.
+/// `request_headers` is a caller-owned CRLF header block (empty for
+/// none), so this layer stays a transport and never hardcodes one
+/// service's protocol. Every handle closes on every path and every
 /// failure names its stage.
-pub fn https_get_text(host: &str, path: &str) -> io::Result<String> {
+pub fn https_get_text(host: &str, path: &str, request_headers: &str) -> io::Result<String> {
     let agent = wide_null(&format!("MacroClicker/{}", env!("CARGO_PKG_VERSION")));
     // SAFETY: `agent` is a live null-terminated wide string for the
     // call; automatic proxy resolution honors the system proxy
@@ -502,20 +512,22 @@ pub fn https_get_text(host: &str, path: &str) -> io::Result<String> {
         return Err(last_os_error("WinHttpOpenRequest failed"));
     }
 
-    let headers = wide_null("Accept: application/vnd.github+json\r\n");
-    // SAFETY: request handle plus a live null-terminated header
-    // block; the u32::MAX length tells WinHTTP the string is
-    // null-terminated, per the API contract.
-    let added = unsafe {
-        WinHttpAddRequestHeaders(
-            request.0,
-            headers.as_ptr(),
-            u32::MAX,
-            WINHTTP_ADDREQ_FLAG_ADD,
-        )
-    };
-    if added == 0 {
-        return Err(last_os_error("WinHttpAddRequestHeaders failed"));
+    if !request_headers.is_empty() {
+        let headers = wide_null(request_headers);
+        // SAFETY: request handle plus a live null-terminated header
+        // block; the u32::MAX length tells WinHTTP the string is
+        // null-terminated, per the API contract.
+        let added = unsafe {
+            WinHttpAddRequestHeaders(
+                request.0,
+                headers.as_ptr(),
+                u32::MAX,
+                WINHTTP_ADDREQ_FLAG_ADD,
+            )
+        };
+        if added == 0 {
+            return Err(last_os_error("WinHttpAddRequestHeaders failed"));
+        }
     }
 
     // SAFETY: this GET sends no headers of its own and no body.
@@ -554,8 +566,18 @@ pub fn https_get_text(host: &str, path: &str) -> io::Result<String> {
         )));
     }
 
-    let mut body: Vec<u8> = Vec::new();
+    // Release metadata is a few KB; reserving it up front makes
+    // the common case a single allocation. The deadline starts
+    // once headers are in, so it bounds only the transfer itself.
+    let mut body: Vec<u8> = Vec::with_capacity(4096);
+    let read_started = std::time::Instant::now();
     loop {
+        if read_started.elapsed() > HTTPS_READ_DEADLINE {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the update server timed out while sending its reply",
+            ));
+        }
         let mut available: u32 = 0;
         // SAFETY: single u32 out-parameter on a live request handle.
         let ok = unsafe { WinHttpQueryDataAvailable(request.0, &mut available) };
@@ -565,13 +587,18 @@ pub fn https_get_text(host: &str, path: &str) -> io::Result<String> {
         if available == 0 {
             break;
         }
-        if body.len() + available as usize > HTTPS_BODY_LIMIT {
+        let start = body.len();
+        let Some(new_len) = start.checked_add(available as usize) else {
+            return Err(io::Error::other(
+                "the update server sent an oversized reply",
+            ));
+        };
+        if new_len > HTTPS_BODY_LIMIT {
             return Err(io::Error::other(
                 "the update server sent an oversized reply",
             ));
         }
-        let start = body.len();
-        body.resize(start + available as usize, 0);
+        body.resize(new_len, 0);
         let mut read: u32 = 0;
         // SAFETY: the tail slice is writable for `available` bytes
         // and WinHTTP writes at most that many, reporting the true
