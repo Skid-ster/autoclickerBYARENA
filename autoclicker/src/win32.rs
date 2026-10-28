@@ -6,7 +6,9 @@
 //! surface stays independent of internal metadata re-exports.
 
 use std::ffi::c_void;
-use std::io;
+use std::io::{self, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, BOOL, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_FAILED,
@@ -18,7 +20,7 @@ use windows_sys::Win32::Networking::WinHttp::{
     WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
     WinHttpSendRequest, WinHttpSetTimeouts, INTERNET_DEFAULT_HTTPS_PORT,
     WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_FLAG_SECURE,
-    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_LOCATION, WINHTTP_QUERY_STATUS_CODE,
 };
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::System::Threading::{
@@ -447,16 +449,30 @@ const HTTPS_BODY_LIMIT: usize = 256 * 1024;
 /// trickling bytes forever.
 const HTTPS_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Performs one HTTPS GET via WinHTTP — the OS HTTP stack, so system
+/// One opened HTTPS GET whose response headers have arrived: the
+/// three handles that must outlive the body read (kept in RAII
+/// owners so every path closes them) plus the HTTP status.
+struct HttpsRequest {
+    _session: HttpHandle,
+    _connect: HttpHandle,
+    request: HttpHandle,
+    status: u32,
+}
+
+/// Opens an HTTPS GET via WinHTTP — the OS HTTP stack, so system
 /// proxy settings, TLS and certificate validation all come from
-/// Windows — and returns the body decoded as text. Synchronous and
-/// bounded (10 s per-operation timeouts, [`HTTPS_BODY_LIMIT`],
-/// [`HTTPS_READ_DEADLINE`]): callers run it on a worker thread.
-/// `request_headers` is a caller-owned CRLF header block (empty for
-/// none), so this layer stays a transport and never hardcodes one
-/// service's protocol. Every handle closes on every path and every
-/// failure names its stage.
-pub fn https_get_text(host: &str, path: &str, request_headers: &str) -> io::Result<String> {
+/// Windows — sends it and waits for the response headers.
+/// `request_headers` is a caller-owned CRLF header block (empty
+/// for none), so this layer stays a transport and never hardcodes
+/// one service's protocol. WinHTTP follows redirects itself
+/// (refusing HTTPS→HTTP downgrades); callers that also handle a
+/// surfaced 3xx do so as a second line of defence.
+fn open_https_request(
+    host: &str,
+    path: &str,
+    request_headers: &str,
+    receive_timeout_ms: i32,
+) -> io::Result<HttpsRequest> {
     let agent = wide_null(&format!("MacroClicker/{}", env!("CARGO_PKG_VERSION")));
     // SAFETY: `agent` is a live null-terminated wide string for the
     // call; automatic proxy resolution honors the system proxy
@@ -475,7 +491,8 @@ pub fn https_get_text(host: &str, path: &str, request_headers: &str) -> io::Resu
     }
     // SAFETY: `session` is a valid WinHTTP session handle. Timeouts
     // are best-effort tuning, so the result is intentionally ignored.
-    let _timeouts_set = unsafe { WinHttpSetTimeouts(session.0, 10_000, 10_000, 10_000, 10_000) };
+    let _timeouts_set =
+        unsafe { WinHttpSetTimeouts(session.0, 10_000, 10_000, 10_000, receive_timeout_ms) };
 
     let host_wide = wide_null(host);
     // SAFETY: session handle plus a live null-terminated host name;
@@ -560,9 +577,25 @@ pub fn https_get_text(host: &str, path: &str, request_headers: &str) -> io::Resu
     if queried == 0 {
         return Err(last_os_error("WinHttpQueryHeaders failed"));
     }
-    if status != 200 {
+
+    Ok(HttpsRequest {
+        _session: session,
+        _connect: connect,
+        request,
+        status,
+    })
+}
+
+/// Performs one bounded HTTPS GET and returns the body decoded as
+/// text (10 s per-operation timeouts, [`HTTPS_BODY_LIMIT`],
+/// [`HTTPS_READ_DEADLINE`]): callers run it on a worker thread.
+/// Every failure names its stage.
+pub fn https_get_text(host: &str, path: &str, request_headers: &str) -> io::Result<String> {
+    let request = open_https_request(host, path, request_headers, 10_000)?;
+    if request.status != 200 {
         return Err(io::Error::other(format!(
-            "the update server answered HTTP {status}"
+            "the update server answered HTTP {}",
+            request.status
         )));
     }
 
@@ -580,7 +613,7 @@ pub fn https_get_text(host: &str, path: &str, request_headers: &str) -> io::Resu
         }
         let mut available: u32 = 0;
         // SAFETY: single u32 out-parameter on a live request handle.
-        let ok = unsafe { WinHttpQueryDataAvailable(request.0, &mut available) };
+        let ok = unsafe { WinHttpQueryDataAvailable(request.request.0, &mut available) };
         if ok == 0 {
             return Err(last_os_error("WinHttpQueryDataAvailable failed"));
         }
@@ -605,7 +638,7 @@ pub fn https_get_text(host: &str, path: &str, request_headers: &str) -> io::Resu
         // count in `read`.
         let ok = unsafe {
             WinHttpReadData(
-                request.0,
+                request.request.0,
                 body[start..].as_mut_ptr() as *mut c_void,
                 available,
                 &mut read,
@@ -626,6 +659,184 @@ pub fn https_get_text(host: &str, path: &str, request_headers: &str) -> io::Resu
             "the update server sent a non-text reply",
         )
     })
+}
+
+/// Reads one response header as text. The two-call pattern is the
+/// documented contract: the first call fails while reporting the
+/// byte length needed, the second fills a buffer of that size.
+/// Absurd lengths are refused rather than allocated.
+fn query_header_string(request: *mut c_void, query_flag: u32) -> Option<String> {
+    let mut byte_len: u32 = 0;
+    // SAFETY: null buffer with a zero length is the documented
+    // sizing call; `byte_len` receives the required byte count.
+    let _sizing = unsafe {
+        WinHttpQueryHeaders(
+            request,
+            query_flag,
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            &mut byte_len,
+            std::ptr::null_mut(),
+        )
+    };
+    if byte_len == 0 || byte_len > 64 * 1024 {
+        return None;
+    }
+    let mut buffer = vec![0_u16; byte_len as usize / 2 + 1];
+    // SAFETY: the buffer holds at least `byte_len` bytes and the
+    // length in/out parameter describes it in bytes, per contract.
+    let queried = unsafe {
+        WinHttpQueryHeaders(
+            request,
+            query_flag,
+            std::ptr::null(),
+            buffer.as_mut_ptr() as *mut c_void,
+            &mut byte_len,
+            std::ptr::null_mut(),
+        )
+    };
+    if queried == 0 {
+        return None;
+    }
+    buffer.truncate(byte_len as usize / 2);
+    Some(
+        String::from_utf16_lossy(&buffer)
+            .trim_end_matches('\0')
+            .trim()
+            .to_string(),
+    )
+}
+
+/// Outcome of one HTTP hop of a file download.
+enum DownloadHop {
+    Saved(u64),
+    Redirect(String),
+}
+
+/// Streams one HTTPS GET into `dest` (created/truncated only once
+/// a 200 is in hand), or reports the redirect target of a 3xx.
+/// `downloaded` tracks bytes written for the UI's progress row;
+/// `cancel` is honored between chunks. A transfer that stalls —
+/// per-read WinHTTP receive timeout, with the no-progress check
+/// as a backstop — or outgrows `max_bytes` fails cleanly.
+fn download_hop(
+    host: &str,
+    path: &str,
+    dest: &Path,
+    max_bytes: u64,
+    downloaded: &AtomicU64,
+    cancel: &AtomicBool,
+) -> io::Result<DownloadHop> {
+    let request = open_https_request(host, path, "", 30_000)?;
+    if (300..400).contains(&request.status) {
+        if let Some(location) = query_header_string(request.request.0, WINHTTP_QUERY_LOCATION) {
+            return Ok(DownloadHop::Redirect(location));
+        }
+    }
+    if request.status != 200 {
+        return Err(io::Error::other(format!(
+            "the download server answered HTTP {}",
+            request.status
+        )));
+    }
+
+    let mut file = std::fs::File::create(dest).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("the update file couldn't be created next to MacroClicker: {error}"),
+        )
+    })?;
+    let mut total: u64 = 0;
+    downloaded.store(0, Ordering::Relaxed);
+    let mut last_progress = std::time::Instant::now();
+    let mut chunk = vec![0_u8; 64 * 1024];
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "download cancelled",
+            ));
+        }
+        if last_progress.elapsed() > std::time::Duration::from_secs(45) {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the download timed out — no data arrived for 45 seconds",
+            ));
+        }
+        let mut read: u32 = 0;
+        // SAFETY: the chunk buffer is writable for its full length
+        // and WinHTTP writes at most that many bytes, reporting
+        // the true count in `read` (0 at end of body).
+        let ok = unsafe {
+            WinHttpReadData(
+                request.request.0,
+                chunk.as_mut_ptr() as *mut c_void,
+                chunk.len() as u32,
+                &mut read,
+            )
+        };
+        if ok == 0 {
+            return Err(last_os_error("WinHttpReadData failed"));
+        }
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+        if total > max_bytes {
+            return Err(io::Error::other(
+                "the download was larger than GitHub said it would be",
+            ));
+        }
+        file.write_all(&chunk[..read as usize])?;
+        downloaded.store(total, Ordering::Relaxed);
+        last_progress = std::time::Instant::now();
+    }
+    file.flush()?;
+    file.sync_all()?;
+    Ok(DownloadHop::Saved(total))
+}
+
+/// Downloads `https://host/path` into `dest`, exactly what the
+/// verified self-update needs: bounded size, cancellable,
+/// progress-reporting, redirect-hardened. WinHTTP normally
+/// follows GitHub's redirect to its file CDN invisibly; if a 3xx
+/// ever surfaces instead, each hop's `Location` must pass
+/// [`crate::update::parse_https_url`] (HTTPS only, sane host, no
+/// credentials or odd ports) and the hop count is capped, so the
+/// downloader can never be walked somewhere unexpected. Returns
+/// the byte count written; on any error the caller deletes the
+/// partial file.
+pub fn https_download_to_file(
+    host: &str,
+    path: &str,
+    dest: &Path,
+    max_bytes: u64,
+    downloaded: &AtomicU64,
+    cancel: &AtomicBool,
+) -> io::Result<u64> {
+    const MAX_REDIRECT_HOPS: u32 = 5;
+    let mut host = host.to_string();
+    let mut path = path.to_string();
+    for _hop in 0..=MAX_REDIRECT_HOPS {
+        match download_hop(&host, &path, dest, max_bytes, downloaded, cancel)? {
+            DownloadHop::Saved(total) => return Ok(total),
+            DownloadHop::Redirect(location) => {
+                let (next_host, next_path) =
+                    crate::update::parse_https_url(&location).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "the download server sent an unusable redirect",
+                        )
+                    })?;
+                host = next_host;
+                path = next_path;
+                downloaded.store(0, Ordering::Relaxed);
+            }
+        }
+    }
+    Err(io::Error::other(
+        "the download server sent too many redirects",
+    ))
 }
 
 /// Opens a URL in the user's default handler (for an https link,

@@ -40,7 +40,7 @@ cargo run --release
 cargo test --release
 ```
 
-Nine integration test binaries run platform-independent logic (82 tests):
+Ten integration test binaries run platform-independent logic (102 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -83,7 +83,19 @@ Nine integration test binaries run platform-independent logic (82 tests):
   URL construction, stale-check refresh timing, "checked … ago"
   wording, actionable failure headlines, and the full upgrade
   decision (available / up to date with the version GitHub actually
-  reported / clean error) over canned GitHub responses.
+  reported / clean error) over canned GitHub responses, extraction
+  of the release asset's size and SHA-256 digest (without ever
+  borrowing a neighboring asset's), the dependency-free SHA-256
+  against the FIPS 180-4 vectors in one-shot and streamed forms,
+  hex-digest round trips, the strict HTTPS redirect gate, and the
+  download-progress wording.
+- `self_update_tests` — the verified self-replacement over real
+  temp files: the AMD64 PE gate, file hashing, acceptance of
+  exactly the published bytes (one flipped byte or a truncated
+  file fails), the replace-with-backup swap, rollback when the
+  download is missing or the new program won't launch, clearing
+  a crashed attempt's stale backup, development-build (`target/`)
+  detection, and leftover-file cleanup that touches nothing else.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
@@ -215,12 +227,19 @@ bar agree.
   result when the window is opened, and can always be re-run with
   **Check now**; failures resolve to a plain-language headline with
   the technical detail underneath, never an endless spinner. The
-  download button stays greyed out until an update is proven, then
-  **Download vX.Y.Z** starts the new `macro_clicker.exe` download in
-  the browser, with **Release notes** and **Copy download link**
-  beside it; if Windows refuses to open the browser the window says
-  so and the copy-link path still works. The app deliberately never
-  replaces its own binary.
+  action button stays greyed out until an update is proven, then
+  **Install vX.Y.Z** updates in place: it streams the new EXE next
+  to the running one with a progress bar and a working **Cancel**,
+  verifies its exact size and SHA-256 fingerprint against the
+  values GitHub published for that release (no published
+  fingerprint, no install — the browser download is offered
+  instead), moves the running EXE aside, puts the verified one
+  in its place, launches it and closes; any failure along the
+  way restores the current build untouched and says so. The new
+  build confirms with "Updated from v… — now running v…" and
+  sweeps the leftover file. **Release notes** and **Copy download
+  link** remain beside it, and if Windows refuses to open the
+  browser the window says so and the copy-link path still works.
 
 Every push button is painted with full interaction feedback: the fill,
 border and elevation all track the pointer (an eased ~180 ms hover lift
@@ -268,6 +287,8 @@ previous session is never reused.
 | `src/settings.rs` | Dependency-free key=value settings serialization and tolerant parsing (platform-independent, fully tested) |
 | `src/telemetry.rs` | Lock-free SPSC ring buffer over atomic `Atom` slots (`Send + Sync`, no `unsafe`), drop-newest back pressure, sliding-window statistics |
 | `src/config.rs` | Configuration struct, validation, h/m/s/ms helpers and the all-atomic runtime snapshot |
+| `src/update.rs` | Pure update decisions: version ordering, release/asset JSON scanning (tag, size, SHA-256 digest), validated release/download/redirect URLs, refresh policy, error headlines and a dependency-free streaming SHA-256 |
+| `src/self_update.rs` | Verified self-replacement over `std` file ops: PE gate, size+fingerprint verification, rename-aside/swap-in with rollback, undo after a failed launch, stale-file cleanup, Cargo-target detection |
 
 ### Timing and threading rules
 
@@ -396,20 +417,30 @@ previous session is never reused.
 18. Updates: with the machine online, open **Updates…** — a stale or
     missing result refreshes on open, and the status card must show
     **Installed**, **Latest on GitHub** and **Last checked: just now**
-    with the verdict naming the version GitHub reported (run an older
-    build such as v1.1.0 once to see the real thing end-to-end: its
-    footer button must turn into **Update v1.2.0** without opening
-    anything). In the window, **Download vX.Y.Z** must be greyed out
-    unless a newer release is proven; when enabled it starts the EXE
-    download in the browser and confirms it in the window,
-    **Release notes** opens that version's GitHub page, and **Copy
-    download link** puts the exact asset URL on the clipboard.
-    Disconnect the network and press **Check now**: the window must
-    settle on a plain-language failure with the technical detail
-    under it and a **Try again** button — never an endless spinner.
-    If an update was already confirmed before the network dropped,
-    a failed refresh must keep that download available and say it
-    is showing the last confirmed result.
+    with the verdict naming the version GitHub reported. The real
+    end-to-end rehearsal is the v1.2.0 → v1.3.0 hop: v1.2.0's footer
+    must turn into **Update v1.3.0** without opening anything (its
+    button still browser-downloads, as v1.2.0 was built to). In a
+    v1.3.0+ window, **Install vX.Y.Z** must be greyed out unless a
+    newer release is proven; when clicked it shows live download
+    progress, then "Verifying…", and the app closes and reopens by
+    itself as the new version with the status strip confirming
+    "Updated from v… — now running v…", settings and window size
+    intact and no `macro_clicker.exe.old-*` file left beside the
+    EXE. Repeat and press **Cancel download** mid-transfer: it must
+    stop, report "nothing was changed", and the current build must
+    keep working. **Release notes** opens that version's GitHub
+    page and **Copy download link** puts the exact asset URL on the
+    clipboard. Disconnect the network and press **Check now**: the
+    window must settle on a plain-language failure with the
+    technical detail under it and a **Try again** button — never an
+    endless spinner. If an update was already confirmed before the
+    network dropped, a failed refresh must keep that update
+    installable and say it is showing the last confirmed result.
     Untick **Check for updates on startup** and restart: no check
     runs in the background (the footer stays **Updates…**), while
-    opening the window counts as asking and refreshes then.
+    opening the window counts as asking and refreshes then. Finally
+    confirm the safety rails: run a copy from `target\release`
+    (it must offer the browser download, never **Install**), and
+    run one from a read-only folder (the install must fail cleanly
+    with the current version untouched).

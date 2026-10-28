@@ -5,7 +5,83 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Updater end-to-end round (current): a release it can actually see
+## Self-update round (current): the button physically updates and restarts
+
+v1.2.0's updater deliberately never replaced its own binary —
+the safest possible boundary at the time. The user overruled it
+explicitly: pressing the update button should *physically*
+update and restart. This round implements exactly that, as the
+public-release edition (v1.3.0), with the safety engineering
+moved from "never do it" to "only ever do it verifiably, and
+roll back on any doubt":
+
+- **What may install.** The check now also extracts the release
+  asset's exact `size` and GitHub-published `sha256:` digest
+  from the same latest-release response (anchored to the
+  `macro_clicker.exe` entry so a neighboring asset can never
+  lend its values). **Install vX.Y.Z** is only offered when a
+  fingerprint exists; without one — or from a `target\debug` /
+  `target\release` development binary — the window falls back
+  to the browser download and says why.
+- **The pipeline.** A worker streams the EXE (bounded to the
+  published size, cancellable, progress-reporting, 30 s
+  per-read timeout plus a 45 s no-progress backstop; each
+  redirect hop must pass a strict HTTPS gate) to
+  `macro_clicker.exe.update-<pid>` **beside** the running EXE,
+  then re-reads it and demands an AMD64 PE header, the exact
+  published size, and a SHA-256 identical to the published
+  fingerprint — via a dependency-free, FIPS-vector-tested
+  SHA-256, because a code-execution path deserves the smallest
+  possible supply chain. Only a Verified report reaches the
+  swap: stop clicking, flush settings, rename the running EXE
+  to `.old-<pid>` (Windows permits renaming a loaded image),
+  rename the verified file into place (failure renames the
+  original straight back), launch it with `--updated-from=<old>`,
+  and exit *without* the usual exit-save so the two processes
+  never write settings concurrently. If the new program cannot
+  be launched, the swap is undone and the old build keeps
+  running. The new build confirms on its status strip and
+  sweeps the `.old-<pid>` remains (retrying while the old
+  process finishes exiting, then at every later launch).
+- **What did not change.** The click engine, scheduler, and
+  the rest of the updater's audit UI are untouched; the
+  version-consistency CI gate from the previous round is what
+  guarantees the asset behind a tag really is the version the
+  tag claims.
+
+Verification: `cargo fmt --check` clean; **102** standalone
+tests pass under `rustc -D warnings --test` (24 update, 10
+self-update — the latter performing real swaps, rollbacks,
+tampered-byte and truncation refusals over temp files). The
+rebuilt real-egui 0.27.2 harness (fake-GitHub WinHTTP serving
+chunked JSON and a synthetic PE payload whose size/SHA-256 the
+JSON carries truthfully) compiles the full app, clippy
+`--lib -- -D warnings` clean, and its probe then ran the whole
+choreography against a copy of itself outside any `target/`
+dir: footer flag → Install → 302 redirect hop → staged
+download with live progress text → fingerprint verify → its
+own binary renamed aside and replaced → launch of the (on
+Linux, non-runnable) payload refused → rollback notice, with
+the binary byte-identical afterwards and zero leftover files;
+a separate run cancelled mid-download to the same clean end
+state, and a run from `target/` confirmed the browser-only
+guard and the exact URL it opens. All probed dialog states
+(available / downloading / post-rollback / cancel / browser /
+up-to-date) measure zero texts outside the 560x456 floor and
+zero overlaps.
+
+Still honestly unobserved: the final Windows step — a new
+signed-by-nobody EXE actually relaunching from its renamed
+home on the user's machine, under their antivirus and
+SmartScreen. Every mechanical piece (download, hash, swap,
+rollback, cleanup, refusal paths) is exercised above, and
+rename-a-running-image is the one long-standing Windows
+behavior the design leans on; the first v1.3.0 → vNext hop on
+the user's PC is the acceptance test. The one unavoidable
+manual step remains the v1.2.0 → v1.3.0 hop itself: v1.2.0 was
+built to browser-download, so it does that one last time.
+
+## Updater end-to-end round: a release it can actually see
 
 The user ran v1.1.0, opened Updates, and was told "You're up to
 date — no new updates available" even though the continuous-fit
