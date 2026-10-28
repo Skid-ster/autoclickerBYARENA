@@ -40,7 +40,7 @@ cargo run --release
 cargo test --release
 ```
 
-Nine integration test binaries run platform-independent logic (77 tests):
+Nine integration test binaries run platform-independent logic (82 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -77,9 +77,13 @@ Nine integration test binaries run platform-independent logic (77 tests):
   pixels, anti-aliased edges with a fully opaque core, and byte-for-byte
   deterministic generation of the procedural 32x32 application icon.
 - `update_tests` — version parsing and ordering (including `v`-prefixes,
-  padded components and unorderable-tag refusal), latest-release JSON
-  tag extraction, and the full upgrade decision (available / up to date /
-  clean error) over canned GitHub responses.
+  padded components and unorderable-tag refusal), hardened
+  latest-release JSON tag extraction (escaped lookalikes and bad
+  candidates are skipped), validated release-page/direct-download
+  URL construction, stale-check refresh timing, "checked … ago"
+  wording, actionable failure headlines, and the full upgrade
+  decision (available / up to date with the version GitHub actually
+  reported / clean error) over canned GitHub responses.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
@@ -200,13 +204,23 @@ bar agree.
   Error) without ever changing the window layout, and a status-bar style
   footer row: a short key reminder on the left (it tracks the actual
   assigned hotkey, e.g. "F6 start/stop · F8 emergency stop") and the
-  **Updates…** and **Settings…** buttons on the right. The Updates
-  window shows the running version and whether the newest GitHub
-  release is newer (checked once per launch over HTTPS, or on demand
-  with **Check now**, and it can be switched off there); its
-  **Download update…** button stays greyed out until an update is
-  actually available, then opens the release page in the browser —
-  the app deliberately never replaces its own binary.
+  **Updates…** and **Settings…** buttons on the right. The footer
+  button mirrors the checker in place (**Checking…**, or
+  **Update vX.Y.Z** when a download is ready). The Updates window is
+  a centered status card with a state glyph and the three facts
+  needed to trust it — **Installed**, **Latest on GitHub** and
+  **Last checked** — so "up to date" always names the version GitHub
+  actually reported (and a source build newer than the latest
+  release says so). It checks once per launch, refreshes a stale
+  result when the window is opened, and can always be re-run with
+  **Check now**; failures resolve to a plain-language headline with
+  the technical detail underneath, never an endless spinner. The
+  download button stays greyed out until an update is proven, then
+  **Download vX.Y.Z** starts the new `macro_clicker.exe` download in
+  the browser, with **Release notes** and **Copy download link**
+  beside it; if Windows refuses to open the browser the window says
+  so and the copy-link path still works. The app deliberately never
+  replaces its own binary.
 
 Every push button is painted with full interaction feedback: the fill,
 border and elevation all track the pointer (an eased ~180 ms hover lift
@@ -379,12 +393,23 @@ previous session is never reused.
     settings file and relaunch on the large monitor: the first-run
     window opens proportionally larger than the classic dialog; put
     the settings file back and confirm the saved size wins again.
-18. Open **Updates…**: it shows the current version; with the machine
-    online press **Check now** — it resolves within a few seconds to
-    "You're up to date" (or names a newer version if one exists, with
-    **Download update…** enabled and opening the release page in the
-    browser). **Download update…** must be greyed out whenever no
-    update is known. Disconnect the network and press **Check now**:
-    the window must settle on a "Couldn't check" message, never spin
-    forever. Untick **Check for updates on startup**, restart the app:
-    no check happens until **Check now** is pressed.
+18. Updates: with the machine online, open **Updates…** — a stale or
+    missing result refreshes on open, and the status card must show
+    **Installed**, **Latest on GitHub** and **Last checked: just now**
+    with the verdict naming the version GitHub reported (run an older
+    build such as v1.1.0 once to see the real thing end-to-end: its
+    footer button must turn into **Update v1.2.0** without opening
+    anything). In the window, **Download vX.Y.Z** must be greyed out
+    unless a newer release is proven; when enabled it starts the EXE
+    download in the browser and confirms it in the window,
+    **Release notes** opens that version's GitHub page, and **Copy
+    download link** puts the exact asset URL on the clipboard.
+    Disconnect the network and press **Check now**: the window must
+    settle on a plain-language failure with the technical detail
+    under it and a **Try again** button — never an endless spinner.
+    If an update was already confirmed before the network dropped,
+    a failed refresh must keep that download available and say it
+    is showing the last confirmed result.
+    Untick **Check for updates on startup** and restart: no check
+    runs in the background (the footer stays **Updates…**), while
+    opening the window counts as asking and refreshes then.

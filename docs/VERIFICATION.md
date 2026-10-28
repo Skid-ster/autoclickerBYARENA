@@ -5,7 +5,107 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Continuous fit-to-window scaling round (current)
+## Updater end-to-end round (current): a release it can actually see
+
+The user ran v1.1.0, opened Updates, and was told "You're up to
+date — no new updates available" even though the continuous-fit
+scaling round had already merged. The checker was not lying about
+GitHub; the *release discipline* was the bug: scaling merged to
+`main` with no Cargo version bump and no tag, so the newest
+published release really was still v1.1.0. Source on `main` is
+invisible to an updater that correctly reads published releases.
+This round fixes the whole chain, not just the symptom:
+
+- **Version and release integrity.** The crate is now **1.2.0**
+  (the scaling round plus this updater round). The Windows CI
+  metadata step now asserts three-way agreement — Cargo package
+  version, the EXE's embedded FileVersion, and (on tag builds)
+  the tag name itself — so a future release cannot silently ship
+  a binary whose self-reported version disagrees with its tag,
+  which is exactly how an updater gets stranded. Publication of
+  this round means: merge, tag `v1.2.0` on the merge commit, and
+  prove against the live GitHub API that the real
+  `evaluate_update` logic returns `Available("1.2.0")` for a
+  1.1.0 build and `UpToDate("1.2.0")` for a 1.2.0 build, with the
+  release carrying exactly one `macro_clicker.exe` asset.
+- **A verdict the user can audit.** `UpdateOutcome::UpToDate`
+  now carries the version GitHub reported instead of discarding
+  it. The window shows **Installed**, **Latest on GitHub** and
+  **Last checked** ("just now" / "12 minutes ago"), distinguishes
+  "you're up to date" from "you're ahead of the latest release"
+  (a source build between releases), and keeps the last known
+  latest version on screen even if a later refresh fails.
+  Opening the window refreshes a missing or >10-minute-old result
+  (opening it is an explicit ask; the interval protects GitHub's
+  unauthenticated budget and manual **Check now** always
+  bypasses it). The footer button mirrors the state:
+  **Checking…**, **Update vX.Y.Z**, or a warning-tinted
+  **Updates…** after a failure.
+- **Actions that cannot feel dead.** Download now starts the
+  versioned EXE asset directly in the browser (the URL is built
+  only from a parser-validated version — a malformed network
+  value can never be interpolated into a shell-opened link).
+  **Release notes** and **Copy download link** sit beside it;
+  every browser/clipboard action reports its outcome in the
+  window, including the previously silent "Windows refused to
+  open a browser" path, which now points at the copy-link
+  recovery. Failures get a plain-language headline (rate limit,
+  server error, unexpected reply, timeout, unreachable) with the
+  technical detail underneath.
+- **Transport hardening and leanness.** The GitHub API version
+  is pinned (`X-GitHub-Api-Version: 2022-11-28`, supported to
+  2028) rather than inherited; headers moved out of the Win32
+  transport into the caller that owns the protocol. The reader
+  now reserves the common-case body in one allocation, uses
+  checked length arithmetic against the existing 256 KiB cap,
+  and enforces a 30-second whole-transfer deadline on top of
+  the 10-second per-operation WinHTTP timeouts, so a trickling
+  endpoint cannot park a worker or the "Checking…" state. Tag
+  extraction skips backslash-escaped lookalikes inside string
+  values, walks past malformed candidates, and bounds tag
+  length/control characters before anything reaches the UI.
+- **Looks.** The plain text list became a centered status card:
+  hand-drawn state glyph (spinner/check/download-arrow/warning —
+  shape carries the state, not color alone), headline + detail
+  on the theme's sunken readout surface, a three-fact grid, one
+  accent primary action (black-on-accent in dark themes,
+  white-on-accent in Classic; script-computed contrast 5.67:1
+  worst case, all other new pairings >= 4.7:1), quiet secondary
+  actions, and the startup-check toggle as a footer. Classic
+  stays natively flat; dark themes inherit the existing depth
+  system. No layout metric outside the Updates window changed
+  except the footer button's label/color state.
+
+Verification: `cargo fmt --check` clean; **82** standalone tests
+pass under `rustc -D warnings --test` (14 update tests: the nine
+originals strengthened for the version-carrying outcome, plus
+escaped-tag scanning, URL validation, refresh policy, age
+wording and error headlines); `main.rs` strict-compiles. The
+real-egui 0.27.2 harness (rebuilt pinned, with a fake-GitHub
+WinHTTP stub serving chunked bodies) compiles the full app,
+clippy `--lib -- -D warnings` is clean, and its interaction
+probe drove the actual window at the 560x456 floor and at
+914x497: up-to-date, update-available, HTTP-403 and dark/Aurora
+available states all settle with zero text outside the window
+and zero text overlaps; a refresh deliberately failed after an
+update was confirmed kept the **Download v1.3.0** state and
+reported "Showing the last confirmed result"; clicking **Download v1.3.0** produced
+the download-started notice inside the floor height, and
+**Copy download link** put exactly
+`https://github.com/Skid-ster/autoclickerBYARENA/releases/download/v1.3.0/macro_clicker.exe`
+on the clipboard. Windows CI re-verifies MSVC compile, clippy,
+tests, release build and the new version-integrity assertion.
+
+Still honestly unobserved: WinHTTP against GitHub from the
+user's real Windows network in *this* build and the browser's
+download UX on their machine. Their screenshot does prove the
+shipped v1.1.0 checker reached GitHub correctly; once v1.2.0 is
+published that same installed build is the acceptance test —
+**Check now** in v1.1.0 must offer the update (its button opens
+the release page, as v1.1.0 was built to do; the direct-download
+button arrives with the new build itself).
+
+## Continuous fit-to-window scaling round
 
 The shipped tier system was still judged "off" on the user's 1440p
 display, and the user asked for two things with no exaggeration:

@@ -343,6 +343,16 @@ enum UpdateUiState {
     Failed(String),
 }
 
+/// Whether the Updates window's transient action notice reports a
+/// successful browser/clipboard action or one the user must recover
+/// from manually. Shape and wording carry the distinction; the
+/// color only reinforces it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateNoticeKind {
+    Info,
+    Error,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusKind {
     Ready,
@@ -414,9 +424,18 @@ pub struct OpAutoClickerApp {
     // Update checker: the Updates window's state, the latch for the
     // once-per-launch background check, and the channel its detached
     // worker reports through (None while no check is in flight).
+    // The newest version GitHub has ever reported this session and
+    // when the last attempt finished are kept separately, so a
+    // later transient failure never erases a verdict the user can
+    // still act on and the window can say exactly how fresh its
+    // answer is. The notice is the one-line outcome of the last
+    // browser/clipboard action, so no button ever feels dead.
     update_state: UpdateUiState,
     update_auto_check_started: bool,
     update_rx: Option<mpsc::Receiver<Result<UpdateOutcome, String>>>,
+    update_latest_version: Option<String>,
+    update_last_checked: Option<Instant>,
+    update_notice: Option<(UpdateNoticeKind, String)>,
 
     // Whether a settings file existed at load. A fresh install (no
     // file) earns the one-time display-aware opening size; any
@@ -531,6 +550,9 @@ impl OpAutoClickerApp {
             update_state: UpdateUiState::NotChecked,
             update_auto_check_started: false,
             update_rx: None,
+            update_latest_version: None,
+            update_last_checked: None,
+            update_notice: None,
             window_size_was_persisted: false,
             pending_resize: false,
             restore_window_size: true,
@@ -2315,14 +2337,34 @@ impl OpAutoClickerApp {
             return;
         }
         self.update_state = UpdateUiState::Checking;
+        self.update_notice = None;
         let (sender, receiver) = mpsc::channel();
         self.update_rx = Some(receiver);
         std::thread::spawn(move || {
-            let result = win32::https_get_text(update::UPDATE_API_HOST, update::UPDATE_API_PATH)
-                .map_err(|error| error.to_string())
-                .and_then(|body| update::evaluate_update(&body, env!("CARGO_PKG_VERSION")));
+            let result = win32::https_get_text(
+                update::UPDATE_API_HOST,
+                update::UPDATE_API_PATH,
+                update::UPDATE_API_HEADERS,
+            )
+            .map_err(|error| error.to_string())
+            .and_then(|body| update::evaluate_update(&body, env!("CARGO_PKG_VERSION")));
             let _ = sender.send(result);
         });
+    }
+
+    /// Refreshes the verdict when the Updates window is opened and
+    /// the last completed attempt is missing or stale. Opening the
+    /// window is itself an explicit request for a current answer,
+    /// so this runs even when the startup check is disabled; the
+    /// staleness window keeps ordinary reopenings from spending
+    /// GitHub's unauthenticated request budget.
+    fn refresh_update_check_if_stale(&mut self) {
+        if self.update_rx.is_some() || matches!(self.update_state, UpdateUiState::Checking) {
+            return;
+        }
+        if update::should_refresh(self.update_last_checked.map(|checked| checked.elapsed())) {
+            self.start_update_check();
+        }
     }
 
     /// Applies a finished worker's verdict. A disconnected channel
@@ -2333,120 +2375,452 @@ impl OpAutoClickerApp {
         let Some(result) = self.update_rx.as_ref().map(|receiver| receiver.try_recv()) else {
             return;
         };
+        let finished_at = Instant::now();
         match result {
-            Ok(Ok(UpdateOutcome::UpToDate)) => {
+            Ok(Ok(UpdateOutcome::UpToDate(latest))) => {
+                self.update_latest_version = Some(latest);
+                self.update_last_checked = Some(finished_at);
                 self.update_state = UpdateUiState::UpToDate;
                 self.update_rx = None;
             }
             Ok(Ok(UpdateOutcome::Available(version))) => {
+                self.update_latest_version = Some(version.clone());
+                self.update_last_checked = Some(finished_at);
                 self.update_state = UpdateUiState::Available(version);
                 self.update_rx = None;
             }
             Ok(Err(message)) => {
-                self.update_state = UpdateUiState::Failed(message);
-                self.update_rx = None;
+                self.apply_update_failure(message, finished_at);
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.update_state =
-                    UpdateUiState::Failed("the check stopped unexpectedly".to_string());
-                self.update_rx = None;
+                self.apply_update_failure(
+                    "the check stopped unexpectedly".to_string(),
+                    finished_at,
+                );
+            }
+        }
+    }
+
+    /// Records a failed attempt without throwing away a verdict
+    /// GitHub already confirmed this session: with a known latest
+    /// version the window keeps that (still actionable) result and
+    /// reports the refresh problem as a notice, so one transient
+    /// network blip can never strand a user who was about to
+    /// download. Only a failure with nothing confirmed yet becomes
+    /// the window's headline state.
+    fn apply_update_failure(&mut self, message: String, finished_at: Instant) {
+        self.update_last_checked = Some(finished_at);
+        self.update_rx = None;
+        match self.update_latest_version.clone() {
+            Some(latest) => {
+                self.update_state = if update::is_newer(&latest, env!("CARGO_PKG_VERSION")) {
+                    UpdateUiState::Available(latest)
+                } else {
+                    UpdateUiState::UpToDate
+                };
+                self.update_notice = Some((
+                    UpdateNoticeKind::Error,
+                    format!(
+                        "Couldn't refresh: {}. Showing the last confirmed result.",
+                        update::error_headline(&message)
+                    ),
+                ));
+            }
+            None => {
+                self.update_state = UpdateUiState::Failed(message);
+            }
+        }
+    }
+
+    /// One of the Updates window's action buttons. Primary actions
+    /// use the theme accent (with black/white text chosen per theme
+    /// family — both pairings clear 5.6:1 on every palette), while
+    /// secondary actions keep the classic button face.
+    fn update_action_button(
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        label: &str,
+        enabled: bool,
+        primary: bool,
+        width: f32,
+        height: f32,
+    ) -> egui::Response {
+        let (fill, border, plain_color) = if !enabled {
+            (pal.button_disabled, pal.button_border, pal.text_disabled)
+        } else if primary {
+            (
+                pal.accent,
+                pal.accent,
+                if pal.dark {
+                    Color32::BLACK
+                } else {
+                    Color32::WHITE
+                },
+            )
+        } else {
+            (pal.button, pal.button_border, pal.text)
+        };
+        let text = egui::RichText::new(label).color(plain_color).size(13.0_f32);
+        let text = if primary { text.strong() } else { text };
+        ui.add_enabled(
+            enabled,
+            egui::Button::new(text)
+                .fill(fill)
+                .stroke(Stroke::new(1.0_f32, border))
+                .rounding(Rounding::same(5.0_f32))
+                .min_size(Vec2::new(width, height)),
+        )
+    }
+
+    /// State glyph for the Updates status card: a spinner while the
+    /// request is in flight, otherwise a hand-drawn check, download
+    /// arrow, warning mark or idle dot inside a ring — so the state
+    /// reads by shape as well as by color.
+    fn paint_update_status_icon(ui: &mut egui::Ui, pal: &Palette, state: &UpdateUiState) {
+        let (rect, _response) = ui.allocate_exact_size(Vec2::splat(30.0_f32), Sense::hover());
+        if matches!(state, UpdateUiState::Checking) {
+            ui.put(rect.shrink(3.0_f32), egui::Spinner::new());
+            return;
+        }
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let color = match state {
+            UpdateUiState::NotChecked => pal.accent,
+            UpdateUiState::UpToDate | UpdateUiState::Available(_) => pal.success,
+            UpdateUiState::Failed(_) => pal.warning,
+            UpdateUiState::Checking => pal.accent,
+        };
+        let painter = ui.painter_at(rect.expand(1.0_f32));
+        let center = rect.center();
+        let at = |x: f32, y: f32| center + Vec2::new(x, y);
+        let stroke = Stroke::new(2.0_f32, color);
+        painter.circle_stroke(center, 11.0_f32, stroke);
+        match state {
+            UpdateUiState::UpToDate => {
+                painter.line_segment([at(-5.0, 0.0), at(-1.5, 4.0)], stroke);
+                painter.line_segment([at(-1.5, 4.0), at(5.5, -4.0)], stroke);
+            }
+            UpdateUiState::Available(_) => {
+                painter.line_segment([at(0.0, -6.0), at(0.0, 3.0)], stroke);
+                painter.line_segment([at(-4.0, -0.5), at(0.0, 4.0)], stroke);
+                painter.line_segment([at(4.0, -0.5), at(0.0, 4.0)], stroke);
+                painter.line_segment([at(-5.5, 6.5), at(5.5, 6.5)], stroke);
+            }
+            UpdateUiState::Failed(_) => {
+                painter.line_segment([at(0.0, -5.5), at(0.0, 1.5)], stroke);
+                painter.circle_filled(at(0.0, 5.0), 1.7_f32, color);
+            }
+            _ => {
+                painter.circle_filled(center, 2.2_f32, color);
             }
         }
     }
 
     fn draw_updates_window(&mut self, ctx: &egui::Context) {
+        self.refresh_update_check_if_stale();
         let pal = self.palette();
         let mut open = self.show_updates;
-        egui::Window::new("Updates")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(300.0_f32)
-            .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(format!("Current version: {}", env!("CARGO_PKG_VERSION")))
-                        .color(pal.text)
-                        .strong(),
-                );
-                ui.add_space(6.0_f32);
-                match &self.update_state {
-                    UpdateUiState::NotChecked => {
-                        ui.label(
-                            egui::RichText::new("Not checked yet in this session.")
-                                .color(pal.text_dim),
-                        );
-                    }
-                    UpdateUiState::Checking => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(egui::RichText::new("Checking for updates…").color(pal.text));
+        let state = self.update_state.clone();
+        let current_version = env!("CARGO_PKG_VERSION");
+        let latest_known = self.update_latest_version.clone();
+        let last_checked_label = self
+            .update_last_checked
+            .map(|checked| update::checked_ago_label(checked.elapsed()))
+            .unwrap_or_else(|| "Never".to_string());
+        let notice = self.update_notice.clone();
+        let mut check_on_startup = self.prefs.check_updates;
+
+        let available_version = match &state {
+            UpdateUiState::Available(version) => Some(version.clone()),
+            _ => None,
+        };
+        let download_url = available_version
+            .as_deref()
+            .and_then(update::download_url_for_version);
+        let notes_url = available_version
+            .as_deref()
+            .and_then(update::release_page_url_for_version)
+            .unwrap_or_else(|| update::RELEASES_PAGE_URL.to_string());
+
+        let (heading, detail) = match &state {
+            UpdateUiState::NotChecked => (
+                "Ready to check".to_string(),
+                "MacroClicker hasn't asked GitHub yet in this session.".to_string(),
+            ),
+            UpdateUiState::Checking => (
+                "Checking GitHub…".to_string(),
+                "Reading the public latest-release metadata — no click settings are sent."
+                    .to_string(),
+            ),
+            UpdateUiState::UpToDate => match latest_known.as_deref() {
+                Some(latest) if update::is_newer(current_version, latest) => (
+                    "You're ahead of the latest release".to_string(),
+                    format!(
+                        "GitHub's newest published build is v{latest}; this build is v{current_version}."
+                    ),
+                ),
+                Some(latest) => (
+                    "You're up to date".to_string(),
+                    format!("v{latest} is the latest published release."),
+                ),
+                None => (
+                    "You're up to date".to_string(),
+                    "No newer release is published.".to_string(),
+                ),
+            },
+            UpdateUiState::Available(version) => (
+                format!("MacroClicker v{version} is ready"),
+                "Ready to download from GitHub Releases.".to_string(),
+            ),
+            UpdateUiState::Failed(message) => (
+                update::error_headline(message).to_string(),
+                message.clone(),
+            ),
+        };
+        let latest_label = latest_known
+            .as_deref()
+            .map(|version| format!("v{version}"))
+            .unwrap_or_else(|| "Not checked yet".to_string());
+        let checking = matches!(state, UpdateUiState::Checking);
+        let check_label = if matches!(state, UpdateUiState::Failed(_)) {
+            "Try again".to_string()
+        } else if matches!(state, UpdateUiState::NotChecked) {
+            "Check for updates".to_string()
+        } else {
+            "Check now".to_string()
+        };
+        let download_label = available_version
+            .as_deref()
+            .map(|version| format!("Download v{version}"))
+            .unwrap_or_else(|| "Download update…".to_string());
+
+        let mut check_clicked = false;
+        let mut download_clicked = false;
+        let mut notes_clicked = false;
+        let mut copy_clicked = false;
+
+        egui::Window::new(
+            egui::RichText::new("Updates")
+                .color(pal.text)
+                .size(16.0_f32)
+                .strong(),
+        )
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .default_width(344.0_f32)
+        .min_width(324.0_f32)
+        .max_width(384.0_f32)
+        .frame(
+            Frame::none()
+                .fill(pal.face)
+                .stroke(Stroke::new(1.0_f32, pal.group_border))
+                .rounding(Rounding::same(8.0_f32))
+                .inner_margin(Margin::same(12.0_f32)),
+        )
+        .show(ctx, |ui| {
+            // Status plate: glyph, headline and the three facts a
+            // user needs to trust the verdict — what they run, what
+            // GitHub reported, and how fresh that answer is.
+            Frame::none()
+                .fill(pal.input_bg)
+                .stroke(Stroke::new(1.0_f32, pal.input_border))
+                .rounding(Rounding::same(7.0_f32))
+                .inner_margin(Margin::same(10.0_f32))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal_top(|ui| {
+                        Self::paint_update_status_icon(ui, pal, &state);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(&heading)
+                                    .color(pal.text)
+                                    .size(15.0_f32)
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new(&detail)
+                                    .color(pal.text_dim)
+                                    .size(12.0_f32),
+                            );
                         });
-                    }
-                    UpdateUiState::UpToDate => {
-                        ui.label(
-                            egui::RichText::new("You're up to date — no new updates available.")
-                                .color(pal.success),
-                        );
-                    }
-                    UpdateUiState::Available(version) => {
-                        ui.label(
-                            egui::RichText::new(format!("A new version is available: v{version}"))
-                                .color(pal.success)
-                                .strong(),
-                        );
-                    }
-                    UpdateUiState::Failed(message) => {
-                        ui.label(
-                            egui::RichText::new(format!("Couldn't check for updates: {message}"))
-                                .color(pal.warning),
-                        );
-                    }
-                }
-                ui.add_space(10.0_f32);
-                ui.horizontal(|ui| {
-                    let checking = matches!(self.update_state, UpdateUiState::Checking);
-                    if ui
-                        .add_enabled(!checking, egui::Button::new("Check now"))
-                        .clicked()
-                    {
-                        self.start_update_check();
-                    }
-                    // Greyed out until a check has actually proven a
-                    // newer release exists, so it can never look
-                    // clickable when there is nothing to download.
-                    let can_download = matches!(self.update_state, UpdateUiState::Available(_));
-                    let download =
-                        ui.add_enabled(can_download, egui::Button::new("Download update…"));
-                    if download.clicked() {
-                        let _opened = win32::open_url(update::RELEASES_PAGE_URL);
-                    }
+                    });
+                    ui.add_space(8.0_f32);
+                    ui.separator();
+                    ui.add_space(6.0_f32);
+                    Grid::new("updates_facts")
+                        .num_columns(2)
+                        .spacing([18.0_f32, 3.0_f32])
+                        .show(ui, |ui| {
+                            for (label, value) in [
+                                ("Installed", format!("v{current_version}")),
+                                ("Latest on GitHub", latest_label.clone()),
+                                ("Last checked", last_checked_label.clone()),
+                            ] {
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .color(pal.text_dim)
+                                        .size(12.0_f32),
+                                );
+                                ui.label(
+                                    egui::RichText::new(value)
+                                        .color(pal.text)
+                                        .size(12.0_f32)
+                                        .strong(),
+                                );
+                                ui.end_row();
+                            }
+                        });
                 });
-                ui.add_space(6.0_f32);
-                ui.label(
-                    egui::RichText::new(
-                        "The download button opens the GitHub release page in your \
-                         browser: grab the new macro_clicker.exe there and replace \
-                         the old one — your settings are kept. Nothing is ever \
-                         downloaded or installed behind your back; checking only \
-                         reads the latest version number.",
-                    )
-                    .color(pal.text_dim)
-                    .small(),
-                );
-                ui.add_space(10.0_f32);
-                ui.separator();
-                ui.add_space(6.0_f32);
-                if ui
-                    .checkbox(
-                        &mut self.prefs.check_updates,
-                        "Check for updates on startup",
-                    )
-                    .changed()
+
+            ui.add_space(10.0_f32);
+            let gap = ui.spacing().item_spacing.x;
+            let button_width = ((ui.available_width() - gap) / 2.0_f32).max(0.0_f32);
+            ui.horizontal(|ui| {
+                if Self::update_action_button(
+                    ui,
+                    pal,
+                    &check_label,
+                    !checking,
+                    available_version.is_none(),
+                    button_width,
+                    34.0_f32,
+                )
+                .on_hover_text("Ask GitHub for the newest published release")
+                .clicked()
                 {
-                    self.mark_dirty();
+                    check_clicked = true;
+                }
+                if Self::update_action_button(
+                    ui,
+                    pal,
+                    &download_label,
+                    download_url.is_some(),
+                    available_version.is_some(),
+                    button_width,
+                    34.0_f32,
+                )
+                .on_hover_text("Download the new macro_clicker.exe in your browser")
+                .clicked()
+                {
+                    download_clicked = true;
                 }
             });
+
+            if available_version.is_some() {
+                ui.add_space(8.0_f32);
+                ui.horizontal(|ui| {
+                    if Self::update_action_button(
+                        ui,
+                        pal,
+                        "Release notes",
+                        true,
+                        false,
+                        button_width,
+                        28.0_f32,
+                    )
+                    .clicked()
+                    {
+                        notes_clicked = true;
+                    }
+                    if Self::update_action_button(
+                        ui,
+                        pal,
+                        "Copy download link",
+                        true,
+                        false,
+                        button_width,
+                        28.0_f32,
+                    )
+                    .clicked()
+                    {
+                        copy_clicked = true;
+                    }
+                });
+            }
+
+            if let Some((kind, message)) = &notice {
+                let color = match kind {
+                    UpdateNoticeKind::Info => pal.success,
+                    UpdateNoticeKind::Error => pal.warning,
+                };
+                ui.add_space(7.0_f32);
+                ui.label(egui::RichText::new(message).color(color).size(12.0_f32));
+            }
+
+            ui.add_space(7.0_f32);
+            ui.label(
+                egui::RichText::new(
+                    "Browser download only; nothing installs silently. Close \
+                     MacroClicker before replacing the EXE — settings are kept.",
+                )
+                .color(pal.text_dim)
+                .small(),
+            );
+
+            ui.add_space(8.0_f32);
+            ui.separator();
+            ui.add_space(6.0_f32);
+            ui.checkbox(&mut check_on_startup, "Check for updates on startup");
+            ui.label(
+                egui::RichText::new("One check per launch; reopening refreshes stale results.")
+                    .color(pal.text_dim)
+                    .small(),
+            );
+        });
+
+        if check_on_startup != self.prefs.check_updates {
+            self.prefs.check_updates = check_on_startup;
+            self.mark_dirty();
+        }
+        if check_clicked {
+            self.start_update_check();
+        }
+        if download_clicked {
+            match download_url.as_deref() {
+                Some(url) if win32::open_url(url) => {
+                    let version = available_version.as_deref().unwrap_or("the new version");
+                    self.update_notice = Some((
+                        UpdateNoticeKind::Info,
+                        format!("Download started in your browser for MacroClicker v{version}."),
+                    ));
+                }
+                Some(_) => {
+                    self.update_notice = Some((
+                        UpdateNoticeKind::Error,
+                        "Windows couldn't open your browser. Use “Copy download link” and paste it into a browser.".to_string(),
+                    ));
+                }
+                None => {
+                    self.update_notice = Some((
+                        UpdateNoticeKind::Error,
+                        "That version couldn't be turned into a safe download link. Open the release notes and download from GitHub.".to_string(),
+                    ));
+                }
+            }
+        }
+        if notes_clicked {
+            if win32::open_url(&notes_url) {
+                self.update_notice = None;
+            } else {
+                self.update_notice = Some((
+                    UpdateNoticeKind::Error,
+                    "Windows couldn't open your browser for the release notes.".to_string(),
+                ));
+            }
+        }
+        if copy_clicked {
+            if let Some(url) = download_url {
+                ctx.copy_text(url);
+                self.update_notice = Some((
+                    UpdateNoticeKind::Info,
+                    "Download link copied to the clipboard.".to_string(),
+                ));
+            }
+        }
         if !open {
             self.show_updates = false;
         }
@@ -2843,25 +3217,50 @@ impl eframe::App for OpAutoClickerApp {
                             if settings_response.clicked() {
                                 self.show_settings = true;
                             }
-                            // The Updates entry point flags a known newer
-                            // release in place, so the once-per-launch
-                            // background check is visible without opening
-                            // anything.
-                            let (updates_label, updates_color) = match &self.update_state {
-                                UpdateUiState::Available(_) => ("Update available!", pal.success),
-                                _ => ("Updates…", pal.text),
-                            };
+                            // The Updates entry point reports the
+                            // checker's state in place — including the
+                            // waiting and ready-to-download states — so
+                            // a background verdict is visible without
+                            // opening anything.
+                            let (updates_label, updates_color, updates_stroke, updates_hover) =
+                                match &self.update_state {
+                                    UpdateUiState::Available(version) => (
+                                        format!("Update v{version}"),
+                                        pal.success,
+                                        pal.success,
+                                        format!("MacroClicker v{version} is ready to download"),
+                                    ),
+                                    UpdateUiState::Checking => (
+                                        "Checking…".to_string(),
+                                        pal.text_dim,
+                                        pal.button_border,
+                                        "Checking GitHub for a newer release".to_string(),
+                                    ),
+                                    UpdateUiState::Failed(_) => (
+                                        "Updates…".to_string(),
+                                        pal.warning,
+                                        pal.button_border,
+                                        "The last update check couldn't finish — open for details"
+                                            .to_string(),
+                                    ),
+                                    _ => (
+                                        "Updates…".to_string(),
+                                        pal.text,
+                                        pal.button_border,
+                                        "See whether a newer MacroClicker release is available"
+                                            .to_string(),
+                                    ),
+                                };
                             let updates_button = egui::Button::new(
                                 egui::RichText::new(updates_label)
                                     .size(12.0_f32)
                                     .color(updates_color),
                             )
                             .fill(pal.button)
-                            .stroke(Stroke::new(1.0_f32, pal.button_border))
+                            .stroke(Stroke::new(1.0_f32, updates_stroke))
                             .rounding(Rounding::same(3.0_f32));
-                            let updates_response = ui.add(updates_button).on_hover_text(
-                                "See whether a newer MacroClicker release is available",
-                            );
+                            let updates_response =
+                                ui.add(updates_button).on_hover_text(updates_hover);
                             if updates_response.clicked() {
                                 self.show_updates = true;
                             }
