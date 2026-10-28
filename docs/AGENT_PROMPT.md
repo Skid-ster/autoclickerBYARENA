@@ -26,8 +26,10 @@ best-designed and most stable utility of its kind. Two goals, in order:
 
 - App crate lives in `autoclicker/`; binary is `macro_clicker.exe`;
   entry `src/main.rs`, UI `src/app.rs`, engine `src/engine.rs`.
-- Fixed, non-resizable, non-scrolling main window: `MAIN_WINDOW_SIZE`
-  560x456 logical points. Every control visible, always.
+- Non-scrolling main window with a content floor of `MAIN_WINDOW_SIZE`
+  560x456 logical points. The window must be **naturally resizable**
+  (see the dedicated section below); every control visible, always, at
+  every size the user can reach.
 - Four themes (Classic light, Dark, Midnight OLED, Terminal green).
   **All themes share every layout metric** — switching may never move,
   hide, or resize a control. Classic must stay faithful to the native
@@ -75,6 +77,65 @@ best-designed and most stable utility of its kind. Two goals, in order:
   verification proves compile/logic/layout; the user's Windows run is
   the final acceptance.
 
+## Natural window resizing (required feature)
+
+The main window must resize exactly the way users expect every normal
+Windows app to: drag any edge to push or pull it, grab any corner and
+push it toward the middle or outward, double-click/maximize the title
+bar, and participate in Win+arrow and Snap Layouts. Implement it with
+these verified mechanics — do not guess at APIs:
+
+- **Enable the native frame**: in `main.rs`, change the viewport to
+  `.with_resizable(true)` and add
+  `.with_min_inner_size(app::MAIN_WINDOW_SIZE)` (both exist on
+  `egui::ViewportBuilder` in egui 0.27.2). A resizable frame is what
+  gives the window `WS_THICKFRAME | WS_MAXIMIZEBOX`, which is exactly
+  what edge/corner drag, Aero Snap, Snap Layouts and maximize are built
+  on — no custom hit-testing, the OS provides the grips and cursors.
+- **The minimum size is the current content footprint** (560x456
+  logical). winit feeds `with_min_inner_size` into
+  `WM_GETMINMAXINFO.ptMinTrackSize`, which the shell honors during both
+  border-drag and snap, so the window physically cannot be shrunk below
+  the point where every control fits. Never rely on clamping in the
+  frame loop alone; declare the floor to the OS. Microsoft's UX
+  checklist: "set a minimum window size if there is a size below which
+  the content is no longer usable" — this is that size. Note the snap
+  trade-off: a snap zone narrower than the declared floor is refused by
+  the shell, and 560 logical points fits half-screen zones on every
+  common desktop resolution, so do not raise the floor.
+- **Growing must look designed, not stretched** (Windows UX checklist:
+  larger windows must show content better, never just truncate or
+  stupidly stretch). Decide explicitly per region: group boxes and the
+  footer button grid share extra **width**; extra **height** goes into
+  breathing room between the groups (distributed spacing), never into
+  taller controls; field widths, paddings and font sizes stay fixed.
+  egui's top-down layout already reflows widths — your work is auditing
+  each hard-coded width and `ui.columns` call so nothing pins the old
+  560 assumption, and adding a sensible content max-width (center the
+  content column at very large sizes rather than letting a 27-inch
+  maximize produce comically wide buttons).
+- **Compose with the 75–200 % UI-scale setting**: the zoom factor
+  multiplies logical sizes, so on every scale change re-issue
+  `ViewportCommand::MinInnerSize` with the scaled floor and only grow
+  the window if it is now below that floor — never force a window the
+  user enlarged back down (the old code re-applied a fixed
+  `InnerSize` on scale change; that behavior must become floor-aware).
+- **Persist the chosen size**: save the inner size (read it from
+  `ctx.input(|i| i.screen_rect)` each frame, debounced through the
+  existing dirty/throttle machinery) into `settings.conf` as new keys,
+  restore it at startup through the tolerant parser, and sanitize like
+  `ui_scale`: clamp to [floor .. 4x floor], reject non-finite or
+  missing values back to the floor, so a hand-edited or corrupt file
+  can never produce an unusable window. Do not persist maximized state
+  as a raw size.
+- **Verification**: extend the layout probe to run every theme at the
+  floor (560x456), a mid size (720x560), and a large size (1000x720),
+  asserting (a) nothing paints outside the window, (b) the footer and
+  status strip stay anchored, (c) no control collapses below its floor
+  dimensions, and (d) the idle heartbeat still fires. Add a settings
+  test for the new size keys (round trip + clamp + garbage tolerance)
+  and keep every existing test green.
+
 ## Design research procedure (do this before changing pixels)
 
 1. `web_search` at depth 2–3: "UI design trends 2026", "UI design
@@ -82,8 +143,8 @@ best-designed and most stable utility of its kind. Two goals, in order:
    2026", "dark mode contrast craft 2026". Read at least 6 distinct
    sources; prefer ones with verdicts and numbers over listicles.
 2. Extract only trends that pass **all** of this adoption test:
-   - Improves clarity, feedback, or hierarchy for a small fixed-size
-     utility dialog (not a marketing site).
+   - Improves clarity, feedback, or hierarchy for a small utility
+     dialog (not a marketing site).
    - Survives the classic-Win32 character of the Classic theme.
    - Costs nothing per idle frame (may ride existing repaint
      heartbeats; may never add busy repainting).
@@ -117,8 +178,10 @@ Linux sandbox cannot run eframe/Windows, so use the proven offline rig:
      harness. Totals must match the documented counts.
   3. `cargo clippy --lib -- -D warnings` clean in the harness.
   4. Layout probe: drive the real `App::update` via `egui::Context::run`
-     at 560x456 for every theme; assert max painted extent fits and the
-     idle repaint heartbeat fires 10/10 frames.
+     for every theme at the minimum size (560x456), a mid size
+     (720x560), and a large size (1000x720); assert max painted extent
+     fits, nothing collapses, and the idle repaint heartbeat fires
+     10/10 frames.
   5. Interaction probe: locate buttons by painted text, click via
      synthesized pointer events; assert the 2x2 footer grid
      (Start/Stop/Hotkey setting/Record & Playback), the Settings window
