@@ -30,7 +30,21 @@ jobs:
         run: cargo fmt --all --manifest-path autoclicker/Cargo.toml -- --check
 
       - name: Clippy (warnings denied)
-        run: cargo clippy --manifest-path autoclicker/Cargo.toml -- -D warnings
+        run: |
+          # Keep the exact Clippy exit status and include the tail of any
+          # failure in a check annotation, where it is easy to inspect.
+          $logPath = Join-Path $env:RUNNER_TEMP "macroclicker-clippy.log"
+          $command = "cargo clippy --manifest-path autoclicker/Cargo.toml -- -D warnings > `"$logPath`" 2>&1"
+          cmd.exe /d /s /c $command
+          $clippyExit = $LASTEXITCODE
+          Get-Content -Path $logPath | ForEach-Object { Write-Host $_ }
+          if ($clippyExit -ne 0) {
+            $tail = (Get-Content -Path $logPath -Tail 100) -join "`n"
+            $tail = $tail -replace '\x1B\[[0-9;]*[mK]', ''
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host "::error title=Clippy diagnostics::$tail"
+            exit $clippyExit
+          }
 
       - name: Test suite
         run: cargo test --manifest-path autoclicker/Cargo.toml -- --nocapture
