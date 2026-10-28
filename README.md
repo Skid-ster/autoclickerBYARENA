@@ -30,6 +30,14 @@ Everything 4.1 does, plus the parts it cannot:
 | Five themes + 75–200 % window scaling | No | Yes |
 | Open source with Windows CI and 68 automated tests | No | Yes |
 
+## Download
+
+Don't want to build? Grab the ready-to-run **`macro_clicker.exe`** from the
+[GitHub Releases page](https://github.com/Skid-ster/autoclickerBYARENA/releases)
+— every version tag is compiled by the Windows CI workflow (format, clippy,
+all 68 tests, release build) and published there with a SHA-256 checksum.
+No installer; just download and run.
+
 ## Quick start
 
 Requirements: Windows 10 21H2+ or Windows 11 x64 and a Rust stable

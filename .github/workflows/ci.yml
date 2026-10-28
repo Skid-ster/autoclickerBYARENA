@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -14,6 +15,8 @@ jobs:
   windows:
     name: Windows (x86_64-msvc)
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,3 +44,21 @@ jobs:
           name: macro_clicker-windows-x64
           path: autoclicker/target/release/macro_clicker.exe
           if-no-files-found: error
+
+      # Pushing a version tag (v*.) publishes a GitHub Release with the
+      # compiled exe and its SHA-256 checksum attached. Re-running the
+      # workflow for an existing tag re-uploads the assets instead of
+      # failing on the already-created release.
+      - name: Publish GitHub Release (version tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          Copy-Item autoclicker/target/release/macro_clicker.exe ./macro_clicker.exe
+          (Get-FileHash ./macro_clicker.exe -Algorithm SHA256).Hash.ToLower() + "  macro_clicker.exe" | Out-File -Encoding ascii ./macro_clicker.exe.sha256
+          gh release create $tag ./macro_clicker.exe ./macro_clicker.exe.sha256 --title "MacroClicker $tag" --generate-notes
+          if ($LASTEXITCODE -ne 0) {
+            gh release upload $tag ./macro_clicker.exe ./macro_clicker.exe.sha256 --clobber
+          }
+          exit $LASTEXITCODE
