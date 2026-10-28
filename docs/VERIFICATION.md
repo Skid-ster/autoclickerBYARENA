@@ -5,7 +5,93 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Two-dimensional scaling and Aurora theme round (current)
+## Fill-the-window round: height-aware layout and the 1.60 tier (current)
+
+The two-axis step system shipped, Aurora was confirmed present in the
+running build, and the user's verdict on their 1440p screen was still
+"doesn't scale properly" — correctly. Measuring the shipped build
+with this round's probe expectations *before* changing anything put
+numbers on the screenshot: in a grown window the first group frame
+started 99 pt below the top and the footer floated 200 pt above the
+bottom edge. The zoom had done all it mathematically could: in a
+window ~3x taller than the 456 pt dialog, the step is width-capped
+(the live width may not go under the 560 pt floor), so even a perfect
+step leaves hundreds of points of surplus height — and the layout
+policy spent that surplus on *centering* the column between two
+voids (`MAIN_GAP_EXTRA_MAX` was 14 pt). The bug was not the zoom
+anymore; it was that the composition refused to use the height the
+user gave it.
+
+### What changed
+
+- **The column now fills the frame.** Groups always flow from the
+  top of the panel, exactly as they do at the floor size. Surplus
+  height loosens every inter-group gap by an equal share (the spring
+  counts as two shares; per-gap loosening now caps at 40 pt instead
+  of 14), and whatever remains gathers as one spring directly above
+  the status strip — so the status strip, action buttons and footer
+  ride at the window's bottom edge like a status bar at *every*
+  height, and the leftover space reads as client background between
+  content and status bar (the pattern every native resizable window
+  uses) instead of an island floating mid-window. The distribution
+  always sums to the full surplus, so the column ends flush with the
+  panel's bottom margin at any size, and at the floor (surplus 0)
+  every value is 0: the 560x456 and wide-372 compositions are
+  byte-identical to before (probe-verified: same frame rects, same
+  footer gap).
+- **A fourth step tier, x1.60** (engage 1600 / release 1544 neutral
+  points, same 56 pt hysteresis as the other bands), so large and
+  maximized windows on 1440p-and-up displays get a presence the
+  1.40 ceiling couldn't give. Two guards keep it inside proven
+  territory:
+  - *Total-zoom envelope 2.80* (user % x step): the largest total
+    reachable before this tier existed (200 % x 1.40). At 200 % the
+    step still caps at 1.40 exactly as shipped before; the new tier
+    only ever engages where the resulting physical minimum size
+    stays inside the previously verified envelope.
+  - *Wide proven floor for the height vote*: when the wide
+    arrangement is active, the height vote's fit cap uses a 700 pt
+    live-width floor (the wide row was verified down to 714 pt), so
+    an automatic step can never squeeze the three-abreast row
+    narrower than the proven case. Width votes and the user's own
+    percentage are unaffected, as before.
+
+### Measured (headless real-egui probes, physical-pixel rigs)
+
+The user's exact window, 973x1404 px: at 100 % display scaling it
+now settles at step x1.60 feeding 608x878 pt — groups at y 14..388
+with gaps loosened 13 -> 53 pt, footer 19 pt from the bottom edge;
+at 125 % display scaling, step x1.25 feeding 622x898 pt with the
+same filled geometry. Resolution sweep, all asserting settled zoom,
+containment, top-anchored first group and bottom-pinned footer:
+1600x972 @125 % (x1.25), portrait 700x1200 (fit-capped x1.25, fed
+exactly 560 wide), 150 % short-wide (x2.10 total, unchanged), 1440p
+@125 % 2000x1300 (x1.60), 200 % envelope (x2.80, not 3.20), wide
+squeeze guard 1024x1500 (held at x1.40 feeding 731 pt instead of
+640), 1080p laptop 1366x720 (x1.25), 1440p maximized 2560x1392
+(x1.60). Floor probes (five-theme metric identity, exact frames),
+paint, interact and persistence probes all pass unchanged in
+expectation; 68 unit tests pass unweakened; fmt clean; clippy
+`--lib -- -D warnings` exit 0. One harness modeling correction was
+needed: the rig now ignores `InnerSize` commands while maximized,
+matching Windows (the app never relied on them landing; the
+maximized persistence guard is untouched).
+
+Deliberately *not* done: raising the content width caps (736/880)
+so maximized windows would stretch controls edge-to-edge — comically
+wide buttons are worse than side margins, and the caps were a
+considered decision of the composition round; uncapped gap
+loosening (equal spread of all sections reads as stretched, and
+related controls should stay grouped); any change to group
+*interiors* (field widths, row heights) at surplus sizes.
+
+Still honestly unobserved: how the bottom-cluster pinning and the
+1.60 tier feel during a real Windows drag on the user's 1440p panel
+(the probes assert settled end-states and per-frame geometry, not
+frame pacing on hardware), and whether the spring region reads as
+calm client background in person.
+
+## Two-dimensional scaling and Aurora theme round
 
 The user's screenshot after the visual-depth round showed the real
 scaling bug precisely: a very tall window (roughly 910x1400) with the
