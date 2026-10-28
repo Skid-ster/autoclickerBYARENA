@@ -22,6 +22,7 @@ mod humanize;
 mod icon;
 mod macro_rec;
 mod schedule;
+mod self_update;
 mod settings;
 mod telemetry;
 mod update;

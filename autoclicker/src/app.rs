@@ -15,7 +15,8 @@
 //! blocks on the worker.
 
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, FontId, Frame, Grid, Layout, Margin, Rounding, Sense, Stroke, Vec2};
@@ -30,8 +31,9 @@ use crate::hotkey::{
     UI_SCALE_OPTIONS, VK_ESCAPE,
 };
 use crate::macro_rec::{self, MacroRecorder};
+use crate::self_update::{self, UpdatePaths};
 use crate::settings;
-use crate::update::{self, UpdateOutcome};
+use crate::update::{self, ReleaseAsset, UpdateOutcome};
 use crate::win32;
 
 /// Complete color scheme for one theme. Both themes share every layout
@@ -353,6 +355,39 @@ enum UpdateNoticeKind {
     Error,
 }
 
+/// One finished update check: the upgrade verdict plus the asset
+/// expectations that came with it, or why there is no verdict.
+type UpdateCheckResult = Result<(UpdateOutcome, Option<ReleaseAsset>), String>;
+
+/// The self-update pipeline's place in its one-way journey:
+/// idle, a download/verify worker in flight (with the shared
+/// progress counters the Updates window reads), or the brief
+/// moment after the replacement program has been launched and
+/// this process is on its way out. Every failure resolves back
+/// to Idle with a notice — never a half-installed state.
+enum UpdateInstallState {
+    Idle,
+    Downloading {
+        version: String,
+        total: u64,
+        downloaded: Arc<AtomicU64>,
+        phase: Arc<AtomicU8>,
+        cancel: Arc<AtomicBool>,
+        temp_path: PathBuf,
+        rx: mpsc::Receiver<UpdateInstallMessage>,
+    },
+    Restarting,
+}
+
+/// The download/verify worker's single report. Verification runs
+/// on the worker so the UI thread never hashes a file; only the
+/// millisecond-fast rename swap and relaunch happen here.
+enum UpdateInstallMessage {
+    Verified { paths: UpdatePaths, version: String },
+    Cancelled,
+    Failed(String),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusKind {
     Ready,
@@ -432,10 +467,21 @@ pub struct OpAutoClickerApp {
     // browser/clipboard action, so no button ever feels dead.
     update_state: UpdateUiState,
     update_auto_check_started: bool,
-    update_rx: Option<mpsc::Receiver<Result<UpdateOutcome, String>>>,
+    update_rx: Option<mpsc::Receiver<UpdateCheckResult>>,
     update_latest_version: Option<String>,
     update_last_checked: Option<Instant>,
     update_notice: Option<(UpdateNoticeKind, String)>,
+    // Self-update: the asset expectations (size + SHA-256) from
+    // the last successful check, the install pipeline's state,
+    // this process's own EXE path (the file an install replaces),
+    // and the latch that suppresses the exit-time settings save
+    // after a relaunch — the new instance has already read the
+    // file this one flushed before swapping, and two writers on
+    // one temp file would only race.
+    update_asset: Option<ReleaseAsset>,
+    update_install: UpdateInstallState,
+    exe_path: Option<PathBuf>,
+    skip_exit_save: bool,
 
     // Whether a settings file existed at load. A fresh install (no
     // file) earns the one-time display-aware opening size; any
@@ -510,6 +556,18 @@ impl Default for OpAutoClickerApp {
 
 impl OpAutoClickerApp {
     pub fn new() -> Self {
+        // A relaunch after a verified self-update carries
+        // `--updated-from=<old version>`; recognizing it earns the
+        // user a confirmation line (and triggers the leftover-file
+        // sweep below). args_os because args() would panic on a
+        // non-UTF-8 argument some launcher invented.
+        let exe_path = std::env::current_exe().ok();
+        let updated_from = std::env::args_os().find_map(|arg| {
+            let text = arg.to_string_lossy().into_owned();
+            text.strip_prefix("--updated-from=")
+                .filter(|version| update::parse_version(version).is_some())
+                .map(|version| version.strip_prefix('v').unwrap_or(version).to_string())
+        });
         let config = EngineConfig::default();
         let prefs = AppPrefs::default();
         let (hours, minutes, seconds, millis) =
@@ -553,6 +611,10 @@ impl OpAutoClickerApp {
             update_latest_version: None,
             update_last_checked: None,
             update_notice: None,
+            update_asset: None,
+            update_install: UpdateInstallState::Idle,
+            exe_path,
+            skip_exit_save: false,
             window_size_was_persisted: false,
             pending_resize: false,
             restore_window_size: true,
@@ -579,6 +641,38 @@ impl OpAutoClickerApp {
         app.sanitize_loaded_config();
         app.last_saved_config = app.config.clone();
         app.last_saved_prefs = app.prefs;
+        // Update leftovers from any earlier attempt are collected
+        // at every launch. Right after a relaunch the old process
+        // may still be exiting with its (renamed) image held open,
+        // so that case also retries briefly in the background; a
+        // file that still refuses is simply next launch's job.
+        if let Some(exe) = app.exe_path.clone() {
+            self_update::cleanup_stale_update_files(&exe);
+            if updated_from.is_some() {
+                std::thread::spawn(move || {
+                    for _attempt in 0..8 {
+                        if self_update::stale_update_files(&exe).is_empty() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(750));
+                        self_update::cleanup_stale_update_files(&exe);
+                    }
+                });
+            }
+        }
+        if let Some(previous) = updated_from {
+            app.set_status(
+                StatusKind::Ready,
+                format!(
+                    "Updated from v{previous} — now running v{}.",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            );
+            app.log(format!(
+                "Self-update complete: v{previous} was replaced by v{} and restarted.",
+                env!("CARGO_PKG_VERSION")
+            ));
+        }
         app
     }
 
@@ -2347,7 +2441,7 @@ impl OpAutoClickerApp {
                 update::UPDATE_API_HEADERS,
             )
             .map_err(|error| error.to_string())
-            .and_then(|body| update::evaluate_update(&body, env!("CARGO_PKG_VERSION")));
+            .and_then(|body| update::evaluate_release(&body, env!("CARGO_PKG_VERSION")));
             let _ = sender.send(result);
         });
     }
@@ -2359,7 +2453,10 @@ impl OpAutoClickerApp {
     /// staleness window keeps ordinary reopenings from spending
     /// GitHub's unauthenticated request budget.
     fn refresh_update_check_if_stale(&mut self) {
-        if self.update_rx.is_some() || matches!(self.update_state, UpdateUiState::Checking) {
+        if self.update_rx.is_some()
+            || matches!(self.update_state, UpdateUiState::Checking)
+            || !matches!(self.update_install, UpdateInstallState::Idle)
+        {
             return;
         }
         if update::should_refresh(self.update_last_checked.map(|checked| checked.elapsed())) {
@@ -2377,14 +2474,16 @@ impl OpAutoClickerApp {
         };
         let finished_at = Instant::now();
         match result {
-            Ok(Ok(UpdateOutcome::UpToDate(latest))) => {
+            Ok(Ok((UpdateOutcome::UpToDate(latest), asset))) => {
                 self.update_latest_version = Some(latest);
+                self.update_asset = asset;
                 self.update_last_checked = Some(finished_at);
                 self.update_state = UpdateUiState::UpToDate;
                 self.update_rx = None;
             }
-            Ok(Ok(UpdateOutcome::Available(version))) => {
+            Ok(Ok((UpdateOutcome::Available(version), asset))) => {
                 self.update_latest_version = Some(version.clone());
+                self.update_asset = asset;
                 self.update_last_checked = Some(finished_at);
                 self.update_state = UpdateUiState::Available(version);
                 self.update_rx = None;
@@ -2429,6 +2528,213 @@ impl OpAutoClickerApp {
             }
             None => {
                 self.update_state = UpdateUiState::Failed(message);
+            }
+        }
+    }
+
+    /// Whether the confirmed update may be installed in-app:
+    /// GitHub must have published the asset's SHA-256 (no
+    /// fingerprint, no code execution), this process must know
+    /// its own EXE path, and that path must not be a Cargo build
+    /// artifact (see `self_update::is_cargo_target_exe`).
+    fn self_update_possible(&self) -> bool {
+        let asset_ready = self
+            .update_asset
+            .as_ref()
+            .is_some_and(|asset| asset.sha256.is_some());
+        let exe_ready = self
+            .exe_path
+            .as_deref()
+            .is_some_and(|exe| !self_update::is_cargo_target_exe(exe));
+        asset_ready && exe_ready
+    }
+
+    /// Why the browser path is being offered instead of an
+    /// in-app install, for the Updates window's fine print.
+    fn self_update_unavailable_reason(&self) -> &'static str {
+        if self
+            .exe_path
+            .as_deref()
+            .is_some_and(self_update::is_cargo_target_exe)
+        {
+            "Development build — downloads open in your browser. Settings are kept."
+        } else {
+            "GitHub didn't publish a verifiable SHA-256 fingerprint for this \
+             release, so the download opens in your browser. Settings are kept."
+        }
+    }
+
+    /// Starts the download+verify worker for the confirmed
+    /// update. The worker streams the EXE next to the running
+    /// one, then verifies size and SHA-256 and reports exactly
+    /// once; this process only ever acts on a Verified report.
+    fn start_update_install(&mut self) {
+        if !matches!(self.update_install, UpdateInstallState::Idle) {
+            return;
+        }
+        let UpdateUiState::Available(version) = self.update_state.clone() else {
+            return;
+        };
+        let (Some(asset), Some(exe)) = (self.update_asset.clone(), self.exe_path.clone()) else {
+            return;
+        };
+        let Some(sha256) = asset.sha256 else { return };
+        let Some((host, path)) = update::download_request_for_version(&version) else {
+            return;
+        };
+        let paths = self_update::update_paths(&exe, &std::process::id().to_string());
+        let downloaded = Arc::new(AtomicU64::new(0));
+        let phase = Arc::new(AtomicU8::new(0));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
+        let temp_path = paths.download.clone();
+        self.update_install = UpdateInstallState::Downloading {
+            version: version.clone(),
+            total: asset.size,
+            downloaded: Arc::clone(&downloaded),
+            phase: Arc::clone(&phase),
+            cancel: Arc::clone(&cancel),
+            temp_path,
+            rx: receiver,
+        };
+        self.update_notice = None;
+        std::thread::spawn(move || {
+            let message = match win32::https_download_to_file(
+                host,
+                &path,
+                &paths.download,
+                asset.size,
+                &downloaded,
+                &cancel,
+            ) {
+                Ok(_bytes) => {
+                    phase.store(1, Ordering::Relaxed);
+                    match self_update::verify_downloaded_exe(&paths.download, asset.size, &sha256) {
+                        Ok(()) => UpdateInstallMessage::Verified { paths, version },
+                        Err(message) => {
+                            let _ = std::fs::remove_file(&paths.download);
+                            UpdateInstallMessage::Failed(message)
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = std::fs::remove_file(&paths.download);
+                    if cancel.load(Ordering::Relaxed) {
+                        UpdateInstallMessage::Cancelled
+                    } else {
+                        UpdateInstallMessage::Failed(error.to_string())
+                    }
+                }
+            };
+            let _ = sender.send(message);
+        });
+    }
+
+    /// Applies the install worker's report. Verified is the only
+    /// path that touches the program file, and it does so in one
+    /// careful breath (stop, save, swap, relaunch, close);
+    /// everything else resolves to Idle with a notice and the
+    /// previous build provably untouched.
+    fn poll_update_install(&mut self, ctx: &egui::Context) {
+        let message = match &self.update_install {
+            UpdateInstallState::Downloading { rx, .. } => match rx.try_recv() {
+                Ok(message) => Some(message),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(UpdateInstallMessage::Failed(
+                    "the update download stopped unexpectedly".to_string(),
+                )),
+            },
+            _ => None,
+        };
+        let Some(message) = message else {
+            if matches!(self.update_install, UpdateInstallState::Downloading { .. }) {
+                // The progress row is only truthful if frames keep
+                // arriving while the worker streams.
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+            return;
+        };
+        let (version, temp_path) =
+            match std::mem::replace(&mut self.update_install, UpdateInstallState::Idle) {
+                UpdateInstallState::Downloading {
+                    version, temp_path, ..
+                } => (version, temp_path),
+                _ => (String::new(), PathBuf::new()),
+            };
+        match message {
+            UpdateInstallMessage::Cancelled => {
+                let _ = std::fs::remove_file(&temp_path);
+                self.update_notice = Some((
+                    UpdateNoticeKind::Info,
+                    "Update download cancelled — nothing was changed.".to_string(),
+                ));
+            }
+            UpdateInstallMessage::Failed(reason) => {
+                let _ = std::fs::remove_file(&temp_path);
+                self.update_notice = Some((
+                    UpdateNoticeKind::Error,
+                    format!(
+                        "Couldn't update automatically: {reason} \
+                         You can still download v{version} in your browser."
+                    ),
+                ));
+            }
+            UpdateInstallMessage::Verified { paths, version } => {
+                self.install_verified_update(ctx, &paths, &version);
+            }
+        }
+    }
+
+    /// The point of no return, taken carefully: stop any click
+    /// or macro activity, flush settings, swap the verified EXE
+    /// into place (rolling back on any failure), launch it, and
+    /// close this process. If the new program cannot be
+    /// launched, the swap is undone and this build keeps running
+    /// exactly as it was.
+    fn install_verified_update(&mut self, ctx: &egui::Context, paths: &UpdatePaths, version: &str) {
+        if self.macro_recording {
+            self.stop_macro_recording("update restart");
+        }
+        if self.engine.is_running() {
+            self.engine.request_stop();
+        }
+        self.macro_playing = false;
+        self.flush_settings();
+        match self_update::swap_in_new_exe(paths) {
+            Err(reason) => {
+                let _ = std::fs::remove_file(&paths.download);
+                self.update_notice = Some((
+                    UpdateNoticeKind::Error,
+                    format!(
+                        "v{version} downloaded and verified but wasn't installed: {reason} \
+                         Your current version is untouched — the browser download works too."
+                    ),
+                ));
+            }
+            Ok(()) => {
+                let spawned = std::process::Command::new(&paths.exe)
+                    .arg(format!("--updated-from={}", env!("CARGO_PKG_VERSION")))
+                    .spawn();
+                match spawned {
+                    Ok(_child) => {
+                        self.skip_exit_save = true;
+                        self.update_install = UpdateInstallState::Restarting;
+                        self.log(format!(
+                            "MacroClicker v{version} installed; restarting into it."
+                        ));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    Err(error) => {
+                        self_update::undo_swap(paths);
+                        self.update_notice = Some((
+                            UpdateNoticeKind::Error,
+                            format!(
+                                "The new version couldn't be started ({error}); \
+                                 your current version was restored."
+                            ),
+                        ));
+                    }
+                }
             }
         }
     }
@@ -2536,6 +2842,24 @@ impl OpAutoClickerApp {
             UpdateUiState::Available(version) => Some(version.clone()),
             _ => None,
         };
+        let can_install = available_version.is_some() && self.self_update_possible();
+        // (version, bytes done, bytes total, phase) while the
+        // worker streams (phase 0) or verifies (phase 1).
+        let install_progress = match &self.update_install {
+            UpdateInstallState::Downloading {
+                version,
+                total,
+                downloaded,
+                phase,
+                ..
+            } => Some((
+                version.clone(),
+                downloaded.load(Ordering::Relaxed),
+                *total,
+                phase.load(Ordering::Relaxed),
+            )),
+            _ => None,
+        };
         let download_url = available_version
             .as_deref()
             .and_then(update::download_url_for_version);
@@ -2572,12 +2896,27 @@ impl OpAutoClickerApp {
             },
             UpdateUiState::Available(version) => (
                 format!("MacroClicker v{version} is ready"),
-                "Ready to download from GitHub Releases.".to_string(),
+                if can_install {
+                    "Download, fingerprint check and restart — all in here.".to_string()
+                } else {
+                    "Ready to download from GitHub Releases.".to_string()
+                },
             ),
             UpdateUiState::Failed(message) => (
                 update::error_headline(message).to_string(),
                 message.clone(),
             ),
+        };
+        let (heading, detail) = match &install_progress {
+            Some((version, _done, _total, 1)) => (
+                format!("Verifying v{version}\u{2026}"),
+                "Checking the download against GitHub's SHA-256 fingerprint.".to_string(),
+            ),
+            Some((version, _done, _total, _phase)) => (
+                format!("Downloading v{version}\u{2026}"),
+                "The verified update installs itself, then restarts MacroClicker.".to_string(),
+            ),
+            None => (heading, detail),
         };
         let latest_label = latest_known
             .as_deref()
@@ -2593,13 +2932,25 @@ impl OpAutoClickerApp {
         };
         let download_label = available_version
             .as_deref()
-            .map(|version| format!("Download v{version}"))
+            .map(|version| {
+                if can_install {
+                    format!("Install v{version}")
+                } else {
+                    format!("Download v{version}")
+                }
+            })
             .unwrap_or_else(|| "Download update…".to_string());
+        let download_hover = if can_install {
+            "Download and verify the update, install it, then restart MacroClicker"
+        } else {
+            "Download the new macro_clicker.exe in your browser"
+        };
 
         let mut check_clicked = false;
         let mut download_clicked = false;
         let mut notes_clicked = false;
         let mut copy_clicked = false;
+        let mut cancel_clicked = false;
 
         egui::Window::new(
             egui::RichText::new("Updates")
@@ -2679,67 +3030,110 @@ impl OpAutoClickerApp {
             ui.add_space(10.0_f32);
             let gap = ui.spacing().item_spacing.x;
             let button_width = ((ui.available_width() - gap) / 2.0_f32).max(0.0_f32);
-            ui.horizontal(|ui| {
-                if Self::update_action_button(
-                    ui,
-                    pal,
-                    &check_label,
-                    !checking,
-                    available_version.is_none(),
-                    button_width,
-                    34.0_f32,
-                )
-                .on_hover_text("Ask GitHub for the newest published release")
-                .clicked()
-                {
-                    check_clicked = true;
+            if let Some((_version, done, total, phase)) = &install_progress {
+                if *phase == 1 {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Verifying the SHA-256 fingerprint\u{2026}")
+                                .color(pal.text)
+                                .size(12.0_f32),
+                        );
+                    });
+                } else {
+                    let fraction = if *total > 0 {
+                        (*done as f32 / *total as f32).clamp(0.0_f32, 1.0_f32)
+                    } else {
+                        0.0_f32
+                    };
+                    ui.add(egui::ProgressBar::new(fraction));
+                    ui.add_space(4.0_f32);
+                    ui.label(
+                        egui::RichText::new(update::download_progress_label(*done, *total))
+                            .color(pal.text_dim)
+                            .size(12.0_f32),
+                    );
                 }
-                if Self::update_action_button(
-                    ui,
-                    pal,
-                    &download_label,
-                    download_url.is_some(),
-                    available_version.is_some(),
-                    button_width,
-                    34.0_f32,
-                )
-                .on_hover_text("Download the new macro_clicker.exe in your browser")
-                .clicked()
-                {
-                    download_clicked = true;
-                }
-            });
-
-            if available_version.is_some() {
                 ui.add_space(8.0_f32);
                 ui.horizontal(|ui| {
                     if Self::update_action_button(
                         ui,
                         pal,
-                        "Release notes",
+                        "Cancel download",
                         true,
                         false,
                         button_width,
-                        28.0_f32,
+                        30.0_f32,
                     )
+                    .on_hover_text("Stop the download; the current version stays untouched")
                     .clicked()
                     {
-                        notes_clicked = true;
+                        cancel_clicked = true;
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    if Self::update_action_button(
+                        ui,
+                        pal,
+                        &check_label,
+                        !checking,
+                        available_version.is_none(),
+                        button_width,
+                        34.0_f32,
+                    )
+                    .on_hover_text("Ask GitHub for the newest published release")
+                    .clicked()
+                    {
+                        check_clicked = true;
                     }
                     if Self::update_action_button(
                         ui,
                         pal,
-                        "Copy download link",
-                        true,
-                        false,
+                        &download_label,
+                        download_url.is_some(),
+                        available_version.is_some(),
                         button_width,
-                        28.0_f32,
+                        34.0_f32,
                     )
+                    .on_hover_text(download_hover)
                     .clicked()
                     {
-                        copy_clicked = true;
+                        download_clicked = true;
                     }
                 });
+
+                if available_version.is_some() {
+                    ui.add_space(8.0_f32);
+                    ui.horizontal(|ui| {
+                        if Self::update_action_button(
+                            ui,
+                            pal,
+                            "Release notes",
+                            true,
+                            false,
+                            button_width,
+                            28.0_f32,
+                        )
+                        .clicked()
+                        {
+                            notes_clicked = true;
+                        }
+                        if Self::update_action_button(
+                            ui,
+                            pal,
+                            "Copy download link",
+                            true,
+                            false,
+                            button_width,
+                            28.0_f32,
+                        )
+                        .clicked()
+                        {
+                            copy_clicked = true;
+                        }
+                    });
+                }
             }
 
             if let Some((kind, message)) = &notice {
@@ -2752,14 +3146,19 @@ impl OpAutoClickerApp {
             }
 
             ui.add_space(7.0_f32);
-            ui.label(
-                egui::RichText::new(
-                    "Browser download only; nothing installs silently. Close \
-                     MacroClicker before replacing the EXE — settings are kept.",
-                )
-                .color(pal.text_dim)
-                .small(),
-            );
+            let fine_print = if install_progress.is_some() {
+                "Downloading never interrupts a running session; clicking \
+                 stops only for the restart itself."
+            } else if can_install {
+                "Install downloads, verifies the SHA-256 fingerprint, then \
+                 restarts MacroClicker. Settings are kept."
+            } else if available_version.is_some() {
+                self.self_update_unavailable_reason()
+            } else {
+                "Nothing installs without a click here; the check only reads \
+                 GitHub's public release metadata."
+            };
+            ui.label(egui::RichText::new(fine_print).color(pal.text_dim).small());
 
             ui.add_space(8.0_f32);
             ui.separator();
@@ -2779,7 +3178,14 @@ impl OpAutoClickerApp {
         if check_clicked {
             self.start_update_check();
         }
-        if download_clicked {
+        if cancel_clicked {
+            if let UpdateInstallState::Downloading { cancel, .. } = &self.update_install {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        }
+        if download_clicked && can_install {
+            self.start_update_install();
+        } else if download_clicked {
             match download_url.as_deref() {
                 Some(url) if win32::open_url(url) => {
                     let version = available_version.as_deref().unwrap_or("the new version");
@@ -2843,6 +3249,7 @@ impl eframe::App for OpAutoClickerApp {
             self.start_update_check();
         }
         self.poll_update_check();
+        self.poll_update_install(ctx);
 
         // UI scale and window size: the zoom factor follows the persisted
         // percentage times the window-driven fit (`adapt_to_window_size`
@@ -3251,6 +3658,21 @@ impl eframe::App for OpAutoClickerApp {
                                             .to_string(),
                                     ),
                                 };
+                            let (updates_label, updates_color, updates_stroke, updates_hover) =
+                                if matches!(
+                                    self.update_install,
+                                    UpdateInstallState::Downloading { .. }
+                                ) {
+                                    (
+                                        "Updating…".to_string(),
+                                        pal.success,
+                                        pal.success,
+                                        "Downloading and verifying the update — open for progress"
+                                            .to_string(),
+                                    )
+                                } else {
+                                    (updates_label, updates_color, updates_stroke, updates_hover)
+                                };
                             let updates_button = egui::Button::new(
                                 egui::RichText::new(updates_label)
                                     .size(12.0_f32)
@@ -3284,7 +3706,12 @@ impl eframe::App for OpAutoClickerApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.settings_dirty = true;
-        self.flush_settings();
+        // After an update relaunch the replacement process has
+        // already read the settings flushed before the swap; a
+        // second write from this dying process could only race it.
+        if !self.skip_exit_save {
+            self.settings_dirty = true;
+            self.flush_settings();
+        }
     }
 }

@@ -29,8 +29,8 @@ Everything 4.1 does, plus the parts it cannot:
 | Dedicated panic key (F8) always reserved | No | Yes |
 | Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
 | Five themes + 75–200 % window scaling | No | Yes |
-| Built-in update check against GitHub releases | No | Yes — shows installed/latest/last-checked, then one click downloads the EXE |
-| Open source with Windows CI and 82 automated tests | No | Yes |
+| Built-in updates against GitHub releases | No | Yes — one click downloads, SHA-256-verifies, installs and restarts |
+| Open source with Windows CI and 102 automated tests | No | Yes |
 
 \* Resizing/scaling is the researched part: OP's public 4.1 feature
 pages list no resize or UI-scale feature; the winget-catalogued 4.1
@@ -45,16 +45,22 @@ later closed builds are not public, so no stronger claim is made.
 Don't want to build? Grab the ready-to-run **`macro_clicker.exe`** from the
 [GitHub Releases page](https://github.com/Skid-ster/autoclickerBYARENA/releases)
 — every version tag is compiled by the Windows CI workflow (format, clippy,
-all 82 tests, release build) and published there automatically.
+all 102 tests, release build) and published there automatically.
 CI also refuses a version tag unless the tag, Cargo package version
-and the EXE's embedded FileVersion all agree, so the in-app checker
-can never be pointed at a mislabelled release. The app can also
-check for you: the **Updates…** button in its footer opens an update
-checker showing the installed version, the latest version GitHub
-reported and when it last checked; a newer release turns the footer
-button into **Update vX.Y.Z** and enables a direct EXE download.
-No installer; just download and run. (GitHub displays the file's SHA-256
-fingerprint right under the download link if you want to verify your copy.)
+and the EXE's embedded FileVersion all agree, so the in-app updater
+can never be pointed at a mislabelled release. The app keeps itself
+current too: the **Updates…** button in its footer shows the
+installed version, the latest version GitHub reported and when it
+last checked; a newer release turns the footer button into
+**Update vX.Y.Z**, and **Install vX.Y.Z** downloads the new EXE,
+verifies its size and SHA-256 fingerprint against GitHub's
+published values, swaps it into place (rolling back automatically
+if anything fails) and restarts into it. No installer; just
+download and run. The EXE is not code-signed, so on first launch
+Windows SmartScreen may ask — choose **More info → Run anyway**
+(it stops asking once the file is known on your PC). GitHub also
+displays the file's SHA-256 fingerprint under the download link
+if you want to verify your copy by hand.
 
 ## Quick start
 
@@ -157,7 +163,7 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 82 unit tests over platform-independent modules, plus a Windows CI
+- 102 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
 
