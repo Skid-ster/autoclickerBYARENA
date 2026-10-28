@@ -2,8 +2,8 @@
 
 **MacroClicker** is a Windows x64 auto-clicker written in stable Rust with an
 egui interface that reproduces the authentic classic OP Auto Clicker 4.x
-Win32 dialog — a fixed, non-resizable light-gray window (with six persisted
-themes — including a MogClicker meme theme — and a 75–200 % window scale)
+Win32 dialog — a fixed, non-resizable light-gray window (with four
+persisted themes and a 75–200 % window scale)
 with group boxes, sunken numeric fields and classic push buttons, nothing
 scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
 row, mouse button and click-type pickers, repeat rules, cursor position
@@ -26,7 +26,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Record & Playback | Yes | Yes — exact positions, buttons **and gaps**, loop counts, F8 panic mid-playback |
 | Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
 | Dedicated panic key (F8) always reserved | No | Yes |
-| Six themes + 75–200 % window scaling | No | Yes |
+| Four themes + 75–200 % window scaling | No | Yes |
 | Open source with Windows CI and 67 automated tests | No | Yes |
 
 ## Quick start
@@ -67,20 +67,15 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   exact buttons, positions and delays, drift-free, loop N times or until
   stopped, and F8 panic-stops instantly mid-playback. Up to 2048 steps
   per macro.
-- **Six themes + window scaling** — a **Settings…** button in the
+- **Four themes + window scaling** — a **Settings…** button in the
   bottom-right corner opens a Settings window with a theme picker (Classic
-  light, Dark, Midnight OLED, Terminal green, Vaporwave, and the
-  **MogClicker** meme theme, which retitles the window "MogClicker", swaps
-  the window/taskbar icon to a hot-pink edition, paints the group captions
-  hot pink and re-skins the labels: the Start button becomes **Mog**, Stop
-  becomes **It's over**, the groups become "Mogging interval" / "Mog
-  options" / "Mog repeat" / "Aura position", and the status lines speak
-  fluent meme — "+1000 aura per click", "Aura cooling down…", "everyone
-  brutally frame-mogged") and a window-scale picker (75–200 %):
-  the whole UI zooms and the window resizes itself so every control stays
-  visible. Both choices restyle every window (main screen, Hotkey dialog
-  and Settings window), are remembered across restarts, and all
-  themes share the exact same layout, so switching never moves a control.
+  light, Dark, Midnight OLED and Terminal green — every one tuned to a
+  WCAG 4.5:1 contrast floor for all text, status and accent colors) and a
+  window-scale picker (75–200 %): the whole UI zooms and the window
+  resizes itself so every control stays visible. Both choices restyle
+  every window (main screen, Hotkey dialog and Settings window), are
+  remembered across restarts, and all themes share the exact same layout,
+  so switching never moves a control.
   (The native OS title bar follows the Windows app mode — black when
   Windows is in dark app mode; eframe/egui 0.27 cannot recolor native
   window chrome, so picking a dark-family theme is the way to make the

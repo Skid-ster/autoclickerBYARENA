@@ -68,13 +68,13 @@ Eight integration test binaries run platform-independent logic (67 tests):
   stability and the window-scale sanitizer.
 - `settings_tests` — full serialization round trip, tolerance of unknown
   keys, sections and comments, per-field recovery from malformed values,
-  round trips for all six themes, legacy `dark_mode` migration precedence
-  and `ui_scale` clamping.
+  round trips for all four themes, fallback to the default theme for
+  retired theme keys, legacy `dark_mode` migration precedence and
+  `ui_scale` clamping.
 - `icon_tests` — dimensions, transparent rounded corners, solid accent
-  center, two-axis symmetry and the presence of both accent and background
-  pixels in the procedurally generated 32x32 application icon, plus the
-  MogClicker color way: identical alpha geometry, exact hot-pink center
-  and a clearly recolored pixel count.
+  center, two-axis symmetry, the presence of both accent and background
+  pixels, anti-aliased edges with a fully opaque core, and byte-for-byte
+  deterministic generation of the procedural 32x32 application icon.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
@@ -86,7 +86,8 @@ non-resizable, non-scrolling) recreation of the classic OP Auto Clicker 4.x
 dialog. The **Settings…** button in the bottom-right corner opens a
 Settings window with two persisted choices:
 
-**Theme** — six complete themes:
+**Theme** — four complete themes, each tuned so every text, status and
+accent color clears a WCAG 4.5:1 contrast ratio against its background:
 
 - **Classic light (default)** — the classic native look: `#F0F0F0` face,
   white sunken numeric fields and combo boxes (white in every state — idle,
@@ -97,23 +98,6 @@ Settings window with two persisted choices:
   buttons and group borders.
 - **Midnight OLED** — a pure-black variant of Dark for OLED screens.
 - **Terminal green** — green-on-black phosphor-terminal colors.
-- **Vaporwave** — pastel pink/purple light colors with a hot-pink accent.
-- **MogClicker** — the meme theme, wording sourced from the actual slang
-  ("to mog" = to outclass someone, per Merriam-Webster; "aura", "brutally
-  frame-mogged" and "looksmaxxing" from the surrounding meme culture). The
-  OS window retitles itself "MogClicker" **and swaps its window/taskbar
-  icon to a hot-pink color way of the crosshair logo**, the group-box
-  captions turn hot pink, the Start button becomes **Mog**, Stop becomes
-  **It's over**, the group boxes become "Mogging interval" / "Mog
-  options" / "Mog repeat" / "Aura position", and the footer reads "F6 to
-  mog · F8 when it's over". The status strip joins in: running reports
-  "Mogging at … CPS — … +1000 aura per click.", stopping shows "Aura
-  cooling down…", a completed repeat count reports "Mogging complete —
-  everyone brutally frame-mogged: N clicks delivered.", and the activity
-  log opens sessions with "Mogging session started — looksmaxxing at …
-  CPS." — all on a deep-purple face with a hot-pink accent. Only colors
-  and those strings change; every control keeps its normal meaning and
-  position.
 
 **Window scale** — 75 / 100 / 125 / 150 / 175 / 200 %. The UI zoom factor
 follows the percentage and the app then re-applies its fixed logical size,
@@ -125,7 +109,7 @@ Legacy settings files from the dark-mode-only build are still honored:
 `dark_mode=true` loads as the Dark theme, `dark_mode=false` as Classic, and
 a modern `theme=` key always wins over the legacy boolean.
 
-All six themes share every layout metric, so switching never moves a
+All four themes share every layout metric, so switching never moves a
 control.
 In both, the bordered group boxes draw their titles on a face-colored gap
 that breaks the top border, exactly like the native `BS_GROUPBOX` control,
@@ -138,8 +122,7 @@ dark app mode), and egui/eframe 0.27 has no API to recolor the title bar of
 a native-decorated window. A custom title bar would break the
 classic-dialog goal, so the stock one is kept as-is; picking a matching
 dark-family in-app theme is the supported way to make the window and title
-bar agree. (The title *text* is app-controlled, which is how the MogClicker
-theme renames the window at runtime.)
+bar agree.
 
 - **Click interval** (full width) — four white numeric boxes for hours /
   mins / secs / milliseconds with labels to the right of each box, defaulting
@@ -164,9 +147,14 @@ theme renames the window at runtime.)
   semantic colored state (Ready / Running / Stopping / Panic / Warning /
   Error) without ever changing the window layout, and a status-bar style
   footer row: a short key reminder on the left (it tracks the actual
-  assigned hotkey and the theme's wording, e.g. "F6 start/stop · F8
-  emergency stop", or "F6 to mog · F8 when it's over" in MogClicker) and
-  the **Settings…** button on the right.
+  assigned hotkey, e.g. "F6 start/stop · F8 emergency stop") and the
+  **Settings…** button on the right.
+
+Every push button is painted with full interaction feedback: the fill,
+border and elevation all track the pointer (an eased ~180 ms hover lift
+with a soft drop shadow — depth encodes interactivity — and a pressed
+state that visibly sits down), and floating surfaces (Settings, Hotkey
+dialog, dropdowns) carry a soft shadow so layering reads as hierarchy.
 
 The **Hotkey setting** dialog remaps the start/stop key (F1–F24, A–Z, 0–9,
 Space); F8 is permanently reserved for Panic Stop and cannot be reassigned,
@@ -263,10 +251,10 @@ previous session is never reused.
    Crucially, test this **unfocused**: click into another app (or a game)
    and press the hotkey — the session must start and stop from there too,
    because the app keeps polling on a 20 Hz heartbeat even while idle and
-   in the background. On launch the status strip shows the theme's idle
-   line ("Ready." / "Ready to mog. Aura fully charged.") rather than
-   sitting blank, and Ready-kind confirmations like "Session complete: 25
-   clicks delivered." or "Factory defaults restored." are visibly painted.
+   in the background. On launch the status strip shows the idle line
+   ("Ready.") rather than sitting blank, and Ready-kind confirmations like
+   "Session complete — 25 clicks delivered." or "Factory defaults
+   restored." are visibly painted.
 8. Close and reopen the app: every setting (interval, offset, button, type,
    repeat, position, hotkey, theme, window scale) is restored from
    `%APPDATA%`.
@@ -276,25 +264,24 @@ previous session is never reused.
    status strip confirms "Factory defaults restored."
 10. Press F8 mid-run: the session stops within one interval, the status turns
     red and no mouse button remains stuck.
-11. Open Settings…, pick each theme in turn: every window restyles in
-    place and nothing moves; with MogClicker active the title bar reads
-    "MogClicker", the window/taskbar icon turns hot pink, the group
-    captions turn hot pink, the buttons read "Mog"/"It's over" and the
-    footer reads "F6 to mog · F8 when it's over".
-12. Still in MogClicker, start and stop a session: the status strip shows
-    "Mogging at … +1000 aura per click.", then "Aura cooling down…"; a
-    25-click repeat run ends with "Mogging complete — everyone brutally
-    frame-mogged: 25 clicks delivered."
+11. Open Settings…, pick each of the four themes in turn: every window
+    restyles in place and nothing moves; dark themes keep readable text in
+    every field, button and dropdown state.
+12. Start a "Repeat until stopped" session, then press Stop: the status
+    shows "Stopping…" for at most a moment and then settles on
+    "Stopped — N clicks delivered." — it must never remain stuck on
+    "Stopping…". Hovering any enabled button lifts it slightly with a
+    soft shadow; pressing it sits it back down.
 13. Still in Settings…, set Window scale to 150 %: the window grows and
     every control stays fully visible; set it back to 100 % and the window
     returns to its original size; both choices survive a restart.
 14. Close the window: the worker is signaled, joined and its event handle
     closed cleanly.
-15. The title bar and taskbar read "MacroClicker" (the MogClicker theme
-    still retitles to "MogClicker" and back when you leave it).
+15. The title bar and taskbar read "MacroClicker" in every theme.
 16. Open Record & Playback, press Record, click 3–4 spots in another
     window (clicks on MacroClicker itself are ignored), press Stop
     recording: the step count matches. Press Play with "Play 2 times":
     every spot is clicked in order twice with your original rhythm, then
     "Playback complete" appears. Playback honors F8 panic and the Stop
-    button; "Play until stopped" loops until stopped.
+    button (a manual stop reports "Playback stopped — N clicks
+    delivered."); "Play until stopped" loops until stopped.

@@ -28,36 +28,29 @@ const VK_A: i32 = 0x41;
 const VK_Z: i32 = 0x5A;
 const VK_SPACE: i32 = 0x20;
 
-/// Visual theme applied to every window. Themes change colors (and, for
-/// MogClicker, a few label strings) but never layout metrics, so switching
-/// can never move or hide a control.
+/// Visual theme applied to every window. Themes change colors only —
+/// never layout metrics or label strings — so switching can never move
+/// or hide a control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AppTheme {
     /// The classic light OP Auto Clicker 4.x dialog (default).
     #[default]
     Classic,
-    /// Windows 11 dark-dialog colors.
+    /// Windows 11 dark-dialog colors with surface-elevation tiers.
     Dark,
     /// Pure-black dark theme for OLED screens.
     Oled,
     /// Green-on-black terminal look.
     Matrix,
-    /// Pastel pink/purple light look.
-    Vaporwave,
-    /// The meme theme: retitles the app "MogClicker" and re-skins a few
-    /// labels to match, on a neon purple/pink palette.
-    Mog,
 }
 
 impl AppTheme {
-    pub fn all() -> [AppTheme; 6] {
+    pub fn all() -> [AppTheme; 4] {
         [
             AppTheme::Classic,
             AppTheme::Dark,
             AppTheme::Oled,
             AppTheme::Matrix,
-            AppTheme::Vaporwave,
-            AppTheme::Mog,
         ]
     }
 
@@ -68,19 +61,18 @@ impl AppTheme {
             AppTheme::Dark => "dark",
             AppTheme::Oled => "oled",
             AppTheme::Matrix => "matrix",
-            AppTheme::Vaporwave => "vaporwave",
-            AppTheme::Mog => "mog",
         }
     }
 
+    /// Parses a persisted theme key. Keys from retired experimental themes
+    /// ("mog", "vaporwave") are unknown on purpose: the tolerant settings
+    /// parser falls back to the default theme instead of failing.
     pub fn from_key(value: &str) -> Option<AppTheme> {
         match value.trim() {
             "classic" => Some(AppTheme::Classic),
             "dark" => Some(AppTheme::Dark),
             "oled" => Some(AppTheme::Oled),
             "matrix" => Some(AppTheme::Matrix),
-            "vaporwave" => Some(AppTheme::Vaporwave),
-            "mog" => Some(AppTheme::Mog),
             _ => None,
         }
     }
@@ -92,8 +84,6 @@ impl AppTheme {
             AppTheme::Dark => "Dark",
             AppTheme::Oled => "Midnight OLED",
             AppTheme::Matrix => "Terminal green",
-            AppTheme::Vaporwave => "Vaporwave",
-            AppTheme::Mog => "MogClicker",
         }
     }
 }

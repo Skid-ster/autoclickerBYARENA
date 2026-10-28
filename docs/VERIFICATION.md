@@ -497,6 +497,67 @@ Real-time CPS line is flat at the target rate with "Missed deadlines" at
 or near zero. With Random offset or humanization enabled the line wanders
 by design because the produced intervals genuinely vary.
 
+## Masterclass polish round (four themes, stop confirmation, 2026 craft)
+
+User-requested final refinement: fix the status strip staying on
+"Stopping…" after a manual stop, retire the MogClicker experiment, ship
+exactly four well-tuned themes, and apply a research-driven polish pass
+(2026 interface-craft consensus: purposeful micro-interactions in the
+150–300 ms window, depth as hierarchy rather than ornament, dark-mode
+contrast discipline, confirmations that close the feedback loop).
+
+Defect fixed — stuck "Stopping…" status:
+
+- Pressing Stop (button or hotkey) set the transient "Stopping…" status,
+  but the running→stopped completion detector only painted a final
+  message for repeat-count sessions and macro playback. A manual stop of
+  a "Repeat until stopped" session fell through every branch and the
+  transient status stayed on screen forever.
+- `update()` now closes the loop: when the worker drains while the status
+  is still Stopping, the strip settles on "Stopped — N clicks delivered."
+  (and macro playback distinguishes "Playback stopped" from "Playback
+  complete"). Panic and error outcomes keep their own status, as before.
+
+Theme set reduced to four (Classic light, Dark, Midnight OLED, Terminal
+green):
+
+- The MogClicker meme theme (a text-reskin experiment) and Vaporwave are
+  removed: palettes, the `ThemeText` re-skin machinery, the runtime
+  window retitle/icon swap, and the hot-pink icon color way are all gone;
+  labels are now plain inline strings.
+- `AppTheme::from_key` no longer recognizes "mog"/"vaporwave"; the
+  tolerant settings parser falls back to the default theme, so an old
+  settings file can never resurrect a retired theme (covered by updated
+  hotkey and settings tests).
+
+Polish pass (verified headlessly where possible):
+
+- Every classic push button is now a state-aware painter: fill and border
+  track idle/hover/press, a ~180 ms eased hover lift with a soft drop
+  shadow encodes "what floats acts", and the pressed state sits back
+  down. Global `style.animation_time` is 180 ms, inside the 150–300 ms
+  window where motion reads as responsive.
+- Floating surfaces (Settings, Hotkey dialog, dropdown popups) carry a
+  soft offset shadow so layering reads as hierarchy.
+- Contrast audit across all four palettes: every text, dim-text, accent
+  and status color was computed against its background; the one failure
+  (Classic warning amber, 4.12:1) was darkened to 4.75:1. All other
+  combinations measure 4.7:1–17:1.
+
+Verification (Linux harness, rustc 1.88.0, real egui 0.27.2):
+
+- 67 module tests pass standalone and in the harness (config 13,
+  humanize 9, telemetry 8, settings 8, hotkey 7, icon 6, schedule 7,
+  macro 9); the retired-theme coverage was replaced with equally strict
+  fallback and icon-determinism assertions, never weakened.
+- `cargo clippy --lib -- -D warnings` clean; `cargo fmt --check` clean.
+- Layout probe: all four themes paint within 560x456, idle repaint
+  heartbeat 10/10.
+- Interaction probe: footer grid Start (F6) / Stop (F6) / Hotkey setting /
+  Record & Playback in two aligned rows; the strings "Advanced", "Mog",
+  "Vaporwave" are never painted; Settings opens with the factory reset
+  present and the theme dropdown lists exactly the four shipped themes.
+
 ## Diagnostics removal + stability round (Advanced window retired)
 
 User-requested follow-up to the MacroClicker round: remove the Advanced
