@@ -19,9 +19,14 @@ pub const SLIDING_WINDOW_LIMIT: usize = 2000;
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ClickRecord {
     pub seq: u64,
+    /// The interval the humanizer intended for this click.
     pub interval_ms: f64,
     pub hold_ms: f64,
+    /// Scheduler lateness measured at dispatch time (before the burst).
     pub deadline_error_ms: f64,
+    /// Measured wall-clock gap between this click's completion and the
+    /// previous one's — the physical click spacing the CPS chart plots.
+    pub actual_gap_ms: f64,
     pub missed_deadline: bool,
 }
 
@@ -58,6 +63,7 @@ pub struct ClickRecordAtom {
     interval_ms: AtomicU64,
     hold_ms: AtomicU64,
     deadline_error_ms: AtomicU64,
+    actual_gap_ms: AtomicU64,
     missed_deadline: AtomicBool,
 }
 
@@ -72,6 +78,8 @@ impl Atom for ClickRecordAtom {
             .store(value.hold_ms.to_bits(), Ordering::Relaxed);
         self.deadline_error_ms
             .store(value.deadline_error_ms.to_bits(), Ordering::Relaxed);
+        self.actual_gap_ms
+            .store(value.actual_gap_ms.to_bits(), Ordering::Relaxed);
         self.missed_deadline
             .store(value.missed_deadline, Ordering::Relaxed);
     }
@@ -82,6 +90,7 @@ impl Atom for ClickRecordAtom {
             interval_ms: f64::from_bits(self.interval_ms.load(Ordering::Relaxed)),
             hold_ms: f64::from_bits(self.hold_ms.load(Ordering::Relaxed)),
             deadline_error_ms: f64::from_bits(self.deadline_error_ms.load(Ordering::Relaxed)),
+            actual_gap_ms: f64::from_bits(self.actual_gap_ms.load(Ordering::Relaxed)),
             missed_deadline: self.missed_deadline.load(Ordering::Relaxed),
         }
     }

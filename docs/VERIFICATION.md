@@ -434,6 +434,69 @@ warnings, and all five probes are green (layout still exactly
 scale/title/icon probes unchanged). The actual unfocused-F6 experience
 requires a real Windows desktop and is listed in the manual checklist.
 
+## Real-time CPS stability round (chart estimator + bounded catch-up)
+
+User-reported defect (with screenshot): the Real-time CPS chart showed a
+comb-like baseline with periodic tall spikes — "Still its very unstable i
+need it to be stable." Reading the code surfaced three independent root
+causes, each confirmed before any fix was written:
+
+1. **The chart estimator aliased against the UI frame rate.** The old
+   `drain_and_aggregate` computed one `instant_cps` sample per *UI frame*
+   from `delta_clicks / delta_ms`. Any frame in which no click completed
+   pushed `0.0` into the history (the comb-like baseline), and a frame
+   that happened to span several click completions pushed an inflated
+   value (the spikes). Perfectly stable clicking therefore drew an
+   unstable chart. The estimator was replaced: the worker now records the
+   measured wall-clock gap between consecutive click completions in each
+   `ClickRecord` (`actual_gap_ms`), and the UI pushes exactly one sample
+   per drained click record (`1000 / actual_gap_ms`). No clicks, no new
+   samples — zeros are never fabricated.
+2. **The scheduler repaid lateness as a burst.** The absolute schedule
+   (`next_deadline = target_tick`) carried unbounded debt: after an OS
+   stall the next interval became genuinely short, producing a real burst
+   of fast clicks and a real CPS spike. The deadline arithmetic moved
+   into a new pure module `schedule.rs`: `next_target_tick` keeps the
+   exact absolute cadence while dispatch jitter stays within a 2 ms
+   catch-up slack (so rate never drifts), and re-anchors to "now" when a
+   stall slips past the slack (so one late click stays one late click and
+   no make-up clicks ever fire early). The module has no Windows imports
+   and is exercised by its own standalone test binary on any platform.
+3. **"Missed deadlines" counted every click.** `deadline_error_ms` was
+   measured at burst *completion*, which includes the full button-hold
+   duration (default mean 40 ms) — against a 1 ms threshold, every click
+   was flagged as missed. Lateness is now measured at dispatch time,
+   immediately after the spin-wait returns and before the down event, so
+   the statistic reports scheduler error only.
+
+The click path itself is unchanged in character: QPC spin-wait scheduling
+(never sleeps), `SendInput`/`PostMessageW` dispatch, SPSC telemetry and
+the F8 panic path are untouched except for the deadline arithmetic call
+and the two added measurements.
+
+Verification through the offline real-egui harness and standalone rustc:
+
+- `cargo fmt --check` clean over every source and test file.
+- **58/58 tests pass** (config 13, humanize 9, telemetry 8, settings 8,
+  hotkey 7, icon 6, schedule 7), and all seven test files also compile
+  standalone with zero warnings via bare `rustc --test` against the
+  pinned 1.88.0 sysroot.
+- `cargo clippy -- -D warnings` on the harness lib (which compiles the
+  real `app.rs`, `engine.rs`, `telemetry.rs` and `schedule.rs` against
+  real egui 0.27.2): zero findings.
+- The headless layout probe re-measured all six themes after the chart
+  rewrite: maximum content extent is unchanged at **548.50x439.25** inside
+  the fixed 560x448 window, and the idle repaint heartbeat still reports
+  <= 50 ms for every theme, so the round-6 unfocused-hotkey fix is intact.
+- Marker grep stays clean (none of the banned incompleteness markers, no
+  `mouse_event`/`keybd_event`, no `std::thread::sleep` in any click path).
+
+Windows acceptance for this round: run a session at a fixed interval with
+Random offset 0 and humanization off, open Advanced…, and confirm the
+Real-time CPS line is flat at the target rate with "Missed deadlines" at
+or near zero. With Random offset or humanization enabled the line wanders
+by design because the produced intervals genuinely vary.
+
 ## MogClicker accent round (presentation-only)
 
 User-requested follow-up: make the MogClicker meme theme the "absolute

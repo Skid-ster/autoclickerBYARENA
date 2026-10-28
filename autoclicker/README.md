@@ -39,7 +39,7 @@ cargo run --release
 cargo test --release
 ```
 
-Six integration test binaries run platform-independent logic (51 tests):
+Seven integration test binaries run platform-independent logic (58 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -51,6 +51,11 @@ Six integration test binaries run platform-independent logic (51 tests):
 - `telemetry_tests` — SPSC ring FIFO, slot wrapping, drop-newest back
   pressure, dropped counters, real two-thread producer/consumer traffic,
   statistics moments and histogram totals.
+- `schedule_tests` — the pure absolute-schedule arithmetic: exact drift-free
+  cadence when on time, jitter within the catch-up slack absorbed without
+  re-anchoring, a stall beyond the slack re-anchoring to "now" instead of
+  firing a burst of instant make-up clicks, strictly monotonic deadlines,
+  saturating arithmetic at the extremes and the slack-boundary behavior.
 - `hotkey_tests` — supported virtual-key ranges, F8/Esc reservation, display
   names, the default F6/Classic-theme/100 % preferences, theme key/label
   stability and the window-scale sanitizer.
@@ -281,3 +286,9 @@ previous session is never reused.
     returns to its original size; both choices survive a restart.
 14. Close the window: the worker is signaled, joined and its event handle
     closed cleanly.
+15. Open Advanced… and watch the Real-time CPS chart during a session with
+    a fixed interval (Random offset 0, humanization off): the line stays
+    flat at the target CPS — one sample per click from the worker's own
+    measured click-to-click gap — and "Missed deadlines" stays at or near
+    zero. Turning on Random offset or humanization makes the line wander
+    by design, tracking the intervals actually produced.

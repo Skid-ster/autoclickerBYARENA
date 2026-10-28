@@ -354,8 +354,6 @@ pub struct OpAutoClickerApp {
     cps_head: usize,
     cps_count: usize,
     stats: TelemetryStats,
-    previous_elapsed_ms: f64,
-    previous_clicks: u64,
 
     // Hotkey edge detection.
     toggle_was_down: bool,
@@ -423,8 +421,6 @@ impl OpAutoClickerApp {
             cps_head: 0,
             cps_count: 0,
             stats: TelemetryStats::default(),
-            previous_elapsed_ms: 0.0,
-            previous_clicks: 0,
             toggle_was_down: false,
             f8_was_down: false,
             capture_key_was_down: false,
@@ -750,33 +746,34 @@ impl OpAutoClickerApp {
 
     fn drain_and_aggregate(&mut self) {
         let telemetry = self.engine.telemetry();
+        let len_before = self.sliding_window.len();
         telemetry.drain_into(&mut self.sliding_window);
+
+        // One CPS sample per *click*, computed from the gap the worker
+        // actually measured between consecutive clicks. Sampling per UI
+        // frame instead (the old approach) aliased against the frame rate:
+        // frames without a click pushed 0.0 and frames spanning several
+        // clicks spiked, so perfectly stable clicking drew an unstable
+        // chart.
+        for record in &self.sliding_window[len_before..] {
+            if record.actual_gap_ms > 0.1 {
+                self.cps_history[self.cps_head] = 1000.0 / record.actual_gap_ms;
+                self.cps_head = (self.cps_head + 1) % self.cps_history.len();
+                self.cps_count = (self.cps_count + 1).min(self.cps_history.len());
+            }
+        }
+
         if self.sliding_window.len() > SLIDING_WINDOW_LIMIT {
             let drop_count = self.sliding_window.len() - SLIDING_WINDOW_LIMIT;
             self.sliding_window.drain(0..drop_count);
         }
 
-        let elapsed = self.engine.elapsed_ms();
         self.stats = compute_stats(
             &self.sliding_window,
             self.engine.click_count(),
             self.engine.missed_count(),
-            elapsed,
+            self.engine.elapsed_ms(),
         );
-
-        let delta_ms = elapsed - self.previous_elapsed_ms;
-        let delta_clicks = self.engine.click_count() - self.previous_clicks;
-        let mut instant_cps = 0.0;
-        if delta_ms > 0.0 && delta_clicks > 0 {
-            instant_cps = delta_clicks as f64 * 1000.0 / delta_ms;
-        }
-        self.previous_elapsed_ms = elapsed;
-        self.previous_clicks = self.engine.click_count();
-        if !self.sliding_window.is_empty() || self.engine.is_running() {
-            self.cps_history[self.cps_head] = instant_cps;
-            self.cps_head = (self.cps_head + 1) % self.cps_history.len();
-            self.cps_count = (self.cps_count + 1).min(self.cps_history.len());
-        }
     }
 
     fn toggle_session(&mut self) {
@@ -827,8 +824,6 @@ impl OpAutoClickerApp {
                 self.cps_count = 0;
                 self.cps_history.fill(0.0);
                 self.sliding_window.clear();
-                self.previous_elapsed_ms = 0.0;
-                self.previous_clicks = 0;
                 self.last_seen_error = None;
                 let text = self.theme_text();
                 self.set_status(

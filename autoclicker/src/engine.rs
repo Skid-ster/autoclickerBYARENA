@@ -14,6 +14,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
 use crate::config::{AtomicConfigSnapshot, CoordinateMode, EngineConfig, InputMode, MouseButton};
 use crate::humanize;
+use crate::schedule;
 use crate::telemetry::{ClickRecord, TelemetryStore};
 use crate::timing::{self, ScopedTimerResolution, SpinResult};
 use crate::win32::{
@@ -327,6 +328,7 @@ fn run_click_session(shared: &Shared) {
     shared.start_tick.store(session_start, Ordering::Release);
     humanize::reseed_thread_humanizer(session_start as u64);
     let mut next_deadline = session_start;
+    let mut previous_completion: Option<i64> = None;
     let mut sequence: u64 = 0;
 
     while !shared.stop.load(Ordering::Acquire) && !shared.panic.load(Ordering::Acquire) {
@@ -345,13 +347,27 @@ fn run_click_session(shared: &Shared) {
             }
         });
         let hold_ms = humanize::with_thread_humanizer(|h| h.next_hold_ms(&config));
-        let target_tick = next_deadline + timing::ms_to_ticks(interval_ms);
-        let already_late = timing::qpc_now() > target_tick;
+        // Absolute schedule with bounded catch-up: a stall longer than the
+        // slack re-anchors to "now" instead of firing instant make-up
+        // clicks, so one late click can never become a fast burst.
+        let interval_ticks = timing::ms_to_ticks(interval_ms);
+        let now_tick = timing::qpc_now();
+        let already_late = now_tick > next_deadline.saturating_add(interval_ticks);
+        let target_tick = schedule::next_target_tick(
+            next_deadline,
+            interval_ticks,
+            now_tick,
+            timing::ms_to_ticks(schedule::CATCHUP_SLACK_MS),
+        );
 
         let wait = timing::spin_until_deadline(target_tick, &shared.stop, &shared.panic);
         if wait != SpinResult::DeadlineReached {
             break;
         }
+        // Lateness is judged at dispatch time, BEFORE the burst: the burst
+        // legitimately contains the full button-hold duration, which must
+        // never be counted as scheduler error.
+        let dispatch_tick = timing::qpc_now();
 
         let background = config.input_mode == InputMode::BackgroundHwnd;
         let mut burst_failed: Option<String> = None;
@@ -410,12 +426,21 @@ fn run_click_session(shared: &Shared) {
         }
 
         let completion = timing::qpc_now();
-        let deadline_error_ms = timing::elapsed_ms(target_tick, completion);
+        let deadline_error_ms = timing::elapsed_ms(target_tick, dispatch_tick);
+        // The real measured gap between consecutive click completions: this is
+        // what the Real-time CPS chart plots, so it reflects physical click
+        // spacing instead of a UI-frame sampling artifact.
+        let actual_gap_ms = match previous_completion {
+            Some(previous) => timing::elapsed_ms(previous, completion),
+            None => interval_ms,
+        };
+        previous_completion = Some(completion);
         shared.telemetry.record_click(ClickRecord {
             seq: sequence + 1,
             interval_ms,
             hold_ms,
             deadline_error_ms,
+            actual_gap_ms,
             missed_deadline: already_late || deadline_error_ms > 1.0,
         });
 
