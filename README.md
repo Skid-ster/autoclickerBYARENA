@@ -32,7 +32,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
 | Five themes + 75–200 % window scaling | No | Yes |
 | Built-in updates against GitHub releases | No | Yes — one click downloads, SHA-256-verifies, installs and restarts |
-| Open source with Windows CI and 102 automated tests | No | Yes |
+| Open source with Windows CI and 103 automated tests | No | Yes |
 
 \* Resizing/scaling is the researched part: OP's public 4.1 feature
 pages list no resize or UI-scale feature; the winget-catalogued 4.1
@@ -47,7 +47,7 @@ later closed builds are not public, so no stronger claim is made.
 Don't want to build? Grab the ready-to-run **`macro_clicker.exe`** from the
 [GitHub Releases page](https://github.com/Skid-ster/autoclickerBYARENA/releases)
 — every version tag is compiled by the Windows CI workflow (format, clippy,
-all 102 tests, release build) and published there automatically.
+all 103 tests, release build) and published there automatically.
 CI also refuses a version tag unless the tag, Cargo package version
 and the EXE's embedded FileVersion all agree, so the in-app updater
 can never be pointed at a mislabelled release. The app keeps itself
@@ -92,9 +92,12 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   button grid so every border stays flush with the content edges, and
   the whole interface scales continuously (in 1 % increments) to fit
   the window — wider, taller, snapped or maximized — measured
-  zoom-independently so it can never feed back into itself, applied
-  only once a drag settles and then eased smoothly (~180 ms) onto the
-  exact fit factor, and capped at 280 % total. Panoramic
+  zoom-independently so it can never feed back into itself. Growth
+  eases smoothly (~180 ms) onto the exact fit once a drag settles;
+  shrinkage fits back down immediately, and the physical minimum is
+  compensated for the current fit so a large window can always be
+  dragged back down without restarting. Total zoom is capped at
+  280 %. Panoramic
   windows rearrange the middle groups three-across with a single row
   of action buttons, and the layout itself stretches to the window's
   full height, groups flowing from the top with the status and
@@ -168,7 +171,7 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 102 unit tests over platform-independent modules, plus a Windows CI
+- 103 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
 

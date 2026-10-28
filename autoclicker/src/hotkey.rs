@@ -135,6 +135,44 @@ pub fn sanitize_window_size(width: f64, height: f64) -> (u32, u32) {
     )
 }
 
+fn sanitized_auto_zoom(auto_zoom: f32) -> f32 {
+    if auto_zoom.is_finite() && auto_zoom > 1.0 {
+        auto_zoom
+    } else {
+        1.0
+    }
+}
+
+/// The main-window floor expressed in the *live* egui points that exist
+/// while `auto_zoom` is applied.
+///
+/// The persisted/physical floor is fit-independent: at a given user
+/// percentage, Windows must always be allowed to shrink the window back
+/// to the physical size that shows `WINDOW_MIN_WIDTH` x
+/// `WINDOW_MIN_HEIGHT` with the window-driven fit at 1.0. egui-winit
+/// converts a declared minimum from live points to physical pixels using
+/// the total zoom (user percentage x auto-zoom), so declaring the raw
+/// 560x456 floor at a high auto-zoom would multiply the physical minimum
+/// by that transient fit factor and trap a large window at a huge size.
+/// Dividing by the auto-zoom keeps the resulting physical floor constant
+/// while leaving the user's own percentage fully effective.
+pub fn window_floor_for_auto_zoom(auto_zoom: f32) -> (f32, f32) {
+    let factor = sanitized_auto_zoom(auto_zoom);
+    (
+        WINDOW_MIN_WIDTH as f32 / factor,
+        WINDOW_MIN_HEIGHT as f32 / factor,
+    )
+}
+
+/// Converts a live point size into fit-independent points by removing
+/// the window-driven fit factor. This is the coordinate system used for
+/// the persisted window size and for deciding whether a live size is
+/// below the classic floor.
+pub fn fit_independent_window_size(live_size: (f32, f32), auto_zoom: f32) -> (f32, f32) {
+    let factor = sanitized_auto_zoom(auto_zoom);
+    (live_size.0 * factor, live_size.1 * factor)
+}
+
 /// Application-level hotkey and UI preferences persisted between sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppPrefs {

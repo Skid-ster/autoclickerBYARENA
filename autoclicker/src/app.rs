@@ -225,10 +225,15 @@ static AURORA_PALETTE: Palette = Palette {
     selection_bg: Color32::from_rgba_premultiplied(52, 42, 104, 150),
 };
 
-/// Logical (point) floor size of the main window: the exact classic
-/// footprint, declared to the OS as the minimum inner size so the window
-/// can never shrink to a size where a control would not fit. Larger
-/// sizes are restored from the persisted preferences.
+/// Fit-independent floor size of the main window: the exact classic
+/// footprint in points with the window-driven fit at 1.0. The size
+/// actually declared to the OS divides this by the displayed fit
+/// (`live_window_floor`), because egui-winit multiplies a declared
+/// minimum by the total zoom when converting it to physical pixels.
+/// That keeps the physical floor tied to the user's percentage alone,
+/// so enlarging the window can never strand it above a minimum created
+/// by the transient fit. Larger sizes are restored from the persisted
+/// preferences.
 pub const MAIN_WINDOW_SIZE: [f32; 2] = [
     hotkey::WINDOW_MIN_WIDTH as f32,
     hotkey::WINDOW_MIN_HEIGHT as f32,
@@ -276,16 +281,18 @@ const MAIN_WIDE_CANVAS: [f32; 2] = [
 /// applied zoom — the size the window has at 100 % zoom — so the
 /// measure is invariant under the zoom changes it drives and
 /// feedback is mathematically impossible. The result is quantized
-/// down to whole percent and applied only after the size settles
-/// (see `adapt_to_window_size`), so a drag never re-zooms mid-flight
-/// and a size parked on a percent boundary cannot flip-flop.
+/// down to whole percent. Growth applies after the size settles and is
+/// eased; shrinkage applies immediately (see
+/// `apply_shrink_fit_immediately`), because a too-large fit in a
+/// window that is actively getting smaller would squeeze the canvas
+/// below its design size and fight the user's drag. The one-percent
+/// dead band still keeps a size parked on a boundary from flip-flopping.
 const AUTO_ZOOM_QUANTUM: f32 = 0.01_f32;
 
 /// Ceiling on the *total* applied zoom (user percentage x window
 /// fit). 2.80 is the largest total every shipped build has been
 /// verified in (200 % x the old 1.40 maximum step), so the fit may
-/// use the whole envelope on a large window without ever pushing a
-/// window's physical minimum size past proven territory.
+/// use the whole proven rendering envelope on a large window.
 const AUTO_ZOOM_MAX_TOTAL: f32 = 2.80_f32;
 
 /// Narrowest live width the wide (three-abreast) arrangement is
@@ -518,10 +525,12 @@ pub struct OpAutoClickerApp {
     // times this factor.
     auto_zoom: f32,
     // The fit factor actually driving the egui zoom right now. When
-    // `adapt_to_window_size` adopts a new `auto_zoom`, this eases
-    // toward it over ~180 ms instead of snapping, so a resize lands
-    // as one smooth zoom. It equals `auto_zoom` at rest — including
-    // at startup, where the opening size must never animate.
+    // `adapt_to_window_size` adopts a larger `auto_zoom`, this eases
+    // toward it over ~180 ms instead of snapping, so an enlargement
+    // lands as one smooth zoom. A smaller fit is applied at once so
+    // an inward drag never has to fight a canvas that is too large
+    // for the shrinking window. It equals `auto_zoom` at rest —
+    // including at startup, where the opening size must never animate.
     displayed_auto_zoom: f32,
     // In-flight zoom transition: (paint-clock start, factor it
     // started from). `None` while the displayed factor is at rest.
@@ -531,13 +540,21 @@ pub struct OpAutoClickerApp {
     // machinery is idle again — so easing can never feed back into
     // the fit, the persisted size, or itself.
     zoom_transition: Option<(f64, f32)>,
+    // The user percentage for which `auto_zoom` was last derived.
+    // The fit factor is defined relative to that percentage, so a
+    // Settings change must re-derive it from the invariant neutral
+    // window size before a new total zoom is applied; leaving the old
+    // factor in place for even one bookkeeping pass would multiply
+    // the old fit by the new percentage and could grow the window to
+    // satisfy a floor that the current physical window already meets.
+    applied_user_factor: f32,
     // Wide three-across layout currently in effect.
     wide_layout: bool,
-    // Fit-zoom debounce: the candidate factor and how many
+    // Upward fit-zoom debounce: the candidate factor and how many
     // consecutive frames the neutral-point window size has held
-    // still while asking for it. A factor is applied only once the
-    // size settles, so scaling never jumps mid-drag or chases OS
-    // resize transients.
+    // still while asking for it. Growth applies only once the size
+    // settles; a downward fit bypasses this debounce so an inward
+    // drag is never resisted by a stale, too-large factor.
     zoom_candidate: f32,
     stable_frames: u32,
     // Last neutral-point window size (live points x total zoom).
@@ -640,6 +657,7 @@ impl OpAutoClickerApp {
             auto_zoom: 1.0_f32,
             displayed_auto_zoom: 1.0_f32,
             zoom_transition: None,
+            applied_user_factor: 1.0_f32,
             wide_layout: false,
             zoom_candidate: 1.0_f32,
             stable_frames: 0,
@@ -752,9 +770,10 @@ impl OpAutoClickerApp {
             prefs.window_height as f32 * user_factor,
         );
         let auto = Self::initial_auto_zoom(neutral, user_factor, prefs.auto_scale);
+        let floor = Self::live_window_floor_for(auto);
         [
-            (prefs.window_width as f32 / auto).max(MAIN_WINDOW_SIZE[0]),
-            (prefs.window_height as f32 / auto).max(MAIN_WINDOW_SIZE[1]),
+            (prefs.window_width as f32 / auto).max(floor.x),
+            (prefs.window_height as f32 / auto).max(floor.y),
         ]
     }
 
@@ -804,6 +823,7 @@ impl OpAutoClickerApp {
         );
         self.auto_zoom = Self::initial_auto_zoom(neutral, user_factor, self.prefs.auto_scale);
         self.displayed_auto_zoom = self.auto_zoom;
+        self.applied_user_factor = user_factor;
         self.zoom_candidate = self.auto_zoom;
         self.wide_layout =
             self.prefs.auto_scale && Self::wide_layout_for(neutral, user_factor, false);
@@ -1275,6 +1295,7 @@ impl OpAutoClickerApp {
         self.auto_zoom = 1.0_f32;
         self.displayed_auto_zoom = 1.0_f32;
         self.zoom_transition = None;
+        self.applied_user_factor = 1.0_f32;
         self.zoom_candidate = 1.0_f32;
         self.wide_layout = false;
         self.stable_frames = 0;
@@ -1342,6 +1363,20 @@ impl OpAutoClickerApp {
         }
         let overflow = window_width - 2.0_f32 * MAIN_SIDE_MARGIN - content_cap;
         MAIN_SIDE_MARGIN + overflow.max(0.0_f32) / 2.0_f32
+    }
+
+    /// The classic floor in live points at a given window-driven fit.
+    /// egui-winit will multiply this by the total zoom when it declares
+    /// the OS minimum, so the division is what keeps the *physical*
+    /// floor tied to the user's percentage alone instead of to the
+    /// transient size of the window.
+    fn live_window_floor_for(auto_zoom: f32) -> Vec2 {
+        let (width, height) = hotkey::window_floor_for_auto_zoom(auto_zoom);
+        Vec2::new(width, height)
+    }
+
+    fn live_window_floor(&self) -> Vec2 {
+        Self::live_window_floor_for(self.displayed_auto_zoom)
     }
 
     /// How spare window height is spent. The groups always flow from
@@ -1516,21 +1551,28 @@ impl OpAutoClickerApp {
         if maximized == Some(true) || minimized == Some(true) || fullscreen == Some(true) {
             return;
         }
-        // The OS minimum is enforced in physical pixels, so a live point
-        // size can land a fraction below the floor after rounding; allow
-        // that much slack, and treat anything further below (or not
-        // finite) as a transient that must not be recorded.
-        if !size.x.is_finite()
-            || !size.y.is_finite()
-            || size.x < MAIN_WINDOW_SIZE[0] - 2.0_f32
-            || size.y < MAIN_WINDOW_SIZE[1] - 2.0_f32
+        // Displayed (not adopted) factor: live points are produced
+        // by the zoom actually applied, so this stays exact even
+        // while a zoom transition is easing between factors. The
+        // floor test must happen in these fit-independent points:
+        // at a 2.8x fit a perfectly valid floor window is only
+        // 200x163 live points, and testing the live size against
+        // 560x456 would discard real user-chosen sizes.
+        let (base_width, base_height) =
+            hotkey::fit_independent_window_size((size.x, size.y), self.displayed_auto_zoom);
+        // The OS minimum is enforced in physical pixels, so the
+        // converted size can land a fraction below the floor after
+        // rounding; allow that much slack, and treat anything further
+        // below (or not finite) as a transient that must not be
+        // recorded.
+        if !base_width.is_finite()
+            || !base_height.is_finite()
+            || base_width < MAIN_WINDOW_SIZE[0] - 2.0_f32
+            || base_height < MAIN_WINDOW_SIZE[1] - 2.0_f32
         {
             return;
         }
-        // Displayed (not adopted) factor: live points are produced
-        // by the zoom actually applied, so this stays exact even
-        // while a zoom transition is easing between factors.
-        let base = size * self.displayed_auto_zoom;
+        let base = Vec2::new(base_width, base_height);
         let (width, height) = hotkey::sanitize_window_size(f64::from(base.x), f64::from(base.y));
         if width != self.prefs.window_width || height != self.prefs.window_height {
             self.prefs.window_width = width;
@@ -1539,16 +1581,109 @@ impl OpAutoClickerApp {
         }
     }
 
+    /// Re-derives the window fit after the user's own percentage
+    /// changes. The neutral size (live points x the total zoom still
+    /// applied from the previous percentage) is the physical window
+    /// measure that does not change when the percentage does, so the
+    /// new auto factor can be solved from it immediately. This must
+    /// happen before the generic zoom bookkeeping: with a stale fit,
+    /// choosing 200 % in a large window would briefly ask for
+    /// 200 % x the old fit and the floor-guard would then grow the
+    /// physical window to satisfy that phantom zoom.
+    fn sync_fit_for_user_factor(&mut self, ctx: &egui::Context, user_factor: f32) {
+        if self.prefs.auto_scale {
+            let (size, minimized) = ctx.input(|i| (i.screen_rect.size(), i.viewport().minimized));
+            let applied_zoom = ctx.zoom_factor();
+            if minimized != Some(true)
+                && size.x.is_finite()
+                && size.y.is_finite()
+                && size.x > 0.0_f32
+                && size.y > 0.0_f32
+                && applied_zoom.is_finite()
+                && applied_zoom > 0.0_f32
+            {
+                let neutral = size * applied_zoom;
+                self.wide_layout = Self::wide_layout_for(neutral, user_factor, self.wide_layout);
+                self.auto_zoom = Self::fit_auto_zoom(neutral, user_factor, self.wide_layout);
+                self.last_base_size = neutral;
+            }
+        } else {
+            self.auto_zoom = 1.0_f32;
+            self.wide_layout = false;
+        }
+        self.displayed_auto_zoom = self.auto_zoom;
+        self.zoom_candidate = self.auto_zoom;
+        self.zoom_transition = None;
+        self.stable_frames = 0;
+        self.pending_resize = true;
+        self.window_settle_until = Instant::now() + Duration::from_millis(750);
+        ctx.request_repaint();
+    }
+
+    /// Makes a shrinking window safe on the frame it shrinks.
+    ///
+    /// Growth can wait for the settle/ease path because extra room
+    /// never clips a control. Shrinkage is the opposite: if the old
+    /// fit stayed applied throughout a continuous inward drag, the
+    /// live canvas would fall below the design size (and, with an
+    /// OS minimum declared from that old fit, Windows could stop
+    /// the drag altogether). A lower target therefore snaps the
+    /// displayed fit down immediately. If the window shrinks during
+    /// an upward ease but the new target is still above the
+    /// displayed factor, the ease is simply retargeted so it cannot
+    /// overshoot into a size the window no longer has.
+    fn apply_shrink_fit_immediately(&mut self, ctx: &egui::Context, user_factor: f32) {
+        const FIT_DEADBAND: f32 = 0.011_f32;
+        if !self.prefs.auto_scale || self.restore_window_size {
+            return;
+        }
+        let (size, minimized) = ctx.input(|i| (i.screen_rect.size(), i.viewport().minimized));
+        let applied_zoom = ctx.zoom_factor();
+        if minimized == Some(true)
+            || !size.x.is_finite()
+            || !size.y.is_finite()
+            || size.x <= 0.0_f32
+            || size.y <= 0.0_f32
+            || !applied_zoom.is_finite()
+            || applied_zoom <= 0.0_f32
+        {
+            return;
+        }
+        let neutral = size * applied_zoom;
+        // The active layout's canvas is deliberately kept here;
+        // `adapt_to_window_size` remains the sole owner of layout
+        // hysteresis once the zoom machinery is idle.
+        let target = Self::fit_auto_zoom(neutral, user_factor, self.wide_layout);
+        if target >= self.auto_zoom - FIT_DEADBAND {
+            return;
+        }
+        self.auto_zoom = target;
+        self.zoom_candidate = target;
+        self.last_base_size = neutral;
+        self.stable_frames = 0;
+        if target < self.displayed_auto_zoom {
+            self.displayed_auto_zoom = target;
+            self.zoom_transition = None;
+        } else if self.zoom_transition.is_some() {
+            self.zoom_transition = Some((self.ui_clock_secs, self.displayed_auto_zoom));
+        }
+        self.window_settle_until = Instant::now() + Duration::from_millis(750);
+        ctx.request_repaint();
+    }
+
     /// Window-driven presentation: derives the layout mode and the
     /// target fit factor from the neutral-point window size (live
     /// points times the total applied zoom — invariant under the
     /// very zoom changes it drives, which is what makes feedback
     /// impossible). The layout mode follows immediately (its aspect
-    /// and width bands carry their own hysteresis); a fit factor
+    /// and width bands carry their own hysteresis); a *growing* fit
     /// applies only once the size has held still for a few
     /// consecutive frames, so it lands just after a drag ends
-    /// rather than jumping mid-drag, and never chases OS resize
-    /// transients. A one-percent dead band around the applied
+    /// rather than jumping mid-drag. A *shrinking* fit is adopted
+    /// at once (see `apply_shrink_fit_immediately`): waiting would
+    /// leave the design canvas squeezed below its floor while the
+    /// user is still pulling the window inward. A one-percent dead
+    /// band around the applied
     /// factor keeps physical-pixel rounding from nudging the zoom
     /// back and forth across a quantization boundary. Runs only
     /// when the zoom machinery is idle (see `update`), so a factor
@@ -1587,12 +1722,23 @@ impl OpAutoClickerApp {
             self.zoom_candidate = target;
         }
         self.last_base_size = base;
-        if self.stable_frames >= SETTLE_FRAMES && (target - self.auto_zoom).abs() > FIT_DEADBAND {
+        let shrink_to_fit = target < self.auto_zoom - FIT_DEADBAND;
+        if (self.stable_frames >= SETTLE_FRAMES || shrink_to_fit)
+            && (target - self.auto_zoom).abs() > FIT_DEADBAND
+        {
             self.auto_zoom = target;
-            // Ease the displayed factor to the adopted one (~180 ms,
-            // advanced at the top of `update`) instead of snapping
-            // the whole interface in a single frame.
-            self.zoom_transition = Some((self.ui_clock_secs, self.displayed_auto_zoom));
+            if shrink_to_fit {
+                // Downward fits track the user's drag immediately;
+                // easing down over 180 ms would spend that time with
+                // a canvas smaller than the design floor.
+                self.displayed_auto_zoom = target;
+                self.zoom_transition = None;
+            } else {
+                // Ease the displayed factor to the adopted one (~180 ms,
+                // advanced at the top of `update`) instead of snapping
+                // the whole interface in a single frame.
+                self.zoom_transition = Some((self.ui_clock_secs, self.displayed_auto_zoom));
+            }
             self.stable_frames = 0;
             // The live point size this frame still belongs to the old
             // factor (the new zoom applies next frame), so size
@@ -2500,10 +2646,10 @@ impl OpAutoClickerApp {
                 }
                 ui.label(
                     egui::RichText::new(
-                        "The whole interface scales smoothly to fit the window \
-                         as it grows, and panoramic windows rearrange the \
-                         middle groups three-abreast with one row of buttons. \
-                         The fit multiplies with the percentage above.",
+                        "The whole interface scales to fit the window as it \
+                         grows or shrinks, and panoramic windows rearrange \
+                         the middle groups three-abreast with one row of \
+                         buttons. The fit multiplies with the percentage above.",
                     )
                     .color(pal.text_dim)
                     .small(),
@@ -3366,11 +3512,25 @@ impl eframe::App for OpAutoClickerApp {
         // pixels-per-point (zoom x native scale) when it talks to the
         // OS, so the physical floor rescales with the chosen percentage
         // without any multiplication here (doing it in both places would
-        // double-scale the floor). A pending restore (startup, factory
+        // double-scale the floor). It is *not* the raw 560x456 in live
+        // points once an auto-fit is active: that would multiply the
+        // physical minimum by the transient fit and could leave a
+        // large window unable to shrink until restart. The declared
+        // live floor is therefore divided by the displayed auto-fit
+        // (see `live_window_floor`). A pending restore (startup, factory
         // reset) applies the persisted size converted to live points; a
         // plain scale change only ever grows the window, and only if the
         // new zoom left it below the floor, so a window the user enlarged
         // is never forced back down.
+        let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
+        if (user_factor - self.applied_user_factor).abs() > 0.000_1_f32 {
+            self.applied_user_factor = user_factor;
+            if !self.restore_window_size {
+                self.sync_fit_for_user_factor(ctx, user_factor);
+            }
+        }
+        self.apply_shrink_fit_immediately(ctx, user_factor);
+
         // Advance an in-flight zoom transition (cubic ease-out,
         // 180 ms — the same state-change budget as every other
         // motion here). The target is the adopted factor; landing
@@ -3396,18 +3556,16 @@ impl eframe::App for OpAutoClickerApp {
                 ctx.request_repaint();
             }
         }
-        let desired_zoom =
-            self.prefs.ui_scale_percent as f32 / 100.0_f32 * self.displayed_auto_zoom;
+        let desired_zoom = user_factor * self.displayed_auto_zoom;
         if zoom_in_motion || (ctx.zoom_factor() - desired_zoom).abs() > 0.001_f32 {
             ctx.set_zoom_factor(desired_zoom);
             self.pending_resize = true;
             ctx.request_repaint();
         } else if self.pending_resize || self.restore_window_size {
             self.pending_resize = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(
-                MAIN_WINDOW_SIZE[0],
-                MAIN_WINDOW_SIZE[1],
-            )));
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(
+                self.live_window_floor(),
+            ));
             if self.restore_window_size {
                 self.restore_window_size = false;
                 // Fresh install (no settings file at load) at the
@@ -3447,10 +3605,8 @@ impl eframe::App for OpAutoClickerApp {
                 let live = ctx.input(|i| i.screen_rect.size());
                 if live.x.is_finite() && live.y.is_finite() && live.x > 0.0_f32 && live.y > 0.0_f32
                 {
-                    let grown = Vec2::new(
-                        live.x.max(MAIN_WINDOW_SIZE[0]),
-                        live.y.max(MAIN_WINDOW_SIZE[1]),
-                    );
+                    let floor = self.live_window_floor();
+                    let grown = Vec2::new(live.x.max(floor.x), live.y.max(floor.y));
                     if (grown.x - live.x).abs() > 0.5_f32 || (grown.y - live.y).abs() > 0.5_f32 {
                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(grown));
                     }
