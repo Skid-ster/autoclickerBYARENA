@@ -2893,7 +2893,6 @@ impl OpAutoClickerApp {
         };
         self.update_notice = None;
         std::thread::spawn(move || {
-            let mut source_prepared = false;
             let source_result = match &source_checkout {
                 Some(checkout) => {
                     self_update::fast_forward_source_checkout(checkout, &version, &cancel)
@@ -2909,7 +2908,7 @@ impl OpAutoClickerApp {
                 }
                 Err(reason) => UpdateInstallMessage::Failed(reason),
                 Ok(()) => {
-                    source_prepared = source_checkout.is_some();
+                    let source_prepared = source_checkout.is_some();
                     phase.store(UPDATE_PHASE_DOWNLOADING, Ordering::Relaxed);
                     let failure_context = if source_prepared {
                         format!(
@@ -3574,7 +3573,7 @@ impl OpAutoClickerApp {
 
             ui.add_space(7.0_f32);
             let fine_print = if matches!(
-                install_progress,
+                &install_progress,
                 Some((_version, _done, _total, UPDATE_PHASE_SOURCE))
             ) {
                 "Only a clean main checkout is fast-forwarded. Local tracked \
