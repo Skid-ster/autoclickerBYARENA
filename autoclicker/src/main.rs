@@ -14,6 +14,7 @@ mod config;
 mod hotkey;
 mod humanize;
 mod icon;
+mod schedule;
 mod settings;
 mod telemetry;
 

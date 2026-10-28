@@ -78,8 +78,12 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
   supporting unfocused and minimized targets.
 - Lock-free single-producer/single-consumer telemetry ring, live CPS graph,
   interval histogram, consistency percentage and missed-deadline count in
-  the Advanced window.
-- 44 unit tests over platform-independent modules, plus a Windows CI
+  the Advanced window. The Real-time CPS chart plots one sample per click
+  from the worker's measured click-to-click gap, so a fixed interval draws
+  a flat line; the QPC scheduler keeps an absolute, drift-free cadence with
+  bounded catch-up, so an OS stall is absorbed instead of being repaid as a
+  burst of fast clicks.
+- 58 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
 

@@ -94,6 +94,7 @@ fn telemetry_store_counters_and_drain() {
             interval_ms: 10.0 + (seq % 3) as f64,
             hold_ms: 4.0,
             deadline_error_ms: 0.1,
+            actual_gap_ms: 10.0 + (seq % 3) as f64,
             missed_deadline: seq % 4 == 0,
         });
     }
@@ -121,6 +122,7 @@ fn stats_moments_consistency_and_histogram() {
             interval_ms: if i % 2 == 0 { 90.0 } else { 110.0 },
             hold_ms: 5.0,
             deadline_error_ms: 0.0,
+            actual_gap_ms: if i % 2 == 0 { 90.0 } else { 110.0 },
             missed_deadline: false,
         });
     }
@@ -194,6 +196,7 @@ fn ring_buffer_is_send_sync_and_survives_real_threads() {
                 interval_ms: 10.0 + (seq % 7) as f64,
                 hold_ms: 4.0,
                 deadline_error_ms: 0.2,
+                actual_gap_ms: 10.0 + (seq % 7) as f64,
                 missed_deadline: seq % 50 == 0,
             });
         }
