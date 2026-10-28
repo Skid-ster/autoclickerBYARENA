@@ -5,7 +5,113 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Natural window resizing round (current)
+## Layout composition correction round (current)
+
+The natural-resizing round below shipped with a defect its own probes did
+not catch, and this round fixes it. Stating the failure plainly: the
+previous round verified growth by checking that *painted output* filled
+the window, but it never asserted the painted rectangles of the group-box
+frames themselves. An egui `Frame` paints exactly the rect its contents
+claim (`crates/egui/src/containers/frame.rs`, `Prepared::paint` uses
+`content_ui.min_rect()`), so each group box hugged its widest inner row:
+at a real 946x834 Windows window the Click interval border stopped
+roughly two thirds across, Cursor position stopped short, the Click
+options / Click repeat pair was uneven, and all extra height poured into
+three ever-deepening gaps. The full-window panel fill made the old
+"painted extent" checks pass anyway. Every claim from the resizing round
+other than its growth composition (native resizable frame, 560x456
+floor, persisted normal size, zoom handling) still stands and is
+unchanged; the sentence "(frames already reflow to available width)" in
+that round's notes was wrong and is superseded by this section.
+
+What the composition does now (all in `app.rs`; engine, win32, timing,
+config, humanize, telemetry, schedule, macro and settings files are
+untouched):
+
+- **Group boxes claim their width.** `group_box` calls
+  `ui.set_min_width(ui.available_width())` before adding contents, so the
+  painted border spans the full content column at every size and in every
+  theme. This also fixes the classic-size alignment for the first time:
+  at 560x456 all four borders now share one left and one right edge.
+- **The side-by-side pair is truly paired.** `group_box` reports its
+  contents' natural height; the taller of Click options / Click repeat is
+  fed back (rounded up to whole points) as both boxes' minimum, applied
+  by pinning the frame's bottom at an absolute y. Two egui 0.27.2 traps
+  were found and verified against the sources while doing this: (a)
+  `Frame` size comes from the content min rect, never from the frame
+  itself; (b) `Ui::set_min_height` spans the requested height *forward
+  from the live cursor* (`placer.rs` `set_min_height` ->
+  `next_widget_space_ignore_wrap_justify`), so in absolute coordinates it
+  overshoots by the widget's position in the window — measured directly
+  (a 60pt request low in the window produced 139/122pt frames in a
+  scratch binary) and replaced by an exact `allocate_rect` bottom pin
+  (frames then measured exactly 88/88/93/59 across positions). Width
+  claims via `set_min_width` are unaffected because the cursor sits at
+  the content's left edge in the top-down column.
+- **Combo boxes fill their grid cells** (`.width(ui.available_width())`),
+  so Click options has no right-side void when the window is wide.
+- **Interval units spread without overflow.** The four field+label groups
+  are measured each frame and only their true slack is distributed
+  between them; a group is never forced wider than it is, so no font or
+  size can overflow a cell and stretch the frame (an equal-columns
+  variant was measured doing exactly that to the last "milliseconds"
+  group at the floor size and was rejected).
+- **Bounded gaps, then vertical centering.** Each of the three gaps
+  absorbs at most 14 extra points; beyond that, half the remaining
+  height pads above the column (bottom half is leftover panel space,
+  which needs no insertion), so tall windows compose one centered dialog
+  cluster instead of separated islands. Behavior at and near the floor
+  (up to ~498pt tall) is identical to before.
+- **Group titles paint their accent token.** `group_box` laid the title
+  galley out with `pal.group_title` but painted the text with `pal.text`;
+  the paint now uses `pal.group_title`, realizing the per-theme accent
+  captions (identical in Classic, so native fidelity is kept). Contrast
+  re-computed by the WCAG relative-luminance formula against each
+  theme's face: Classic 14.95:1, Dark 6.41:1, OLED (on black) 10.47:1,
+  Matrix 11.68:1 — all above the 4.5:1 floor.
+
+Verification (offline harness rebuilt in the sandbox: vendored pristine
+egui 0.27.2 + path-dependency chain, the app's real modules symlinked in,
+windows-sys/eframe shims; nothing from the harness ships):
+
+- **Bug reproduced by measurement before fixing.** With the merged code,
+  painted group frames measured at 760x668 points: Click interval
+  x12..470 (278 short of the 748 right edge), Click options 211 wide vs
+  Click repeat 364 (heights 88 vs 80), Cursor position x12..402,
+  inter-group gaps 83.6pt, title painted (235,235,235) instead of the
+  (96,165,250) accent — matching the user's Windows screenshot exactly.
+- **Layout probe now asserts the painted frames themselves** (the blind
+  spot is closed): all four borders' left/right alignment, width =
+  min(window-24, 736), pair width/height/top equality, gutter, all three
+  gaps bounded and matched, nothing painted outside the surface, four
+  interval fields with the last label reaching the frame's right area,
+  combo right reach, exact per-theme title color, heartbeat <= 100ms,
+  vertical centering balance on tall windows. Green for all four themes
+  across the floor, the user's 760x668 size, 1200x900, wide-short,
+  narrow-tall, UI scale 125, a frame-by-frame drag sweep up to
+  1200x896 and back, and a sub-floor 520x430 robustness case. Sample at
+  the user's size (Dark): borders x12..748, pair 364.5x88 both, gaps
+  27/27/26; at the floor: x12..548, pair 264.5x88, gaps 13/13/12.
+- **Interaction probe** (start/stop cycle through painted buttons,
+  milliseconds DragValue dragged at its new spread position 100 -> 108,
+  Settings opens) and **viewport probe** (persisted InnerSize restore,
+  MinInnerSize redeclaration, live resize persisted on exit, maximized
+  freeze) pass at the floor and at 760x668.
+- `cargo fmt --check` clean; lib clippy `-D warnings` clean in the
+  harness; all 68 pre-existing tests pass unmodified (both via `cargo
+  test` in the harness and as standalone `rustc --test` builds per
+  suite); marker sweeps (`thread::sleep`, `mouse_event`, TODO-class,
+  new `unwrap`/`expect`) clean; `git diff` touches only `app.rs` plus
+  docs.
+
+Honest limits: the harness runs egui's layout and painting but not
+eframe/winit or the DWM. Exact pixel rounding of centered text, the feel
+of dragging a live edge, snap behavior, and font-metric differences
+between egui's bundled font and Windows' Segoe UI (which the
+measure-then-distribute code adapts to at runtime, but which can shift
+individual labels by a point or two) remain for the manual Windows run.
+
+## Natural window resizing round (previous; growth-composition notes superseded by the correction round above)
 
 The main window stopped being fixed-size and now resizes the way every
 normal Windows app does, with the classic 560x456 dialog as the floor.

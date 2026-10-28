@@ -188,6 +188,13 @@ pub const MAIN_WINDOW_SIZE: [f32; 2] = [
 /// maximized window never produces comically wide buttons.
 const MAIN_CONTENT_MAX_WIDTH: f32 = 736.0_f32;
 
+/// Most extra height each of the three breathing gaps absorbs before the
+/// remaining height centers the whole content column instead. Extra
+/// height beyond `3 * MAIN_GAP_EXTRA_MAX` is split above and below the
+/// column, so a tall window composes a centered dialog instead of three
+/// ever-deepening voids between control clusters that belong together.
+const MAIN_GAP_EXTRA_MAX: f32 = 14.0_f32;
+
 /// Smallest side margin around the content column, kept at the floor
 /// size so the classic layout is pixel-identical there.
 const MAIN_SIDE_MARGIN: f32 = 12.0_f32;
@@ -275,6 +282,14 @@ pub struct OpAutoClickerApp {
     // always resolves: observation resumes whether or not the OS granted
     // the exact requested size.
     window_settle_until: Instant,
+    // Taller of the two paired group boxes' content heights, rewritten
+    // every frame so both boxes meet at one bottom edge. Seeded with
+    // the classic pair height so the first frame already aligns.
+    pair_group_height: f32,
+    // Natural widths of the four interval field+label groups, rewritten
+    // every frame; the row's spare width is split between the groups
+    // so the units spread tastefully without ever overflowing a cell.
+    interval_group_widths: [f32; 4],
 
     // Persistence. The "last saved" fingerprints make the dirty check exact
     // so the disk is never written while nothing changed.
@@ -336,6 +351,8 @@ impl OpAutoClickerApp {
             pending_resize: false,
             restore_window_size: true,
             window_settle_until: Instant::now(),
+            pair_group_height: 60.0_f32,
+            interval_group_widths: [0.0_f32; 4],
             settings_path: Self::settings_file_path(),
             settings_dirty: false,
             last_save: Instant::now(),
@@ -938,15 +955,28 @@ impl OpAutoClickerApp {
     }
 
     /// Extra breathing room added to each of the three gaps between the
-    /// group boxes and the status strip. Extra height is spacing only:
-    /// no control ever grows taller, and because the gaps sit above the
-    /// status/buttons/footer block, that block stays anchored to the
-    /// bottom of the window at every height. Zero at the floor height.
+    /// group boxes and the status strip. Zero at the floor height; grows
+    /// to `MAIN_GAP_EXTRA_MAX` per gap and never beyond — past that the
+    /// composition switches to vertical centering (see
+    /// `vertical_center_pad`) so related controls never drift apart.
     fn distributed_gap_extra(window_height: f32) -> f32 {
         if !window_height.is_finite() {
             return 0.0_f32;
         }
-        (window_height - MAIN_WINDOW_SIZE[1]).max(0.0_f32) / 3.0_f32
+        ((window_height - MAIN_WINDOW_SIZE[1]).max(0.0_f32) / 3.0_f32).min(MAIN_GAP_EXTRA_MAX)
+    }
+
+    /// Space placed above (and implicitly below) the content column once
+    /// the three gaps have absorbed their bounded share. The bottom half
+    /// of the residual is simply the leftover panel space below the
+    /// column; this returns only the top pad. Zero below the height
+    /// where the gaps reach their cap.
+    fn vertical_center_pad(window_height: f32) -> f32 {
+        if !window_height.is_finite() {
+            return 0.0_f32;
+        }
+        let extra = (window_height - MAIN_WINDOW_SIZE[1]).max(0.0_f32);
+        (extra - 3.0_f32 * MAIN_GAP_EXTRA_MAX).max(0.0_f32) / 2.0_f32
     }
 
     /// Records the live inner size as the size to restore next launch.
@@ -997,13 +1027,22 @@ impl OpAutoClickerApp {
     // --------------------------------------------------------- classic widgets
 
     /// Win32 group box: a bordered frame whose title text breaks the top
-    /// border, exactly like the native BS_GROUPBOX control.
+    /// border, exactly like the native BS_GROUPBOX control. The box
+    /// always spans the full width handed to it: `Frame` paints exactly
+    /// the rect its contents claim, so the contents claim the whole
+    /// available width first — without this the border would hug the
+    /// widest inner row and stop mid-window. `min_height` lets the
+    /// paired Click options / Click repeat boxes stretch to the same
+    /// bottom edge; the call returns the contents' natural height
+    /// (without `min_height` applied) so the pair can converge on the
+    /// taller of the two.
     fn group_box<R>(
         ui: &mut egui::Ui,
         pal: &Palette,
         title: &str,
+        min_height: f32,
         add: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> R {
+    ) -> (R, f32) {
         let response = Frame::none()
             .fill(pal.face)
             .stroke(Stroke::new(1.0_f32, pal.group_border))
@@ -1014,7 +1053,33 @@ impl OpAutoClickerApp {
                 top: 17.0_f32,
                 bottom: 11.0_f32,
             })
-            .show(ui, add);
+            .show(ui, |ui| {
+                let claim_width = ui.available_width();
+                ui.set_min_width(claim_width);
+                let value = add(ui);
+                // Natural content height, measured before the minimum
+                // claim below grows the box: the frame paints through
+                // the (post-claim) min rect, while the caller learns
+                // how tall the contents actually are on their own.
+                let content = ui.min_rect();
+                let natural_height = content.height().max(0.0_f32);
+                if min_height > natural_height {
+                    // Grow the box by pinning its bottom at an absolute
+                    // y. `set_min_height` cannot do this: it spans the
+                    // requested height forward from the live cursor, so
+                    // the total overshoots by the box's scroll position
+                    // in the window (verified against egui 0.27.2's
+                    // placer: the span starts at `cursor.min`, which
+                    // sits below the content in absolute coordinates).
+                    let target_bottom = content.min.y + min_height.max(natural_height).ceil();
+                    let pin = egui::Rect::from_min_max(
+                        egui::pos2(content.min.x, target_bottom),
+                        egui::pos2(content.min.x, target_bottom),
+                    );
+                    ui.allocate_rect(pin, Sense::hover());
+                }
+                (value, natural_height)
+            });
         let rect = response.response.rect;
         // The title rides the top border, half of it above rect.top().
         // `painter_at` clips to the given rect, so painting through a clip
@@ -1031,7 +1096,10 @@ impl OpAutoClickerApp {
             galley.size() + Vec2::new(8.0_f32, 2.0_f32),
         );
         painter.rect_filled(backdrop, 0.0_f32, pal.face);
-        painter.text(text_pos, Align2::LEFT_TOP, title, font, pal.text);
+        // Paint the token the galley was laid out with: the palette's
+        // accent-toned group title (identical to `text` in the Classic
+        // theme, so the native look stays faithful there).
+        painter.text(text_pos, Align2::LEFT_TOP, title, font, pal.group_title);
         response.inner
     }
 
@@ -1120,20 +1188,44 @@ impl OpAutoClickerApp {
 
     fn draw_interval_group(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
-        Self::group_box(ui, pal, "Click interval", |ui| {
+        let _ = Self::group_box(ui, pal, "Click interval", 0.0_f32, |ui| {
+            // The row's spare width is split between the four
+            // field+label groups, so the units keep their reading
+            // rhythm at every window size and widening the window
+            // opens the gaps between groups instead of stranding dead
+            // space at the right end. The split is computed from last
+            // frame's measured group widths — a group is never forced
+            // wider than it naturally is, so no font or window size
+            // can make a label overflow and stretch the frame.
+            let natural_total: f32 = self.interval_group_widths.iter().sum();
+            let mut measured = [0.0_f32; 4];
             ui.horizontal(|ui| {
+                let available = ui.available_width();
+                let spacing = ui.spacing().item_spacing.x;
+                // The final group's trailing item spacing still counts
+                // toward the claimed row width, so reserve it up front.
+                let share = if natural_total > 1.0_f32 {
+                    ((available - spacing - natural_total) / 3.0_f32).max(spacing + 2.0_f32)
+                } else {
+                    spacing + 2.0_f32
+                };
                 let fields: [(&str, &mut u64, u64); 4] = [
                     ("hours", &mut self.hours, 99),
                     ("mins", &mut self.minutes, 59),
                     ("secs", &mut self.seconds, 59),
                     ("milliseconds", &mut self.millis, 999),
                 ];
-                for (label, value, max) in fields {
+                for (index, (label, value, max)) in fields.into_iter().enumerate() {
+                    let before = ui.cursor().left();
                     Self::numeric_field(ui, value, max, 56.0_f32);
                     ui.label(egui::RichText::new(label).color(pal.text));
-                    ui.add_space(2.0_f32);
+                    measured[index] = (ui.cursor().left() - before - spacing).max(0.0_f32);
+                    if index < 3 {
+                        ui.add_space(share - spacing);
+                    }
                 }
             });
+            self.interval_group_widths = measured;
             ui.add_space(7.0_f32);
             ui.horizontal(|ui| {
                 let mut enabled = self.prefs.random_offset_enabled;
@@ -1161,69 +1253,91 @@ impl OpAutoClickerApp {
 
     fn draw_options_and_repeat(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
+        let pair_height = self.pair_group_height.max(0.0_f32);
+        let mut taller_natural = 0.0_f32;
         ui.columns(2, |columns| {
-            Self::group_box(&mut columns[0], pal, "Click options", |ui| {
-                Grid::new("click_options_grid")
-                    .num_columns(2)
-                    .spacing(Vec2::new(8.0_f32, 9.0_f32))
-                    .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Mouse button:").color(pal.text));
-                        egui::ComboBox::from_id_source("mouse_button_combo")
-                            .selected_text(self.config.mouse_button.label())
-                            .show_ui(ui, |ui| {
-                                for button in MouseButton::all() {
-                                    ui.selectable_value(
-                                        &mut self.config.mouse_button,
-                                        button,
-                                        button.label(),
-                                    );
-                                }
-                            });
-                        ui.end_row();
+            // The pair's shared height is last frame's taller content
+            // height (measured after the columns below are laid out):
+            // both boxes meet at one bottom edge and the column stays
+            // exactly as tall as its tallest member needs. The classic-
+            // height seed keeps the first frame already aligned, and
+            // the constant repaint heartbeat lands any later correction
+            // within tens of milliseconds, so no visible jump occurs.
+            let (_, left_natural) =
+                Self::group_box(&mut columns[0], pal, "Click options", pair_height, |ui| {
+                    Grid::new("click_options_grid")
+                        .num_columns(2)
+                        .spacing(Vec2::new(8.0_f32, 9.0_f32))
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Mouse button:").color(pal.text));
+                            egui::ComboBox::from_id_source("mouse_button_combo")
+                                .width(ui.available_width())
+                                .selected_text(self.config.mouse_button.label())
+                                .show_ui(ui, |ui| {
+                                    for button in MouseButton::all() {
+                                        ui.selectable_value(
+                                            &mut self.config.mouse_button,
+                                            button,
+                                            button.label(),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
 
-                        ui.label(egui::RichText::new("Click type:").color(pal.text));
-                        egui::ComboBox::from_id_source("click_type_combo")
-                            .selected_text(self.config.click_type.label())
-                            .show_ui(ui, |ui| {
-                                for kind in ClickType::all() {
-                                    ui.selectable_value(
-                                        &mut self.config.click_type,
-                                        kind,
-                                        kind.label(),
-                                    );
-                                }
-                            });
-                        ui.end_row();
-                    });
-            });
-
-            Self::group_box(&mut columns[1], pal, "Click repeat", |ui| {
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.repeat_limited, true, "Repeat");
-                    ui.add_enabled_ui(self.repeat_limited, |ui| {
-                        if self.repeat_limited && self.config.max_clicks == 0 {
-                            self.config.max_clicks = 1;
-                        }
-                        ui.add_sized(
-                            [76.0_f32, 22.0_f32],
-                            egui::DragValue::new(&mut self.config.max_clicks)
-                                .clamp_range(1..=1_000_000_000),
-                        );
-                    });
-                    ui.label(egui::RichText::new("times").color(pal.text));
+                            ui.label(egui::RichText::new("Click type:").color(pal.text));
+                            egui::ComboBox::from_id_source("click_type_combo")
+                                .width(ui.available_width())
+                                .selected_text(self.config.click_type.label())
+                                .show_ui(ui, |ui| {
+                                    for kind in ClickType::all() {
+                                        ui.selectable_value(
+                                            &mut self.config.click_type,
+                                            kind,
+                                            kind.label(),
+                                        );
+                                    }
+                                });
+                            ui.end_row();
+                        });
                 });
-                ui.add_space(4.0_f32);
-                ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
-                if !self.repeat_limited {
-                    self.config.max_clicks = 0;
-                }
-            });
+
+            let (_, right_natural) =
+                Self::group_box(&mut columns[1], pal, "Click repeat", pair_height, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut self.repeat_limited, true, "Repeat");
+                        ui.add_enabled_ui(self.repeat_limited, |ui| {
+                            if self.repeat_limited && self.config.max_clicks == 0 {
+                                self.config.max_clicks = 1;
+                            }
+                            ui.add_sized(
+                                [76.0_f32, 22.0_f32],
+                                egui::DragValue::new(&mut self.config.max_clicks)
+                                    .clamp_range(1..=1_000_000_000),
+                            );
+                        });
+                        ui.label(egui::RichText::new("times").color(pal.text));
+                    });
+                    ui.add_space(4.0_f32);
+                    ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
+                    if !self.repeat_limited {
+                        self.config.max_clicks = 0;
+                    }
+                });
+            taller_natural = left_natural.max(right_natural);
         });
+        if taller_natural > 0.0_f32 && taller_natural.is_finite() {
+            // Stored rounded up to a whole point: the painted frame of
+            // the taller box rounds outward to whole pixels, so feeding
+            // back the raw fractional height would leave the stretched
+            // box a pixel short of its sibling. A whole-point target
+            // can only ever meet the sibling exactly.
+            self.pair_group_height = taller_natural.ceil();
+        }
     }
 
     fn draw_position_group(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
-        Self::group_box(ui, pal, "Cursor position", |ui| {
+        let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, |ui| {
             ui.horizontal(|ui| {
                 ui.radio_value(
                     &mut self.config.coordinate_mode,
@@ -1745,12 +1859,14 @@ impl eframe::App for OpAutoClickerApp {
         // Single non-scrolling screen: no ScrollArea, everything fits at
         // the OS-enforced floor and still fits above it. Growing the
         // window widens the group boxes and the button grid (all field
-        // widths and control heights stay fixed) up to the content cap,
-        // centers the column beyond it, and spends extra height as
-        // breathing room between the groups. At the floor size every
-        // metric below reduces to the original classic layout. The top
-        // margin leaves room for the first group title, which rides half
-        // above its frame's top border.
+        // widths and control heights stay fixed) up to the content cap
+        // and centers the column beyond it. Extra height first loosens
+        // the three gaps between control clusters by a bounded amount,
+        // then centers the whole column so related controls stay
+        // visually grouped instead of drifting into separate islands.
+        // At the floor size every metric below reduces to the original
+        // classic layout. The top margin leaves room for the first
+        // group title, which rides half above its frame's top border.
         let window_size = ctx.screen_rect().size();
         let side_margin = Self::centered_side_margin(window_size.x);
         let gap_extra = Self::distributed_gap_extra(window_size.y);
@@ -1763,6 +1879,7 @@ impl eframe::App for OpAutoClickerApp {
             }))
             .show(ctx, |ui| {
                 ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
+                    ui.add_space(Self::vertical_center_pad(window_size.y));
                     self.draw_interval_group(ui);
                     ui.add_space(7.0_f32 + gap_extra);
                     self.draw_options_and_repeat(ui);

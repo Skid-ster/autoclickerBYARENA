@@ -89,12 +89,14 @@ maximize from the title bar, and use Win+arrow keys and Snap Layouts.
 The classic 560x456 logical-point size is declared to the OS as the
 minimum, so neither a drag nor a snap can take the window below the size
 where every control fits. Growing the window is designed, not stretched:
-group boxes and the 2x2 button grid share the extra width up to a
-736-point content cap (beyond that the content column centers instead of
-producing over-wide buttons), extra height becomes breathing room
-distributed between the groups, and field widths, paddings, fonts and
-control heights never change — so the status strip, buttons and footer
-stay anchored to the bottom. The size you leave the window at is saved
+group boxes always claim the full content width (their borders stay
+flush at every size), the side-by-side Click options / Click repeat pair
+stays equal in width and height, and the 2x2 button grid shares the
+extra width up to a 736-point content cap (beyond that the content
+column centers instead of producing over-wide buttons). Extra height
+first loosens the three gaps between groups by a bounded amount and then
+centers the whole column, so related controls never drift apart; field
+widths, paddings, fonts and control heights never change. The size you leave the window at is saved
 to the settings file and restored on the next launch (maximized state
 is never saved as a raw size: restoring comes back at your last normal
 size). The **Settings…** button in the bottom-right corner opens a
