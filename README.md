@@ -1,14 +1,37 @@
-# OP Auto Clicker
+# MacroClicker
 
-A Windows x64 auto-clicker written in stable Rust with an egui interface that
-reproduces the authentic classic OP Auto Clicker 4.x Win32 dialog — a fixed,
-non-resizable light-gray window (with six persisted themes — including a
-MogClicker meme theme — and a 75–200 % window scale) with
-group boxes, sunken numeric fields and classic push buttons, nothing
+**MacroClicker** is a Windows x64 auto-clicker written in stable Rust with an
+egui interface that reproduces the authentic classic OP Auto Clicker 4.x
+Win32 dialog — a fixed, non-resizable light-gray window (with six persisted
+themes — including a MogClicker meme theme — and a 75–200 % window scale)
+with group boxes, sunken numeric fields and classic push buttons, nothing
 scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
-row, mouse button and click-type pickers, repeat rules and cursor position
-with on-screen point picking. A dedicated worker
-thread drives a QPC spin schedule while the UI stays fully responsive.
+row, mouse button and click-type pickers, repeat rules, cursor position
+with on-screen point picking, and the 4.1 bottom-row **Record & Playback** —
+here a real click-sequence recorder that replays through the precision
+engine. A dedicated worker thread drives a QPC spin schedule while the UI
+stays fully responsive.
+
+## MacroClicker vs OP Auto Clicker 4.1
+
+Everything 4.1 does, plus the parts it cannot:
+
+| Capability | OP Auto Clicker 4.1 | MacroClicker |
+| --- | --- | --- |
+| Interval fields (h/m/s/ms) + Random offset ± ms | Yes | Yes |
+| Left/right/middle, single/double/triple | Yes | Yes |
+| Repeat N times / until stopped | Yes | Yes |
+| Current location / Pick location X,Y | Yes | Yes |
+| Remappable background hotkey (default F6) | Yes | Yes |
+| Record & Playback | Yes | Yes — exact positions, buttons **and gaps**, loop counts, F8 panic mid-playback |
+| Sub-millisecond intervals | No (1 ms floor) | Yes |
+| Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
+| Gaussian humanization (expert) | No | Yes |
+| Background clicking into unfocused/minimized windows | No | Yes |
+| Dedicated panic key (F8) always reserved | No | Yes |
+| Live telemetry: per-click CPS chart, histogram, missed-deadline stats | No | Yes |
+| Six themes + 75–200 % window scaling | No | Yes |
+| Open source with Windows CI and 67 automated tests | No | Yes |
 
 ## Quick start
 
@@ -23,7 +46,7 @@ cargo test --release
 cargo run --release
 ```
 
-The executable is `autoclicker/target/release/op_auto_clicker.exe`.
+The executable is `autoclicker/target/release/macro_clicker.exe`.
 
 ## Features
 
@@ -32,12 +55,22 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
   fields, gray 3D buttons) with every control visible and no scrolling:
   Click interval with the 4.1 Random offset row, side-by-side Click options
   and Click repeat, Cursor position with a real Pick location button
-  (click the button, then click anywhere on screen; Esc cancels), and a
-  2x2 Start/Stop/Hotkey setting/Advanced button grid. Start refuses invalid
-  configurations and Stop stays greyed until a session is running. The
-  560x448 viewport hugs the content; the group-box titles sit on the face
-  color and break the top border like the native control, and every numeric
-  field and dropdown keeps readable contrast in all states.
+  (click the button, then click anywhere on screen; Esc cancels), and the
+  4.1 button rows — Start/Stop, then Hotkey setting/Record & Playback —
+  followed by Settings…/Advanced…. Start refuses invalid configurations
+  and Stop stays greyed until a session is running. The 560x480 viewport
+  hugs the content; the group-box titles sit on the face color and break
+  the top border like the native control, and every numeric field and
+  dropdown keeps readable contrast in all states.
+- **Record & Playback that actually replays** — press Record and use the
+  mouse anywhere on screen: every left/right/middle click is captured with
+  its exact position and the measured gap since the previous click (clicks
+  on MacroClicker's own window are ignored, so stopping the recording never
+  pollutes the macro; the hotkey and F8 also stop it). Playback replays the
+  sequence through the same QPC-scheduled worker as ordinary sessions —
+  exact buttons, positions and delays, drift-free, loop N times or until
+  stopped, F8 panic-stops instantly and the telemetry dashboard watches
+  every replayed click. Up to 2048 steps per macro.
 - **Six themes + window scaling** — a **Settings…** button in the
   bottom-right corner opens a Settings window with a theme picker (Classic
   light, Dark, Midnight OLED, Terminal green, Vaporwave, and the
@@ -83,7 +116,7 @@ The executable is `autoclicker/target/release/op_auto_clicker.exe`.
   a flat line; the QPC scheduler keeps an absolute, drift-free cadence with
   bounded catch-up, so an OS stall is absorbed instead of being repaid as a
   burst of fast clicks.
-- 58 unit tests over platform-independent modules, plus a Windows CI
+- 67 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
 

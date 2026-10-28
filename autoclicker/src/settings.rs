@@ -95,7 +95,7 @@ fn mouse_button_text(button: MouseButton) -> &'static str {
 /// Serializes the full runtime configuration and hotkey preferences.
 pub fn serialize_settings(config: &EngineConfig, prefs: &AppPrefs) -> String {
     let lines = vec![
-        format!("# OP Auto Clicker settings (version {SETTINGS_VERSION})"),
+        format!("# MacroClicker settings (version {SETTINGS_VERSION})"),
         "# Hand-editable: unknown keys and invalid values are ignored.".to_string(),
         format!("version={SETTINGS_VERSION}"),
         String::new(),

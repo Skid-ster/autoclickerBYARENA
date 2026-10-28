@@ -1,4 +1,4 @@
-//! OP Auto Clicker binary entry point.
+//! MacroClicker binary entry point.
 //!
 //! The platform-independent modules (`config`, `hotkey`, `humanize`,
 //! `settings`, `telemetry`) compile on every platform so their integration
@@ -14,6 +14,7 @@ mod config;
 mod hotkey;
 mod humanize;
 mod icon;
+mod macro_rec;
 mod schedule;
 mod settings;
 mod telemetry;
@@ -47,11 +48,11 @@ fn main() -> eframe::Result<()> {
             .with_inner_size(app::MAIN_WINDOW_SIZE)
             .with_resizable(false)
             .with_icon(icon)
-            .with_title("OP Auto Clicker"),
+            .with_title("MacroClicker"),
         ..Default::default()
     };
     eframe::run_native(
-        "OP Auto Clicker",
+        "MacroClicker",
         options,
         Box::new(|_creation_context| Box::new(app::OpAutoClickerApp::new())),
     )
@@ -59,7 +60,7 @@ fn main() -> eframe::Result<()> {
 
 #[cfg(not(windows))]
 fn main() {
-    println!("OP Auto Clicker is a Windows-only GUI application.");
+    println!("MacroClicker is a Windows-only GUI application.");
     println!("Build and run it on Windows 10 21H2+ or Windows 11 x64:");
     println!("    cargo run --release");
     println!("The platform-independent modules stay verifiable here via: cargo test");

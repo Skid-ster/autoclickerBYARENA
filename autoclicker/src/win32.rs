@@ -14,15 +14,15 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentThread, ResetEvent, SetEvent, SetThreadPriority, WaitForSingleObject,
-    THREAD_PRIORITY_TIME_CRITICAL,
+    CreateEventW, GetCurrentProcessId, GetCurrentThread, ResetEvent, SetEvent, SetThreadPriority,
+    WaitForSingleObject, THREAD_PRIORITY_TIME_CRITICAL,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, MOUSEINPUT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClientRect, GetCursorPos, GetSystemMetrics, GetWindowTextW,
-    GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
+    EnumWindows, GetClientRect, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
+    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
     SendMessageTimeoutW, WNDENUMPROC,
 };
 
@@ -55,9 +55,11 @@ pub const SM_YVIRTUALSCREEN: i32 = 77;
 pub const SM_CXVIRTUALSCREEN: i32 = 78;
 pub const SM_CYVIRTUALSCREEN: i32 = 79;
 
-/// Virtual-key code for the left mouse button, used by the screen-point
-/// capture flow behind the "Pick location" button.
+/// Virtual-key codes for the physical mouse buttons, used by the
+/// screen-point capture flow ("Pick location") and the macro recorder.
 pub const VK_LBUTTON: i32 = 0x01;
+pub const VK_RBUTTON: i32 = 0x02;
+pub const VK_MBUTTON: i32 = 0x04;
 
 #[derive(Debug, Clone)]
 pub struct WindowInfo {
@@ -161,6 +163,23 @@ pub fn is_vk_down(vk: i32) -> bool {
 
 pub fn is_f8_down() -> bool {
     is_vk_down(PANIC_VK)
+}
+
+/// True when the foreground window belongs to this process. The macro
+/// recorder uses it so clicks on MacroClicker's own windows (for example
+/// the "Stop recording" button) are never captured into the macro.
+pub fn foreground_is_own_process() -> bool {
+    // SAFETY: both calls only read global window state; the PID out
+    // pointer is a valid local for the duration of the call.
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if foreground == 0 {
+            return false;
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(foreground, &mut pid);
+        pid == GetCurrentProcessId()
+    }
 }
 
 /// Returns the current physical cursor position in virtual-screen pixels.

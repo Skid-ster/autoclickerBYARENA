@@ -1,8 +1,8 @@
 [package]
-name = "op_auto_clicker"
+name = "macro_clicker"
 version = "1.0.0"
 edition = "2021"
-description = "Modern Rust/egui Windows auto-clicker with global and background click modes"
+description = "MacroClicker — OP Auto Clicker 4.1-style Rust/egui Windows auto-clicker with record & playback, global and background click modes"
 
 [dependencies]
 eframe = "=0.27.2"
