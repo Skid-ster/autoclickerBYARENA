@@ -40,7 +40,7 @@ cargo run --release
 cargo test --release
 ```
 
-Ten integration test binaries run platform-independent logic (102 tests):
+Ten integration test binaries run platform-independent logic (103 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -109,9 +109,13 @@ tick, an accent-filled **Start** button (the one primary action, like
 **Install** there), flat secondary buttons, and soft shadows — in a
 non-scrolling window that resizes like any normal Windows app: drag any edge to push or pull it, grab any corner, double-click or
 maximize from the title bar, and use Win+arrow keys and Snap Layouts.
-The classic 560x456 logical-point size is declared to the OS as the
-minimum, so neither a drag nor a snap can take the window below the size
-where every control fits. Growing the window is designed, not stretched:
+The classic 560x456 size is the fit-independent minimum. The app
+declares it to the OS divided by the currently displayed window fit,
+because egui-winit multiplies the declared live-point minimum by the
+total zoom; the resulting physical floor therefore follows your own
+Window scale percentage but never the transient fit, so neither a drag
+nor a snap can take the window below the size where every control fits
+and a large window can always be pulled back down. Growing the window is designed, not stretched:
 group boxes always claim the full content width (their borders stay
 flush at every size), the side-by-side Click options / Click repeat pair
 stays equal in width and height, and the button grid shares the extra
@@ -134,12 +138,13 @@ the wide layout): the smaller of the width and height ratios is
 the fit factor, so the dialog scales proportionally, the limiting
 axis fills exactly, and nothing is stretched or clipped. The
 result (divided by your own Window scale percentage and capped so
-the total never exceeds 280 %) is rounded down to a whole percent
-and applied only after the size has held still for a few frames —
-never mid-drag — with a small dead band so pixel rounding cannot
-nudge it back and forth. When a new factor is adopted the applied
-zoom **eases** to it over ~180 ms (cubic ease-out) instead of
-snapping in one frame; the easing is presentation-only — the fit's
+the total never exceeds 280 %) is rounded down to a whole percent.
+A growing fit is adopted after the size has held still for a few
+frames and the applied zoom **eases** to it over ~180 ms (cubic
+ease-out); a shrinking fit is adopted on the frame the window gets
+smaller, so an inward drag never has to fight a stale scale or wait
+for a restart. A small dead band keeps pixel rounding from nudging
+the fit back and forth. The easing is presentation-only — the fit's
 neutral-point measure uses the *applied* zoom, so it stays exact at
 every intermediate value, and the landing always sets the exact fit
 factor. The wide three-across layout engages in
@@ -175,13 +180,16 @@ accent color clears a WCAG 4.5:1 contrast ratio against its background:
   the contemporary dark look; shares the dark themes' layered depth
   (elevated cards, sunken fields, status well).
 
-**Window scale** — 75 / 100 / 125 / 150 / 175 / 200 %. The UI zoom factor
-follows the percentage; one frame later, once egui reports the new factor
-as applied, the app re-declares the 560x456-point minimum (egui-winit
-converts points to physical pixels with the new zoom, so the physical
-floor grows with the percentage) and enlarges the window only if the new
-zoom left it below that floor. A window you dragged larger is never
-forced back down by a scale change, and no control is ever cut off.
+**Window scale** — 75 / 100 / 125 / 150 / 175 / 200 %. Changing the
+percentage first re-derives the window fit from the unchanged neutral
+window size, so the new percentage never multiplies a stale fit. One
+frame later, once egui reports the new total zoom as applied, the app
+re-declares the fit-compensated minimum (560x456 divided by the
+displayed auto-fit; egui-winit converts points to physical pixels with
+the total zoom, leaving a physical floor of 560x456 at the chosen
+percentage) and enlarges the window only if the new zoom left it below
+that floor. A window you dragged larger is never forced back down by
+a scale change, and no control is ever cut off.
 
 Legacy settings files from the dark-mode-only build are still honored:
 `dark_mode=true` loads as the Dark theme, `dark_mode=false` as Classic, and
@@ -402,15 +410,20 @@ previous session is never reused.
     delivered."); "Play until stopped" loops until stopped.
 17. Resizing: drag each edge in and out, then a corner toward the middle
     and back out: the window follows with the OS resize cursors and
-    stops dead at the classic 560x456 size — it must not go smaller, and
-    every control stays whole at the limit. Grow the window in any
-    direction and let go: just after the drag ends, the whole
-    interface rescales once to fit the new size, **easing** smoothly
-    onto the new scale in a fraction of a second rather than
-    snapping (text, fields and buttons all physically larger,
-    proportions unchanged); it must never rescale repeatedly while
-    you are still dragging, and the physical window size itself
-    must not jump. Pull it panoramic:
+    stops at the classic 560x456 footprint scaled by your own UI
+    percentage — it must not go smaller, and every control stays whole
+    at the limit. Grow the window in any direction and let go: just
+    after the drag ends, the whole interface rescales once to fit the
+    new size, **easing** smoothly onto the new scale in a fraction of
+    a second rather than snapping (text, fields and buttons all
+    physically larger, proportions unchanged); growth must not rescale
+    repeatedly while you are still dragging, and the physical window
+    size itself must not jump. Then, without reopening the app, drag
+    the large window straight back down — including from a maximized or
+    200 %-scale window: the edge must keep following the pointer, the
+    interface must fit down during the inward drag, and it must stop
+    only at the same classic footprint, never stranded at the large
+    size. Pull it panoramic:
     the three middle groups sit three-across with one row of four
     action buttons. Pull it tall: the gaps between groups loosen and
     the status, buttons and footer stay pinned at the bottom. Snap

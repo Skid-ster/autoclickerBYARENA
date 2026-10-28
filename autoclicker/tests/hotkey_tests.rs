@@ -4,9 +4,9 @@
 mod hotkey;
 
 use hotkey::{
-    capturable_vks, is_reserved_panic_vk, is_supported_toggle_vk, sanitize_ui_scale,
-    sanitize_window_size, vk_display_name, AppPrefs, AppTheme, PANIC_VK, UI_SCALE_OPTIONS,
-    VK_ESCAPE, VK_F6,
+    capturable_vks, fit_independent_window_size, is_reserved_panic_vk, is_supported_toggle_vk,
+    sanitize_ui_scale, sanitize_window_size, vk_display_name, window_floor_for_auto_zoom, AppPrefs,
+    AppTheme, PANIC_VK, UI_SCALE_OPTIONS, VK_ESCAPE, VK_F6,
 };
 
 #[test]
@@ -69,6 +69,37 @@ fn ui_scale_sanitizer_keeps_every_offered_option() {
     assert_eq!(sanitize_window_size(0.0, -10.0), (560, 456));
     assert_eq!(sanitize_window_size(99_999.0, 99_999.0), (2240, 1824));
     assert_eq!(sanitize_window_size(f64::NAN, f64::INFINITY), (560, 456));
+}
+
+#[test]
+fn auto_zoom_does_not_inflate_the_physical_window_floor() {
+    assert_eq!(window_floor_for_auto_zoom(1.0), (560.0, 456.0));
+    assert_eq!(window_floor_for_auto_zoom(2.0), (280.0, 228.0));
+
+    let (width, height) = window_floor_for_auto_zoom(2.8);
+    assert!((width - 200.0).abs() < 0.001);
+    assert!((height - (456.0 / 2.8)).abs() < 0.001);
+
+    // Invalid or sub-unity factors can never make the declared floor
+    // larger than the classic footprint.
+    for factor in [0.0, -2.0, f32::NAN, f32::INFINITY] {
+        assert_eq!(window_floor_for_auto_zoom(factor), (560.0, 456.0));
+    }
+
+    // The same physical window converts to the same fit-independent
+    // size regardless of the transient auto-zoom used to present it:
+    // egui-winit will multiply the live floor by user% x auto-zoom,
+    // which reduces to classic floor x user% after this division.
+    for auto_zoom in [1.0, 1.33, 2.0, 2.8] {
+        let live_floor = window_floor_for_auto_zoom(auto_zoom);
+        let fit_independent = fit_independent_window_size(live_floor, auto_zoom);
+        assert!((fit_independent.0 - 560.0).abs() < 0.01);
+        assert!((fit_independent.1 - 456.0).abs() < 0.01);
+    }
+    assert_eq!(
+        fit_independent_window_size((280.0, 228.0), 2.0),
+        (560.0, 456.0)
+    );
 }
 
 #[test]

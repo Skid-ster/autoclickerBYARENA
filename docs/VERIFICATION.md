@@ -5,7 +5,80 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Modern surface + smooth scaling round (current): the main window joins the Updates design
+## Resize-stuck-at-large-scale bugfix round (current): v1.4.1
+
+The user's real-Windows acceptance run found a serious v1.4.0 defect:
+stretching the window out large could leave it at a maximum-looking
+size / roughly 200 % scaling until the app was reopened, and stretching
+it taller could make the window edge and content feel mismatched. The
+earlier headless fit probes did **not** cover this: they simulated the
+physical-point/zoom feedback loop but did not enforce the OS minimum
+that winit receives. That omission invalidates the v1.4.0 probe as a
+complete resize proof, even though its neutral-point fit arithmetic was
+correct.
+
+- **Root cause established from the shipped dependency source.**
+  egui-winit 0.27.2 converts `MinInnerSize` and `InnerSize` from egui
+  points to physical pixels with
+  `pixels_per_point = zoom_factor * window.scale_factor()`.
+  `Context::set_zoom_factor` only queues the zoom for the next
+  `begin_frame`. v1.4.0 nevertheless re-declared the raw
+  560x456 **live-point** floor after every zoom change and also used
+  that raw live floor in its floor-grow and size-observation tests. At
+  a 2.8x auto-fit and native/user 100 %, Windows therefore received a
+  1568x1277 physical minimum instead of the intended 560x456. At user
+  200 % with a 1.4x fit (the same 2.8x total), the physical minimum was
+  still 1568x1277 instead of 1120x912. Once the auto-fit rose, the OS
+  could refuse to let the window shrink far enough for the fit
+  evaluator to lower it — the reported "stays like that unless I open
+  it again" behaviour.
+- **The invariant now enforced in code.** The declared live minimum is
+  `560x456 / displayed_auto_zoom`; after egui-winit multiplies by
+  native scale x user percentage x auto-fit, the physical floor is
+  always `560x456 x native_scale x user_percentage`, independent of
+  the transient window fit. The pure conversions live in
+  `hotkey::window_floor_for_auto_zoom` and
+  `hotkey::fit_independent_window_size`, with invalid/sub-unity factors
+  sanitized to 1.0. The startup builder size, the runtime
+  `MinInnerSize`, the floor-grow guard, and persisted-size observation
+  all use this same coordinate rule; in particular, a valid floor-sized
+  window at 2.8x fit is 200x163 live points and is no longer discarded
+  by an observer expecting raw 560x456 live points.
+- **Shrinkage and percentage changes are no longer allowed to lag.**
+  Growth still uses the six-stable-frame settle and the 180 ms ease.
+  A lower fit is applied on the frame the neutral window size falls,
+  including while another zoom transition or pending bookkeeping is in
+  flight, so an inward drag does not spend frames with a canvas fitted
+  to a larger window. (A pending startup/factory size restore
+  deliberately still wins.) Changing the user's own percentage first re-derives the
+  auto-fit from the invariant neutral size (`live x currently applied
+  total zoom`), preventing one stale bookkeeping pass from asking for
+  new-percentage x old-fit and growing the physical window to satisfy
+  that phantom zoom.
+- **Vertical stretching.** The uniform fit still uses the smaller of
+  the width/height ratios, so making a width-limited window taller does
+  not promise a larger zoom by itself; the existing vertical rhythm
+  continues to keep the status/buttons at the bottom and distribute
+  bounded extra gap height. What this fix removes is the mismatch in
+  which a stale high fit / inflated OS minimum could stop a vertical or
+  diagonal edge from following the drag and leave the content fitted to
+  a previous size. If a remaining tall-window composition issue is seen
+  after this invariant is restored, it will need a separate screenshot-
+  based layout diagnosis rather than being conflated with this trap.
+- **What was executed here.** All ten platform-independent integration
+  suites pass with `rustc --test` on Rust 1.88.0: config 13, hotkey 8
+  (including the new floor-invariant regression test), humanize 9,
+  icon 6, macro 9, schedule 7, self_update 10, settings 9, telemetry
+  8, update 24 — **103 total**. `rustfmt` is clean for the touched Rust
+  files. These checks prove the arithmetic and the retained pure
+  logic, not winit/DWM interaction. The authoritative Windows compile,
+  clippy and test gates are the PR's windows-latest CI job, and the
+  final acceptance remains the user's 1440p Windows machine: stretch to
+  a large/maximized/200 %-scale state, then drag edges and corners
+  back down in the same session, including a purely vertical drag,
+  before judging close/reopen persistence.
+
+## Modern surface + smooth scaling round: the main window joins the Updates design
 
 The user's verdict on v1.3.0: the Updates window's look is the one
 they want everywhere, and "fix scaling". The user direction

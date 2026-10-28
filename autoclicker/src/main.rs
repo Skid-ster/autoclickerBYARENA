@@ -51,11 +51,14 @@ fn main() -> eframe::Result<()> {
             // drag, double-click maximize, Aero Snap, Win+arrow and Snap
             // Layouts, all with OS grips and cursors and no custom
             // hit-testing. The window opens at the size the user last
-            // chose (sanitized through the tolerant settings parser) and
-            // the classic 560x456 footprint is declared as the minimum, so
-            // the shell itself refuses any size — drag or snap — where a
-            // control would no longer fit. Everything stays visible
-            // without scrolling at every reachable size.
+            // chose (sanitized through the tolerant settings parser).
+            // This raw 560x456 value is only the pre-first-frame backstop
+            // while egui zoom is still 1.0; the app immediately replaces
+            // it with a fit-compensated live minimum whose physical size
+            // is the classic footprint at the user's own percentage, so
+            // the shell refuses undersized drags/snaps without letting a
+            // transient auto-fit inflate that floor. Everything stays
+            // visible without scrolling at every reachable size.
             .with_inner_size(app::OpAutoClickerApp::persisted_window_size())
             .with_min_inner_size(app::MAIN_WINDOW_SIZE)
             .with_resizable(true)
