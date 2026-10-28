@@ -1,11 +1,13 @@
 # MacroClicker
 
 **MacroClicker** is a Windows x64 auto-clicker written in stable Rust with an
-egui interface that reproduces the authentic classic OP Auto Clicker 4.x
-Win32 dialog — a naturally resizable light-gray window whose classic
+egui interface that keeps the authentic classic OP Auto Clicker 4.x
+dialog layout in a modern card surface (the visual language of its
+Updates window: rounded elevated cards, an accent primary **Start**,
+soft shadows) — a naturally resizable window whose classic
 560x456 size is the enforced minimum (with five
 persisted themes, a 75–200 % window scale and a remembered window size)
-with group boxes, sunken numeric fields and classic push buttons, nothing
+with group cards, numeric fields and push buttons, nothing
 scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
 row, mouse button and click-type pickers, repeat rules, cursor position
 with on-screen point picking, and the 4.1 bottom-row **Record & Playback** —
@@ -79,9 +81,10 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 
 ## Features
 
-- **Authentic classic OP Auto Clicker 4.x screen** — a naturally
-  resizable light-gray Win32-style dialog (group boxes, white numeric
-  fields, gray 3D buttons) with every control visible and no scrolling:
+- **Authentic classic OP Auto Clicker 4.x screen, modern surface** — the
+  classic dialog's exact layout as rounded elevated cards with an
+  accent-filled Start button (white numeric fields, flat buttons), in a
+  naturally resizable window with every control visible and no scrolling:
   drag any edge or corner, maximize, or snap with Win+arrow / Snap
   Layouts, exactly like any normal Windows app. The classic 560x456 size
   is the OS-enforced minimum, so the window can never shrink far enough
@@ -90,7 +93,8 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   the whole interface scales continuously (in 1 % increments) to fit
   the window — wider, taller, snapped or maximized — measured
   zoom-independently so it can never feed back into itself, applied
-  only once a drag settles, and capped at 280 % total. Panoramic
+  only once a drag settles and then eased smoothly (~180 ms) onto the
+  exact fit factor, and capped at 280 % total. Panoramic
   windows rearrange the middle groups three-across with a single row
   of action buttons, and the layout itself stretches to the window's
   full height, groups flowing from the top with the status and
@@ -127,9 +131,10 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   so a size you chose by dragging is never forced back down. Both choices restyle
   every window (main screen, Hotkey dialog and Settings window), are
   remembered across restarts, and all themes share the exact same layout,
-  so switching never moves a control. The three dark themes render the
-  group boxes as subtly elevated cards over deeper sunken fields and a
-  recessed status readout, and the status dot gives one short pulse
+  so switching never moves a control. Every theme renders the groups as
+  elevated cards (Classic's are white on the light-gray dialog, like the
+  Updates window's plate) over their sunken fields and status plate, and
+  the status dot gives one short pulse
   whenever the app changes state, so Start/Stop/pick transitions are
   visible without reading the text.
   (The native OS title bar follows the Windows app mode — black when

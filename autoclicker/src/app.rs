@@ -1,15 +1,17 @@
-//! MacroClicker — an OP Auto Clicker 4.1-style dashboard (classic Win32 look).
+//! MacroClicker — an OP Auto Clicker 4.1-style dashboard with a modern
+//! card surface (the same visual language as the Updates window:
+//! rounded elevated cards, an accent primary action, soft shadows).
 //!
-//! The main window is a naturally resizable, non-scrolling replica of the
-//! classic OP Auto Clicker 4.x screen: four bordered group boxes (Click
+//! The main window is a naturally resizable, non-scrolling rendition of
+//! the classic OP Auto Clicker 4.x screen: four group cards (Click
 //! interval, Click options, Click repeat, Cursor position) above the
-//! authentic 2x2 grid of standard push buttons. The classic 560x456 size
-//! is the enforced minimum; a larger window scales the whole dialog
-//! uniformly to fit (and rearranges it three-abreast when panoramic),
-//! so every control stays proportional and visible at every reachable
-//! window size. There is no diagnostics surface: every
-//! control on screen configures clicking, and the engine's telemetry stays
-//! an internal, test-verified concern.
+//! authentic 2x2 grid of push buttons. The classic 560x456 size is the
+//! enforced minimum; a larger window scales the whole dialog uniformly
+//! to fit (and rearranges it three-abreast when panoramic), so every
+//! control stays proportional and visible at every reachable window
+//! size. There is no diagnostics surface: every control on screen
+//! configures clicking, and the engine's telemetry stays an internal,
+//! test-verified concern.
 //!
 //! All worker interaction goes through atomics. The update thread never
 //! blocks on the worker.
@@ -48,12 +50,12 @@ struct Palette {
     pressed_fill: Color32,
     input_bg: Color32,
     input_disabled: Color32,
-    /// Group-box surface. One step above `face` in the dark themes so
-    /// each group reads as an elevated card; identical to `face` in the
-    /// Classic theme, where a native group box sits flat on the dialog.
+    /// Group-card surface. One step above `face` in every theme (white
+    /// over the #f0f0f0 dialog in Classic, exactly like the Updates
+    /// window's status plate) so each group reads as an elevated card.
     group_fill: Color32,
-    /// Sunken status-strip surface in the dark themes (the strip reads
-    /// as a recessed readout); identical to `face` in Classic.
+    /// Status-strip plate surface: recessed one step below the panel in
+    /// the dark themes; in Classic it matches the group cards' white.
     well_fill: Color32,
     group_border: Color32,
     input_border: Color32,
@@ -85,8 +87,8 @@ static LIGHT_PALETTE: Palette = Palette {
     pressed_fill: Color32::from_rgb(204, 228, 247),
     input_bg: Color32::WHITE,
     input_disabled: Color32::from_rgb(250, 250, 250),
-    group_fill: Color32::from_rgb(240, 240, 240),
-    well_fill: Color32::from_rgb(240, 240, 240),
+    group_fill: Color32::WHITE,
+    well_fill: Color32::WHITE,
     group_border: Color32::from_rgb(166, 166, 166),
     input_border: Color32::from_rgb(122, 122, 122),
     text: Color32::from_rgb(28, 28, 28),
@@ -510,11 +512,25 @@ pub struct OpAutoClickerApp {
     // every frame; the row's spare width is split between the groups
     // so the units spread tastefully without ever overflowing a cell.
     interval_group_widths: [f32; 4],
-    // Currently applied window-driven scale factor (1.0 when the
-    // feature is off or the window fits the design canvas at the
-    // user's own percentage). The total egui zoom is the user's
-    // percentage times this factor.
+    // Adopted window-driven scale factor (1.0 when the feature is
+    // off or the window fits the design canvas at the user's own
+    // percentage). The total egui zoom is the user's percentage
+    // times this factor.
     auto_zoom: f32,
+    // The fit factor actually driving the egui zoom right now. When
+    // `adapt_to_window_size` adopts a new `auto_zoom`, this eases
+    // toward it over ~180 ms instead of snapping, so a resize lands
+    // as one smooth zoom. It equals `auto_zoom` at rest — including
+    // at startup, where the opening size must never animate.
+    displayed_auto_zoom: f32,
+    // In-flight zoom transition: (paint-clock start, factor it
+    // started from). `None` while the displayed factor is at rest.
+    // The transition is pure presentation: the neutral-point size
+    // the fit reads is live-points x *applied* zoom, exact at every
+    // intermediate value, and the evaluator only runs once the zoom
+    // machinery is idle again — so easing can never feed back into
+    // the fit, the persisted size, or itself.
+    zoom_transition: Option<(f64, f32)>,
     // Wide three-across layout currently in effect.
     wide_layout: bool,
     // Fit-zoom debounce: the candidate factor and how many
@@ -622,6 +638,8 @@ impl OpAutoClickerApp {
             row_group_height: 60.0_f32,
             interval_group_widths: [0.0_f32; 4],
             auto_zoom: 1.0_f32,
+            displayed_auto_zoom: 1.0_f32,
+            zoom_transition: None,
             wide_layout: false,
             zoom_candidate: 1.0_f32,
             stable_frames: 0,
@@ -785,6 +803,7 @@ impl OpAutoClickerApp {
             self.prefs.window_height as f32 * user_factor,
         );
         self.auto_zoom = Self::initial_auto_zoom(neutral, user_factor, self.prefs.auto_scale);
+        self.displayed_auto_zoom = self.auto_zoom;
         self.zoom_candidate = self.auto_zoom;
         self.wide_layout =
             self.prefs.auto_scale && Self::wide_layout_for(neutral, user_factor, false);
@@ -914,7 +933,7 @@ impl OpAutoClickerApp {
         style.visuals.selection.bg_fill = pal.selection_bg;
         style.visuals.selection.stroke = Stroke::new(1.5_f32, pal.accent);
         style.visuals.hyperlink_color = pal.accent;
-        let rounding = Rounding::same(2.5_f32);
+        let rounding = Rounding::same(5.0_f32);
         style.visuals.widgets.noninteractive.rounding = rounding;
         style.visuals.widgets.inactive.rounding = rounding;
         style.visuals.widgets.hovered.rounding = rounding;
@@ -941,7 +960,7 @@ impl OpAutoClickerApp {
             spread: 0.0_f32,
             color: Color32::from_black_alpha(shadow_alpha),
         };
-        style.visuals.window_rounding = Rounding::same(6.0_f32);
+        style.visuals.window_rounding = Rounding::same(8.0_f32);
         ctx.set_style(style);
     }
 
@@ -1254,6 +1273,8 @@ impl OpAutoClickerApp {
         // must not override it when the restore runs.
         self.window_size_was_persisted = true;
         self.auto_zoom = 1.0_f32;
+        self.displayed_auto_zoom = 1.0_f32;
+        self.zoom_transition = None;
         self.zoom_candidate = 1.0_f32;
         self.wide_layout = false;
         self.stable_frames = 0;
@@ -1506,7 +1527,10 @@ impl OpAutoClickerApp {
         {
             return;
         }
-        let base = size * self.auto_zoom;
+        // Displayed (not adopted) factor: live points are produced
+        // by the zoom actually applied, so this stays exact even
+        // while a zoom transition is easing between factors.
+        let base = size * self.displayed_auto_zoom;
         let (width, height) = hotkey::sanitize_window_size(f64::from(base.x), f64::from(base.y));
         if width != self.prefs.window_width || height != self.prefs.window_height {
             self.prefs.window_width = width;
@@ -1565,6 +1589,10 @@ impl OpAutoClickerApp {
         self.last_base_size = base;
         if self.stable_frames >= SETTLE_FRAMES && (target - self.auto_zoom).abs() > FIT_DEADBAND {
             self.auto_zoom = target;
+            // Ease the displayed factor to the adopted one (~180 ms,
+            // advanced at the top of `update`) instead of snapping
+            // the whole interface in a single frame.
+            self.zoom_transition = Some((self.ui_clock_secs, self.displayed_auto_zoom));
             self.stable_frames = 0;
             // The live point size this frame still belongs to the old
             // factor (the new zoom applies next frame), so size
@@ -1591,15 +1619,14 @@ impl OpAutoClickerApp {
     /// (without `min_height` applied) so the pair can converge on the
     /// taller of the two.
     ///
-    /// In the dark themes the box is drawn as an elevated card: a fill
-    /// one step above the panel, a reserved drop shadow behind it and a
-    /// hairline of light on its inner top edge, so the dialog reads as
-    /// layered plates rather than flat outlines. The shadow slot is
-    /// reserved before the frame paints and filled once the frame's real
-    /// rect exists — same layer, strictly behind the card. Classic keeps
-    /// `group_fill == face` and no shadow, i.e. byte-identical native
-    /// paint. On the pure-black OLED face a black shadow could never be
-    /// seen, so it is skipped there too.
+    /// The box is drawn as an elevated card in every theme — the same
+    /// surface language as the Updates window: a fill one step above
+    /// the panel, a reserved soft shadow behind it, rounded corners,
+    /// and a caption led by a short accent tick. The shadow slot is
+    /// reserved before the frame paints and filled once the frame's
+    /// real rect exists — same layer, strictly behind the card. On the
+    /// pure-black OLED face a black shadow could never be seen, so it
+    /// is skipped there (the lighter card fill carries the depth).
     fn group_box<R>(
         ui: &mut egui::Ui,
         pal: &Palette,
@@ -1607,7 +1634,7 @@ impl OpAutoClickerApp {
         min_height: f32,
         add: impl FnOnce(&mut egui::Ui) -> R,
     ) -> (R, f32) {
-        let shadow_slot = if pal.dark && pal.face != Color32::BLACK {
+        let shadow_slot = if pal.face != Color32::BLACK {
             Some(ui.painter().add(egui::Shape::Noop))
         } else {
             None
@@ -1615,12 +1642,12 @@ impl OpAutoClickerApp {
         let response = Frame::none()
             .fill(pal.group_fill)
             .stroke(Stroke::new(1.0_f32, pal.group_border))
-            .rounding(Rounding::same(2.0_f32))
+            .rounding(Rounding::same(8.0_f32))
             .inner_margin(Margin {
-                left: 11.0_f32,
-                right: 11.0_f32,
-                top: 17.0_f32,
-                bottom: 11.0_f32,
+                left: 12.0_f32,
+                right: 12.0_f32,
+                top: 18.0_f32,
+                bottom: 12.0_f32,
             })
             .show(ui, |ui| {
                 let claim_width = ui.available_width();
@@ -1656,12 +1683,13 @@ impl OpAutoClickerApp {
             let shadow = rect
                 .expand2(Vec2::new(1.0_f32, 0.0_f32))
                 .translate(Vec2::new(0.0_f32, 2.0_f32));
+            let shadow_alpha: u8 = if pal.dark { 72 } else { 36 };
             ui.painter().set(
                 slot,
                 egui::Shape::rect_filled(
                     shadow,
-                    Rounding::same(3.0_f32),
-                    Color32::from_black_alpha(72),
+                    Rounding::same(8.0_f32),
+                    Color32::from_black_alpha(shadow_alpha),
                 ),
             );
         }
@@ -1683,28 +1711,45 @@ impl OpAutoClickerApp {
                 Stroke::new(1.0_f32, Color32::from_white_alpha(16)),
             );
         }
-        let font = FontId::proportional(13.0_f32);
+        let font = FontId::proportional(13.5_f32);
         let galley = painter.layout_no_wrap(title.to_string(), font.clone(), pal.group_title);
-        let text_pos = rect.left_top() + Vec2::new(9.0_f32, -galley.size().y / 2.0_f32);
+        // A short accent tick leads the caption — the card's identity
+        // mark, in the same accent as the primary action. The caption
+        // block (tick + text) rides the border together.
+        let tick_width = 3.0_f32;
+        let tick_gap = 5.0_f32;
+        let block_top = rect.top() - galley.size().y / 2.0_f32;
+        let tick_pos = egui::pos2(rect.left() + 10.0_f32, block_top);
+        let text_pos = egui::pos2(tick_pos.x + tick_width + tick_gap, block_top);
         // The backdrop must cover the 1 px border line entirely so the
-        // title cleanly breaks it like a native BS_GROUPBOX caption. It
-        // straddles two surfaces now — panel `face` above the border,
-        // card `group_fill` below it — so it is painted in two halves
-        // split at the border's midline; a single color would leave a
-        // visible patch on one side of the line (in Classic both halves
-        // are the same color, so the native paint is unchanged).
-        let backdrop = egui::Rect::from_min_size(
-            text_pos - Vec2::new(4.0_f32, 1.0_f32),
-            galley.size() + Vec2::new(8.0_f32, 2.0_f32),
+        // caption block cleanly breaks it like a native BS_GROUPBOX
+        // caption. It straddles two surfaces — panel `face` above the
+        // border, card `group_fill` below it — so it is painted in two
+        // halves split at the border's midline; a single color would
+        // leave a visible patch on one side of the line.
+        let backdrop = egui::Rect::from_min_max(
+            egui::pos2(tick_pos.x - 4.0_f32, block_top - 1.0_f32),
+            egui::pos2(
+                text_pos.x + galley.size().x + 4.0_f32,
+                block_top + galley.size().y + 1.0_f32,
+            ),
         );
         let seam = rect.top() + 0.5_f32;
         let upper = egui::Rect::from_min_max(backdrop.min, egui::pos2(backdrop.max.x, seam));
         let lower = egui::Rect::from_min_max(egui::pos2(backdrop.min.x, seam), backdrop.max);
         painter.rect_filled(upper, 0.0_f32, pal.face);
         painter.rect_filled(lower, 0.0_f32, pal.group_fill);
+        painter.rect_filled(
+            egui::Rect::from_min_size(
+                egui::pos2(tick_pos.x, block_top + 1.5_f32),
+                Vec2::new(tick_width, (galley.size().y - 3.0_f32).max(4.0_f32)),
+            ),
+            Rounding::same(1.5_f32),
+            pal.accent,
+        );
         // Paint the token the galley was laid out with: the palette's
         // accent-toned group title (identical to `text` in the Classic
-        // theme, so the native look stays faithful there).
+        // theme, where the tick carries the accent instead).
         painter.text(text_pos, Align2::LEFT_TOP, title, font, pal.group_title);
         response.inner
     }
@@ -1713,13 +1758,30 @@ impl OpAutoClickerApp {
     /// border and elevation all track the pointer state, and the hover lift
     /// is eased over ~180 ms (inside the 150–250 ms window where motion
     /// reads as responsive rather than sluggish). The pressed state drops
-    /// the lift so the button visibly sits down under the pointer.
+    /// the lift so the button visibly sits down under the pointer. Tones
+    /// follow the Updates window's hierarchy: `primary` paints the one
+    /// accent-filled call to action (Start, like Install), `danger`
+    /// outlines the destructive action (Stop while a session runs) in
+    /// the theme's danger color while keeping the neutral fill and the
+    /// proven text contrast.
     fn classic_button(
         ui: &mut egui::Ui,
         pal: &Palette,
         text: &str,
         enabled: bool,
         width: f32,
+    ) -> egui::Response {
+        Self::toned_button(ui, pal, text, enabled, width, false, false)
+    }
+
+    fn toned_button(
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        text: &str,
+        enabled: bool,
+        width: f32,
+        primary: bool,
+        danger: bool,
     ) -> egui::Response {
         let sense = if enabled {
             Sense::click()
@@ -1732,14 +1794,43 @@ impl OpAutoClickerApp {
         }
         let pressed = enabled && response.is_pointer_button_down_on();
         let hovered = enabled && response.hovered() && !pressed;
+        let on_accent = if pal.dark {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
         let (fill, border, text_color) = if !enabled {
             (pal.button_disabled, pal.button_border, pal.text_disabled)
+        } else if primary {
+            if pressed {
+                (pal.accent.gamma_multiply(0.9_f32), pal.accent, on_accent)
+            } else if hovered {
+                (pal.accent.gamma_multiply(1.12_f32), pal.accent, on_accent)
+            } else {
+                (pal.accent, pal.accent, on_accent)
+            }
         } else if pressed {
-            (pal.pressed_fill, pal.accent, pal.text)
+            (
+                pal.pressed_fill,
+                if danger { pal.danger } else { pal.accent },
+                pal.text,
+            )
         } else if hovered {
-            (pal.hover_fill, pal.accent, pal.text)
+            (
+                pal.hover_fill,
+                if danger { pal.danger } else { pal.accent },
+                pal.text,
+            )
         } else {
-            (pal.button, pal.button_border, pal.text)
+            (
+                pal.button,
+                if danger {
+                    pal.danger
+                } else {
+                    pal.button_border
+                },
+                pal.text,
+            )
         };
         // Eased hover lift: 0 at rest and while pressed, 1 px when hovered.
         let lift = ui.ctx().animate_value_with_time(
@@ -1748,7 +1839,7 @@ impl OpAutoClickerApp {
             0.18_f32,
         );
         let face_rect = rect.translate(Vec2::new(0.0_f32, -lift));
-        let rounding = Rounding::same(2.5_f32);
+        let rounding = Rounding::same(6.0_f32);
         let painter = ui.painter();
         // Soft elevation shadow under enabled buttons; it deepens with the
         // lift so "what floats acts" — depth encodes interactivity.
@@ -1769,7 +1860,7 @@ impl OpAutoClickerApp {
             let bevel = if pressed {
                 Color32::from_black_alpha(if pal.dark { 90 } else { 60 })
             } else {
-                Color32::from_white_alpha(if pal.dark { 18 } else { 110 })
+                Color32::from_white_alpha(if pal.dark { 18 } else { 70 })
             };
             painter.line_segment(
                 [
@@ -2065,12 +2156,14 @@ impl OpAutoClickerApp {
         let running = self.engine.is_running();
         let config_ok = self.validation_message().is_none();
         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
-        if Self::classic_button(
+        if Self::toned_button(
             ui,
             pal,
             &format!("Start ({hotkey_name})"),
             !running && config_ok,
             width,
+            true,
+            false,
         )
         .clicked()
         {
@@ -2081,7 +2174,16 @@ impl OpAutoClickerApp {
     fn stop_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
         let running = self.engine.is_running();
         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
-        if Self::classic_button(ui, pal, &format!("Stop ({hotkey_name})"), running, width).clicked()
+        if Self::toned_button(
+            ui,
+            pal,
+            &format!("Stop ({hotkey_name})"),
+            running,
+            width,
+            false,
+            true,
+        )
+        .clicked()
         {
             self.engine.request_stop();
             self.set_status(StatusKind::Stopping, "Stopping…");
@@ -2342,7 +2444,7 @@ impl OpAutoClickerApp {
                     });
                 ui.label(
                     egui::RichText::new(
-                        "All four themes share the exact same layout — switching never moves a control.",
+                        "All five themes share the exact same layout — switching never moves a control.",
                     )
                     .color(pal.text_dim)
                     .small(),
@@ -2388,6 +2490,8 @@ impl OpAutoClickerApp {
                         // the evaluator would retire the fit on its own,
                         // just a few frames later.
                         self.auto_zoom = 1.0_f32;
+                        self.displayed_auto_zoom = 1.0_f32;
+                        self.zoom_transition = None;
                         self.zoom_candidate = 1.0_f32;
                         self.wide_layout = false;
                         self.stable_frames = 0;
@@ -3267,8 +3371,34 @@ impl eframe::App for OpAutoClickerApp {
         // plain scale change only ever grows the window, and only if the
         // new zoom left it below the floor, so a window the user enlarged
         // is never forced back down.
-        let desired_zoom = self.prefs.ui_scale_percent as f32 / 100.0_f32 * self.auto_zoom;
-        if (ctx.zoom_factor() - desired_zoom).abs() > 0.001_f32 {
+        // Advance an in-flight zoom transition (cubic ease-out,
+        // 180 ms — the same state-change budget as every other
+        // motion here). The target is the adopted factor; landing
+        // sets the displayed factor exactly, so the zoom always
+        // terminates on the fit value, never near it. While a
+        // transition is in motion (including its landing frame) the
+        // desired zoom is applied unconditionally: the ease-out's
+        // final steps are smaller than the resting dead band below,
+        // and without the override the applied zoom would freeze a
+        // fraction short of the fit factor forever.
+        let mut zoom_in_motion = false;
+        if let Some((started, from)) = self.zoom_transition {
+            const ZOOM_TRANSITION_SECS: f64 = 0.18_f64;
+            zoom_in_motion = true;
+            let t = ((self.ui_clock_secs - started) / ZOOM_TRANSITION_SECS).clamp(0.0_f64, 1.0_f64)
+                as f32;
+            let ease = 1.0_f32 - (1.0_f32 - t).powi(3);
+            self.displayed_auto_zoom = from + (self.auto_zoom - from) * ease;
+            if t >= 1.0_f32 {
+                self.displayed_auto_zoom = self.auto_zoom;
+                self.zoom_transition = None;
+            } else {
+                ctx.request_repaint();
+            }
+        }
+        let desired_zoom =
+            self.prefs.ui_scale_percent as f32 / 100.0_f32 * self.displayed_auto_zoom;
+        if zoom_in_motion || (ctx.zoom_factor() - desired_zoom).abs() > 0.001_f32 {
             ctx.set_zoom_factor(desired_zoom);
             self.pending_resize = true;
             ctx.request_repaint();
@@ -3544,21 +3674,18 @@ impl eframe::App for OpAutoClickerApp {
                         state_color
                     };
                     let painter = ui.painter_at(rect);
-                    // Sunken well (dark themes only): a recessed readout
-                    // plate one step below the panel, matching the input
-                    // fields' depth level. It lives entirely inside the
-                    // reserved 16 px strip, so the dot, the text and the
-                    // rows below never move; Classic keeps the flat
-                    // native status line.
-                    if pal.dark {
-                        painter.rect(
-                            rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
-                            Rounding::same(3.0_f32),
-                            pal.well_fill,
-                            Stroke::new(1.0_f32, pal.group_border),
-                        );
-                    }
-                    let dot_center = egui::pos2(rect.left() + 4.0_f32, rect.center().y);
+                    // Status plate in every theme — the Updates window's
+                    // card at strip scale: recessed below the panel in
+                    // the dark themes, the cards' white in Classic. It
+                    // lives entirely inside the reserved 16 px strip,
+                    // so the dot, the text and the rows below never move.
+                    painter.rect(
+                        rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
+                        Rounding::same(6.0_f32),
+                        pal.well_fill,
+                        Stroke::new(1.0_f32, pal.group_border),
+                    );
+                    let dot_center = egui::pos2(rect.left() + 9.0_f32, rect.center().y);
                     // Kind-change acknowledgement: the dot swells once and
                     // a ring expands off it, easing out over 280 ms, so a
                     // state transition is noticed even without reading
@@ -3585,7 +3712,7 @@ impl eframe::App for OpAutoClickerApp {
                     let dot_radius = pulse_t.map_or(3.5_f32, |t| 3.5_f32 + 1.3_f32 * (1.0_f32 - t));
                     painter.circle_filled(dot_center, dot_radius, dot_color);
                     painter.text(
-                        egui::pos2(rect.left() + 12.0_f32, rect.center().y),
+                        egui::pos2(rect.left() + 17.0_f32, rect.center().y),
                         Align2::LEFT_CENTER,
                         shown,
                         FontId::proportional(12.5_f32),
@@ -3617,7 +3744,7 @@ impl eframe::App for OpAutoClickerApp {
                             )
                             .fill(pal.button)
                             .stroke(Stroke::new(1.0_f32, pal.button_border))
-                            .rounding(Rounding::same(3.0_f32));
+                            .rounding(Rounding::same(5.0_f32));
                             let settings_response = ui.add(button).on_hover_text(
                                 "Theme, interface scale, clicking behaviour and the session log",
                             );
@@ -3680,7 +3807,7 @@ impl eframe::App for OpAutoClickerApp {
                             )
                             .fill(pal.button)
                             .stroke(Stroke::new(1.0_f32, updates_stroke))
-                            .rounding(Rounding::same(3.0_f32));
+                            .rounding(Rounding::same(5.0_f32));
                             let updates_response =
                                 ui.add(updates_button).on_hover_text(updates_hover);
                             if updates_response.clicked() {

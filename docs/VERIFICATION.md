@@ -5,7 +5,76 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Self-update round (current): the button physically updates and restarts
+## Modern surface + smooth scaling round (current): the main window joins the Updates design
+
+The user's verdict on v1.3.0: the Updates window's look is the one
+they want everywhere, and "fix scaling". The user direction
+therefore **supersedes the previously recorded pixel-faithful
+*surface*** (flat native group boxes in Classic, 2 px corners,
+neutral buttons). What is deliberately *not* changed: the layout —
+every control keeps its position, size, order and behaviour; only
+the paint changed, plus one presentation change to how an adopted
+fit factor is applied. This ships as **v1.4.0**, which also makes
+it the first release a v1.3.0 user receives through the in-app
+**Install** button.
+
+- **The modern surface (paint-only).** Group boxes are now elevated
+  **cards in every theme**: 8 pt corners, a soft shadow, and a fill
+  one step above the panel — in Classic that is white over the
+  `#F0F0F0` dialog, byte-for-byte the Updates status plate's
+  surface (`input_bg` white + card border). Captions still ride the
+  top border, now led by a 3 pt **accent tick**. Widget rounding
+  went 2.5 → 5 pt, windows 6 → 8 pt, push buttons 2.5 → 6 pt with
+  the bevel softened. **Start** is the accent-filled primary action
+  (white text in Classic, black in the dark themes — the Updates
+  Install rule), **Stop** carries a danger-coloured outline while
+  enabled (text stays on the proven neutral pair), the status
+  strip is a rounded plate in every theme, and the footer buttons
+  match the new radius. Every new text/surface pair was computed
+  before the code changed: worst enabled pair across the five
+  themes is 4.74:1 (Classic primary-button hover), all others
+  ≥ 5.0:1, accent ticks ≥ 5.67:1 decorative. One candidate —
+  danger-coloured Stop *text* — was rejected by the numbers (Dark
+  theme hover fill 4.37:1) and became border-only instead.
+- **Scaling audit first, then one fix.** The harness probe drives
+  the app over a simulated physical window (points = physical ÷
+  (native pixels-per-point × applied zoom), the real eframe feedback loop).
+  Baseline at v1.3.0 paint: zooms settled exactly with zero
+  out-of-window texts and zero late changes at 2560×1392 (×1.0 and
+  ×1.5 display scaling), 1920×1080, 747×608 (1440p first-run size),
+  560×456 floor, 1280×1392 half-snap, 3440×1440 and 1200×500; all
+  four secondary windows fit at the floor; drag ramps showed zero
+  reversals. So the fit *mathematics* had no measurable defect —
+  what was still visibly un-modern was the **landing**: after a
+  resize settled, the whole interface snapped to the new zoom in a
+  single frame. Adopted fit factors now **ease** in over ~180 ms
+  (cubic ease-out): a `displayed_auto_zoom` follows the adopted
+  factor through a bounded transition, the size observer converts
+  with the displayed factor (exact mid-transition), the evaluator
+  stays gated until the zoom machinery is idle, and the landing
+  sets the exact quantized factor (an in-motion override defeats
+  the 0.001 resting dead band that would otherwise freeze the
+  ease-out's final sub-0.1 % step unapplied — found by probe trace
+  at t≈0.93 and fixed before shipping).
+- **Measured after the change** (same rig): step resizes
+  800×600→2560×1392, 2560×1392→560×456, 747×608→1920×1080 and
+  560×456→1280×1392 each show 11 eased zoom steps, last change at
+  frame 18 (~300 ms including the 6-frame settle), exact terminal
+  zooms (2.800 / 1.000 / 2.120 / 2.280), zero outside texts; the
+  full size/theme/user-scale matrix (5 themes × {747×608,
+  2560×1392, floor-settings}, user 150 %/200 %, auto-scale off)
+  repeats the baseline's zero-outside, zero-late-change result;
+  all 102 tests pass; CI-style clippy is clean. A stale Settings
+  caption ("All four themes") was corrected to five.
+- **Honest boundary.** What remains unobservable from the sandbox
+  is the rendered feel on a real 1440p Windows desktop — glyph
+  rasterisation under eased zooms, DWM behaviour while the zoom
+  animates, and whether 180 ms reads as smooth rather than slow —
+  plus the first real v1.3.0 → v1.4.0 Install-press update. Those
+  are the user's acceptance run for this release; nothing here
+  claims them done.
+
+## Self-update round: the button physically updates and restarts
 
 v1.2.0's updater deliberately never replaced its own binary —
 the safest possible boundary at the time. The user overruled it
