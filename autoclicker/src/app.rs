@@ -101,7 +101,7 @@ static DARK_PALETTE: Palette = Palette {
     group_border: Color32::from_rgb(96, 96, 96),
     input_border: Color32::from_rgb(130, 130, 130),
     text: Color32::from_rgb(235, 235, 235),
-    group_title: Color32::from_rgb(235, 235, 235),
+    group_title: Color32::from_rgb(96, 165, 250),
     text_dim: Color32::from_rgb(158, 158, 158),
     text_disabled: Color32::from_rgb(109, 109, 109),
     accent: Color32::from_rgb(96, 165, 250),
@@ -128,7 +128,7 @@ static OLED_PALETTE: Palette = Palette {
     group_border: Color32::from_rgb(74, 74, 74),
     input_border: Color32::from_rgb(110, 110, 110),
     text: Color32::from_rgb(230, 230, 230),
-    group_title: Color32::from_rgb(230, 230, 230),
+    group_title: Color32::from_rgb(76, 194, 255),
     text_dim: Color32::from_rgb(150, 150, 150),
     text_disabled: Color32::from_rgb(96, 96, 96),
     accent: Color32::from_rgb(76, 194, 255),
@@ -155,7 +155,7 @@ static MATRIX_PALETTE: Palette = Palette {
     group_border: Color32::from_rgb(42, 100, 42),
     input_border: Color32::from_rgb(58, 136, 58),
     text: Color32::from_rgb(130, 235, 130),
-    group_title: Color32::from_rgb(130, 235, 130),
+    group_title: Color32::from_rgb(0, 230, 118),
     text_dim: Color32::from_rgb(74, 150, 74),
     text_disabled: Color32::from_rgb(46, 92, 46),
     accent: Color32::from_rgb(0, 230, 118),
@@ -485,7 +485,7 @@ impl OpAutoClickerApp {
         style.visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, pal.text);
         style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, pal.input_border);
         style.visuals.selection.bg_fill = pal.selection_bg;
-        style.visuals.selection.stroke = Stroke::new(1.0_f32, pal.text);
+        style.visuals.selection.stroke = Stroke::new(1.5_f32, pal.accent);
         style.visuals.hyperlink_color = pal.accent;
         let rounding = Rounding::same(2.5_f32);
         style.visuals.widgets.noninteractive.rounding = rounding;
@@ -965,6 +965,18 @@ impl OpAutoClickerApp {
             );
         }
         painter.rect(face_rect, rounding, fill, Stroke::new(1.0_f32, border));
+        // Classic 3D face cue: a one-pixel inner highlight along the top
+        // edge, the same bevel the native BS_PUSHBUTTON control carries.
+        if enabled {
+            let highlight_alpha = if pal.dark { 18 } else { 110 };
+            painter.line_segment(
+                [
+                    egui::pos2(face_rect.left() + 3.0_f32, face_rect.top() + 1.5_f32),
+                    egui::pos2(face_rect.right() - 3.0_f32, face_rect.top() + 1.5_f32),
+                ],
+                Stroke::new(1.0_f32, Color32::from_white_alpha(highlight_alpha)),
+            );
+        }
         painter.text(
             face_rect.center(),
             Align2::CENTER_CENTER,
@@ -1474,6 +1486,19 @@ impl eframe::App for OpAutoClickerApp {
                 }
             }
         }
+        // Watchdog: if the dedicated worker thread ever died while a
+        // session is marked running, force the engine back to idle and say
+        // so — the UI must never report a running session that no thread
+        // is actually driving, and Start/Stop must recover.
+        if self.engine.is_running() && !self.engine.worker_alive() {
+            self.engine.force_idle();
+            self.macro_playing = false;
+            self.set_status(
+                StatusKind::Error,
+                "Click worker lost — session aborted. Restart the app before clicking again.",
+            );
+            self.log("Worker thread found dead; engine forced idle.");
+        }
         // Detect natural session completion (repeat count reached) so the
         // status line and persistence react even without a button press.
         // Manual stops and worker errors keep their own status instead of
@@ -1594,12 +1619,32 @@ impl eframe::App for OpAutoClickerApp {
                     } else {
                         &self.status_text
                     };
-                    ui.painter_at(rect).text(
-                        rect.left_center(),
+                    // Semantic state dot: shape + position carry the state,
+                    // not color alone, and while a session runs the dot
+                    // breathes on the already-running repaint heartbeat so
+                    // "working" is visible even from the corner of the eye.
+                    let state_color = self.status_kind.color(pal);
+                    let dot_color = if self.status_kind == StatusKind::Running {
+                        let t = ui.input(|i| i.time);
+                        let pulse = 0.5_f32 + 0.5_f32 * ((t * 3.6_f64).sin() as f32);
+                        Color32::from_rgba_unmultiplied(
+                            state_color.r(),
+                            state_color.g(),
+                            state_color.b(),
+                            140 + (pulse * 115.0_f32) as u8,
+                        )
+                    } else {
+                        state_color
+                    };
+                    let painter = ui.painter_at(rect);
+                    let dot_center = egui::pos2(rect.left() + 4.0_f32, rect.center().y);
+                    painter.circle_filled(dot_center, 3.5_f32, dot_color);
+                    painter.text(
+                        egui::pos2(rect.left() + 12.0_f32, rect.center().y),
                         Align2::LEFT_CENTER,
                         shown,
                         FontId::proportional(12.5_f32),
-                        self.status_kind.color(pal),
+                        state_color,
                     );
 
                     ui.add_space(2.0_f32);

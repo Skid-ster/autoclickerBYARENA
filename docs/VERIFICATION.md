@@ -497,6 +497,60 @@ Real-time CPS line is flat at the target rate with "Missed deadlines" at
 or near zero. With Random offset or humanization enabled the line wanders
 by design because the produced intervals genuinely vary.
 
+## Maximum looks + absolute stability round
+
+User-requested follow-up to the masterclass round: push the visual craft
+as far as it goes without breaking the classic-dialog character, and
+harden every failure path that could leave the app lying to the user.
+
+Stability hardening (engine + UI):
+
+- Mutex poison recovery: every `lock().expect(...)` on the engine's
+  macro-sequence and error mutexes became `lock_recovering()`, which
+  takes the inner data from a poisoned lock instead of cascading a
+  second panic into the UI thread. The protected values are plain data
+  that stays valid even if the writer died mid-update, so recovering is
+  strictly safer than crashing. Behavior is identical when healthy; the
+  only remaining `expect` is the fail-fast event-creation check at boot.
+- Dead-worker watchdog: `ClickEngine::worker_alive()` (JoinHandle
+  liveness) plus `force_idle()`, checked every frame while a session is
+  marked running. If the dedicated worker thread ever died, the UI now
+  forces the engine idle, paints an explicit Error status and recovers
+  the Start/Stop controls instead of reporting a running session that no
+  thread is driving. The check is gated on the running state, so it
+  costs nothing while idle and stays silent in the headless harness.
+- Confirmed already-safe paths, re-audited this round: settings writes
+  are atomic (temp file + rename, so a crash mid-write can never corrupt
+  the file), all UI collections are bounded (log 200, macro 2048,
+  telemetry ring fixed), and the engine Drop joins the worker.
+
+Looks (within the classic-dialog discipline):
+
+- Semantic status dot leading the status strip: a 3.5 px filled circle
+  in the state color, so shape and position carry the state rather than
+  color alone. While a session runs the dot breathes on a ~1.75 s sine
+  using the repaint heartbeat that already ticks every 16 ms when
+  running — zero additional repaint cost, and the pulse reads as
+  "working" from the corner of the eye.
+- One-pixel top bevel highlight on enabled push buttons, the same face
+  cue the native BS_PUSHBUTTON control carries.
+- Accent focus ring (1.5 px) on focused fields and text selection,
+  replacing the old text-colored 1 px stroke.
+- The dark themes (Dark, Midnight OLED, Terminal green) paint group-box
+  captions in their accent color — hierarchy at a glance; Classic keeps
+  faithful dark captions. All accent-on-face combinations were already
+  measured at 6.4:1–11.7:1 in the previous round's contrast audit.
+
+Verification (Linux harness, rustc 1.88.0, real egui 0.27.2):
+
+- 67/67 module tests standalone and in the harness, unchanged.
+- `cargo clippy --lib -- -D warnings` clean; `cargo fmt --check` clean.
+- Layout probe: all four themes paint within 560x456; idle repaint
+  heartbeat 10/10.
+- Interaction probe: footer grid intact, the status dot circle is
+  painted, the theme picker lists exactly the four shipped themes, the
+  factory reset is present, and no retired text is ever painted.
+
 ## Masterclass polish round (four themes, stop confirmation, 2026 craft)
 
 User-requested final refinement: fix the status strip staying on

@@ -153,8 +153,14 @@ bar agree.
 Every push button is painted with full interaction feedback: the fill,
 border and elevation all track the pointer (an eased ~180 ms hover lift
 with a soft drop shadow — depth encodes interactivity — and a pressed
-state that visibly sits down), and floating surfaces (Settings, Hotkey
+state that visibly sits down) plus a one-pixel top bevel highlight like
+the native BS_PUSHBUTTON face, and floating surfaces (Settings, Hotkey
 dialog, dropdowns) carry a soft shadow so layering reads as hierarchy.
+The status strip leads with a semantic state dot (shape and position
+carry the state, not color alone) that breathes gently on the existing
+repaint heartbeat while a session runs, focused fields draw an accent
+focus ring, and the dark themes give group captions their accent color
+so the hierarchy reads at a glance.
 
 The **Hotkey setting** dialog remaps the start/stop key (F1–F24, A–Z, 0–9,
 Space); F8 is permanently reserved for Panic Stop and cannot be reassigned,
@@ -270,8 +276,9 @@ previous session is never reused.
 12. Start a "Repeat until stopped" session, then press Stop: the status
     shows "Stopping…" for at most a moment and then settles on
     "Stopped — N clicks delivered." — it must never remain stuck on
-    "Stopping…". Hovering any enabled button lifts it slightly with a
-    soft shadow; pressing it sits it back down.
+    "Stopping…". While running, the status dot pulses gently; hovering
+    any enabled button lifts it slightly with a soft shadow; pressing it
+    sits it back down.
 13. Still in Settings…, set Window scale to 150 %: the window grows and
     every control stays fully visible; set it back to 100 % and the window
     returns to its original size; both choices survive a restart.
