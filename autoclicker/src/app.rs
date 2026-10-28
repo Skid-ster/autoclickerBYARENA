@@ -2,13 +2,13 @@
 //!
 //! The main window is a fixed-size, non-scrolling replica of the classic
 //! OP Auto Clicker 4.x screen: four bordered group boxes (Click interval,
-//! Click options, Click repeat, Cursor position) above a 2x2 grid of
-//! standard push buttons. Power-user features (background window delivery,
-//! Gaussian humanization and live telemetry) live in a separate Advanced
-//! window so the main screen stays pixel-faithful to the reference.
+//! Click options, Click repeat, Cursor position) above the authentic 2x2
+//! grid of standard push buttons. There is no diagnostics surface: every
+//! control on screen configures clicking, and the engine's telemetry stays
+//! an internal, test-verified concern.
 //!
-//! All worker interaction goes through atomics and the lock-free telemetry
-//! store. The update thread never blocks on the worker.
+//! All worker interaction goes through atomics. The update thread never
+//! blocks on the worker.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -27,11 +27,7 @@ use crate::hotkey::{
 use crate::icon;
 use crate::macro_rec::{self, MacroRecorder};
 use crate::settings;
-use crate::telemetry::{
-    compute_stats, ClickRecord, TelemetryStats, GRAPH_HISTORY_SIZE, HISTOGRAM_BINS,
-    SLIDING_WINDOW_LIMIT,
-};
-use crate::win32::{self, WindowInfo};
+use crate::win32;
 
 /// Complete color scheme for one theme. Both themes share every layout
 /// metric — only colors differ — so switching can never move a control.
@@ -298,7 +294,7 @@ static MOG_TEXT: ThemeText = ThemeText {
 /// Logical (point) size of the fixed main window; the Settings window's
 /// scale option zooms the UI and re-applies this size so the physical
 /// window grows or shrinks with the chosen percentage.
-pub const MAIN_WINDOW_SIZE: [f32; 2] = [560.0, 480.0];
+pub const MAIN_WINDOW_SIZE: [f32; 2] = [560.0, 456.0];
 
 const LOG_LIMIT: usize = 200;
 const SAVE_THROTTLE_MS: u64 = 1_000;
@@ -355,18 +351,10 @@ pub struct OpAutoClickerApp {
     macro_loops: u64,
     macro_playing: bool,
 
-    // Background targeting (Advanced window).
-    windows: Vec<WindowInfo>,
-    selected_window: Option<usize>,
-
-    // Telemetry aggregation.
+    // Bounded in-memory breadcrumb log (never rendered; kept for parity
+    // with the status strip and capped by LOG_LIMIT).
     logs: Vec<String>,
     last_seen_error: Option<String>,
-    sliding_window: Vec<ClickRecord>,
-    cps_history: [f64; GRAPH_HISTORY_SIZE],
-    cps_head: usize,
-    cps_count: usize,
-    stats: TelemetryStats,
 
     // Hotkey edge detection.
     toggle_was_down: bool,
@@ -376,7 +364,6 @@ pub struct OpAutoClickerApp {
     // Dialog state.
     show_hotkey_dialog: bool,
     capturing: bool,
-    show_advanced: bool,
     show_settings: bool,
 
     // Window-chrome bookkeeping: retitle and re-icon on theme change,
@@ -432,23 +419,15 @@ impl OpAutoClickerApp {
             macro_until_stopped: true,
             macro_loops: 1,
             macro_playing: false,
-            windows: Vec::new(),
-            selected_window: None,
             logs: vec![
                 "MacroClicker initialized. F6 starts/stops, F8 is the panic stop key.".to_string(),
             ],
             last_seen_error: None,
-            sliding_window: Vec::new(),
-            cps_history: [0.0; GRAPH_HISTORY_SIZE],
-            cps_head: 0,
-            cps_count: 0,
-            stats: TelemetryStats::default(),
             toggle_was_down: false,
             f8_was_down: false,
             capture_key_was_down: false,
             show_hotkey_dialog: false,
             capturing: false,
-            show_advanced: false,
             show_settings: false,
             applied_window_title: "",
             applied_mog_icon: false,
@@ -463,9 +442,24 @@ impl OpAutoClickerApp {
             status_text: String::new(),
         };
         app.load_persisted();
+        app.sanitize_loaded_config();
         app.last_saved_config = app.config.clone();
         app.last_saved_prefs = app.prefs;
         app
+    }
+
+    /// Modes that no longer have an on-screen control are neutralized at
+    /// load so a settings file written by an older build can never strand
+    /// the app in a state the user cannot see or leave (for example a
+    /// persisted background-window delivery whose target handle is long
+    /// dead, or Gaussian humanization silently jittering every interval).
+    /// Runs before the saved-fingerprint snapshot, so nothing is rewritten
+    /// to disk until the user actually changes something.
+    fn sanitize_loaded_config(&mut self) {
+        self.config.input_mode = InputMode::GlobalSendInput;
+        self.config.target_hwnd = 0;
+        self.config.background_synchronous = false;
+        self.config.humanize_enabled = false;
     }
 
     // ------------------------------------------------------------ persistence
@@ -860,10 +854,6 @@ impl OpAutoClickerApp {
         match self.engine.start_with_macro(&config, steps) {
             Ok(()) => {
                 self.macro_playing = true;
-                self.cps_head = 0;
-                self.cps_count = 0;
-                self.cps_history.fill(0.0);
-                self.sliding_window.clear();
                 self.last_seen_error = None;
                 let count = self.macro_recorder.len();
                 let loops_text = if loops == 0 {
@@ -898,38 +888,6 @@ impl OpAutoClickerApp {
         }
     }
 
-    fn drain_and_aggregate(&mut self) {
-        let telemetry = self.engine.telemetry();
-        let len_before = self.sliding_window.len();
-        telemetry.drain_into(&mut self.sliding_window);
-
-        // One CPS sample per *click*, computed from the gap the worker
-        // actually measured between consecutive clicks. Sampling per UI
-        // frame instead (the old approach) aliased against the frame rate:
-        // frames without a click pushed 0.0 and frames spanning several
-        // clicks spiked, so perfectly stable clicking drew an unstable
-        // chart.
-        for record in &self.sliding_window[len_before..] {
-            if record.actual_gap_ms > 0.1 {
-                self.cps_history[self.cps_head] = 1000.0 / record.actual_gap_ms;
-                self.cps_head = (self.cps_head + 1) % self.cps_history.len();
-                self.cps_count = (self.cps_count + 1).min(self.cps_history.len());
-            }
-        }
-
-        if self.sliding_window.len() > SLIDING_WINDOW_LIMIT {
-            let drop_count = self.sliding_window.len() - SLIDING_WINDOW_LIMIT;
-            self.sliding_window.drain(0..drop_count);
-        }
-
-        self.stats = compute_stats(
-            &self.sliding_window,
-            self.engine.click_count(),
-            self.engine.missed_count(),
-            self.engine.elapsed_ms(),
-        );
-    }
-
     fn toggle_session(&mut self) {
         if self.macro_recording {
             self.stop_macro_recording("hotkey");
@@ -947,41 +905,13 @@ impl OpAutoClickerApp {
     }
 
     fn handle_start(&mut self) {
-        if self.config.input_mode == InputMode::BackgroundHwnd {
-            let Some(index) = self.selected_window else {
-                self.set_status(
-                    StatusKind::Warning,
-                    "Select a target window in Advanced first.",
-                );
-                self.log("Start rejected: select a target window first.");
-                return;
-            };
-            let Some(info) = self.windows.get(index) else {
-                self.set_status(
-                    StatusKind::Warning,
-                    "Target list is stale; press Refresh in Advanced.",
-                );
-                self.log("Start rejected: target list is stale, refresh it.");
-                return;
-            };
-            if !win32::is_valid_window(info.hwnd) {
-                self.set_status(
-                    StatusKind::Warning,
-                    "Selected window no longer exists; pick another.",
-                );
-                self.log("Start rejected: selected window handle is invalid.");
-                return;
-            }
-            self.config.target_hwnd = info.hwnd;
-        } else {
-            self.config.target_hwnd = 0;
-        }
+        // Only global SendInput delivery is exposed by the UI; the target
+        // handle is pinned clear so a stale persisted value can never leak
+        // into a session.
+        self.config.input_mode = InputMode::GlobalSendInput;
+        self.config.target_hwnd = 0;
         match self.engine.start(&self.config) {
             Ok(()) => {
-                self.cps_head = 0;
-                self.cps_count = 0;
-                self.cps_history.fill(0.0);
-                self.sliding_window.clear();
                 self.last_seen_error = None;
                 let text = self.theme_text();
                 self.set_status(
@@ -1014,7 +944,6 @@ impl OpAutoClickerApp {
         self.prefs = AppPrefs::default();
         self.repeat_limited = false;
         self.offset_ms = 0.0;
-        self.selected_window = None;
         self.picking_location = false;
         self.sync_interval_editors();
         self.set_status(StatusKind::Ready, "Factory defaults restored.");
@@ -1339,14 +1268,6 @@ impl OpAutoClickerApp {
                     self.show_macro_window = true;
                 }
                 ui.end_row();
-
-                if Self::classic_button(ui, pal, "Settings…", true, button_width).clicked() {
-                    self.show_settings = true;
-                }
-                if Self::classic_button(ui, pal, "Advanced…", true, button_width).clicked() {
-                    self.show_advanced = true;
-                }
-                ui.end_row();
             });
     }
 
@@ -1581,346 +1502,18 @@ impl OpAutoClickerApp {
                     .color(pal.text_dim)
                     .small(),
                 );
+                ui.add_space(10.0_f32);
+                ui.separator();
+                ui.add_space(6.0_f32);
+                if ui
+                    .button("Reset all settings to factory defaults")
+                    .clicked()
+                {
+                    self.reset_to_defaults();
+                }
             });
         if !open {
             self.show_settings = false;
-        }
-    }
-
-    fn draw_advanced_window(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_advanced;
-        egui::Window::new("Advanced — delivery, humanization & telemetry")
-            .open(&mut open)
-            .default_size(Vec2::new(520.0_f32, 620.0_f32))
-            .min_width(440.0_f32)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.draw_delivery_section(ui);
-                    ui.add_space(8.0_f32);
-                    self.draw_humanization_section(ui);
-                    ui.add_space(8.0_f32);
-                    self.draw_telemetry_section(ui);
-                    ui.add_space(8.0_f32);
-                    if ui
-                        .button("Reset all settings to factory defaults")
-                        .clicked()
-                    {
-                        self.reset_to_defaults();
-                    }
-                });
-            });
-        if !open {
-            self.show_advanced = false;
-        }
-    }
-
-    fn draw_delivery_section(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        Self::group_box(ui, pal, "Input delivery & targeting", |ui| {
-            ui.radio_value(
-                &mut self.config.input_mode,
-                InputMode::GlobalSendInput,
-                "Global (SendInput) — works in any application",
-            );
-            ui.radio_value(
-                &mut self.config.input_mode,
-                InputMode::BackgroundHwnd,
-                "Background (posted window messages)",
-            );
-            if self.config.input_mode == InputMode::BackgroundHwnd {
-                ui.add_space(4.0_f32);
-                ui.horizontal(|ui| {
-                    let selected = self
-                        .selected_window
-                        .and_then(|i| self.windows.get(i))
-                        .map(|w| format!("{} [PID {}]", w.title, w.process_id))
-                        .unwrap_or_else(|| "No window selected".to_string());
-                    egui::ComboBox::from_id_source("target_combo")
-                        .selected_text(selected)
-                        .show_ui(ui, |ui| {
-                            if self.windows.is_empty() {
-                                ui.label(
-                                    egui::RichText::new("List is empty — press Refresh")
-                                        .color(pal.text_dim),
-                                );
-                            }
-                            for (index, info) in self.windows.iter().enumerate() {
-                                let label = format!(
-                                    "{} [PID {}]{}",
-                                    info.title,
-                                    info.process_id,
-                                    if info.minimized { " (minimized)" } else { "" }
-                                );
-                                if ui
-                                    .selectable_label(self.selected_window == Some(index), label)
-                                    .clicked()
-                                {
-                                    // The per-frame fingerprint check flushes
-                                    // this change to disk; no mutable call can
-                                    // live inside the immutable window iter.
-                                    self.selected_window = Some(index);
-                                    self.config.target_hwnd = info.hwnd;
-                                }
-                            }
-                        });
-                    if ui.button("Refresh").clicked() {
-                        self.windows = win32::enumerate_windows();
-                        if self.selected_window.unwrap_or(0) >= self.windows.len() {
-                            self.selected_window = None;
-                            self.config.target_hwnd = 0;
-                        }
-                        self.log(format!(
-                            "Target window list refreshed: {} candidates.",
-                            self.windows.len()
-                        ));
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.add_sized(
-                        [110.0_f32, 22.0_f32],
-                        egui::DragValue::new(&mut self.config.client_x)
-                            .clamp_range(0..=100_000)
-                            .prefix("Client X: "),
-                    );
-                    ui.add_sized(
-                        [110.0_f32, 22.0_f32],
-                        egui::DragValue::new(&mut self.config.client_y)
-                            .clamp_range(0..=100_000)
-                            .prefix("Client Y: "),
-                    );
-                });
-                ui.checkbox(
-                    &mut self.config.background_synchronous,
-                    "Synchronous delivery (SendMessageTimeoutW)",
-                );
-            }
-        });
-    }
-
-    fn draw_humanization_section(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        Self::group_box(ui, pal, "Gaussian humanization (expert)", |ui| {
-            ui.checkbox(
-                &mut self.config.humanize_enabled,
-                "Enable Gaussian humanization",
-            );
-            ui.collapsing("Advanced timing & humanization fields", |ui| {
-                ui.add_space(3.0_f32);
-                let fields: [(&str, &mut f64, f64, f64); 9] = [
-                    (
-                        "Base interval (ms)",
-                        &mut self.config.base_interval_ms,
-                        0.05,
-                        10_000.0,
-                    ),
-                    (
-                        "Interval sigma (ms)",
-                        &mut self.config.sigma_ms,
-                        0.0,
-                        1_000.0,
-                    ),
-                    (
-                        "Interval sigma (%)",
-                        &mut self.config.sigma_percent,
-                        0.0,
-                        100.0,
-                    ),
-                    (
-                        "Min interval (ms)",
-                        &mut self.config.min_interval_ms,
-                        0.05,
-                        10_000.0,
-                    ),
-                    (
-                        "Max interval (ms)",
-                        &mut self.config.max_interval_ms,
-                        1.0,
-                        60_000.0,
-                    ),
-                    (
-                        "Hold mean (ms)",
-                        &mut self.config.hold_mean_ms,
-                        0.0,
-                        5_000.0,
-                    ),
-                    (
-                        "Hold sigma (ms)",
-                        &mut self.config.hold_sigma_ms,
-                        0.0,
-                        1_000.0,
-                    ),
-                    ("Hold min (ms)", &mut self.config.hold_min_ms, 0.0, 5_000.0),
-                    ("Hold max (ms)", &mut self.config.hold_max_ms, 1.0, 10_000.0),
-                ];
-                for (label, value, low, high) in fields {
-                    ui.add(
-                        egui::DragValue::new(value)
-                            .speed(0.5)
-                            .clamp_range(low..=high)
-                            .fixed_decimals(4)
-                            .prefix(format!("{label}: ")),
-                    );
-                }
-                ui.add_space(6.0_f32);
-                match self.config.validate() {
-                    Ok(()) => ui.label(
-                        egui::RichText::new(format!(
-                            "Valid. Effective sigma: {:.3} ms",
-                            self.config.effective_interval_sigma_ms()
-                        ))
-                        .color(pal.success)
-                        .small(),
-                    ),
-                    Err(error) => ui.label(
-                        egui::RichText::new(format!("Configuration issue: {error}"))
-                            .color(pal.warning)
-                            .small(),
-                    ),
-                }
-            });
-        });
-    }
-
-    fn draw_telemetry_section(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        Self::group_box(ui, pal, "Live metrics", |ui| {
-            Grid::new("metrics_grid")
-                .num_columns(2)
-                .spacing(Vec2::new(18.0_f32, 8.0_f32))
-                .show(ui, |ui| {
-                    let metric = |ui: &mut egui::Ui, label: &str, value: String| {
-                        ui.label(egui::RichText::new(label).color(pal.text_dim));
-                        ui.label(egui::RichText::new(value).color(pal.text));
-                        ui.end_row();
-                    };
-                    metric(ui, "Actual CPS", format!("{:.3}", self.stats.actual_cps));
-                    metric(
-                        ui,
-                        "Interval mean",
-                        format!("{:.4} ms", self.stats.mean_interval_ms),
-                    );
-                    metric(
-                        ui,
-                        "Interval sigma",
-                        format!("{:.4} ms", self.stats.sigma_interval_ms),
-                    );
-                    metric(
-                        ui,
-                        "Consistency (+/-10%)",
-                        format!("{:.2} %", self.stats.consistency_pct),
-                    );
-                    metric(
-                        ui,
-                        "Missed deadlines",
-                        self.stats.missed_deadlines.to_string(),
-                    );
-                    metric(
-                        ui,
-                        "Ring buffer dropped",
-                        self.engine.telemetry().dropped_records().to_string(),
-                    );
-                });
-        });
-        ui.add_space(8.0_f32);
-        Self::group_box(ui, pal, "Real-time CPS", |ui| self.draw_cps_graph(ui));
-        ui.add_space(8.0_f32);
-        Self::group_box(ui, pal, "Interval histogram (ms)", |ui| {
-            self.draw_histogram(ui)
-        });
-        ui.add_space(8.0_f32);
-        Self::group_box(ui, pal, "Recent activity", |ui| {
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .max_height(170.0_f32)
-                .show(ui, |ui| {
-                    for line in &self.logs {
-                        let warning = line.contains("PANIC")
-                            || line.contains("rejected")
-                            || line.contains("error")
-                            || line.contains("Warning")
-                            || line.contains("failed");
-                        let color = if warning { pal.warning } else { pal.text_dim };
-                        ui.label(egui::RichText::new(line).color(color).small());
-                    }
-                });
-        });
-    }
-
-    fn draw_cps_graph(&self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), 150.0_f32), Sense::hover());
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 6.0_f32, pal.chart_bg);
-        painter.rect_stroke(rect, 6.0_f32, Stroke::new(1.0_f32, pal.chart_grid));
-
-        for step in 1..4 {
-            let y = rect.top() + rect.height() * step as f32 / 4.0_f32;
-            painter.line_segment(
-                [
-                    egui::pos2(rect.left() + 8.0_f32, y),
-                    egui::pos2(rect.right() - 8.0_f32, y),
-                ],
-                Stroke::new(1.0_f32, pal.chart_grid),
-            );
-        }
-
-        let mut max_cps = (self.config.target_cps() * 1.25).max(1.0);
-        for sample in self.cps_history {
-            max_cps = max_cps.max(sample);
-        }
-
-        if self.cps_count > 1 {
-            let mut previous = egui::Pos2::ZERO;
-            for i in 0..self.cps_count {
-                let index = (self.cps_head + self.cps_history.len() - self.cps_count + i)
-                    % self.cps_history.len();
-                let x = rect.left() + rect.width() * i as f32 / (self.cps_history.len() - 1) as f32;
-                let normalized = (self.cps_history[index] / max_cps).clamp(0.0, 1.0) as f32;
-                let y = rect.bottom() - 10.0_f32 - normalized * (rect.height() - 22.0_f32);
-                let current = egui::pos2(x, y);
-                if i > 0 {
-                    painter.line_segment([previous, current], Stroke::new(2.0_f32, pal.accent));
-                }
-                previous = current;
-            }
-        }
-    }
-
-    fn draw_histogram(&self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        let (rect, _) =
-            ui.allocate_exact_size(Vec2::new(ui.available_width(), 130.0_f32), Sense::hover());
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 6.0_f32, pal.chart_bg);
-        painter.rect_stroke(rect, 6.0_f32, Stroke::new(1.0_f32, pal.chart_grid));
-
-        let max_bin = self
-            .stats
-            .histogram
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(0)
-            .max(1) as f32;
-        let gap = 3.0_f32;
-        let bar_width = rect.width() / HISTOGRAM_BINS as f32 - gap;
-        for bin in 0..HISTOGRAM_BINS {
-            let height = rect.height() * self.stats.histogram[bin] as f32 / max_bin * 0.78_f32;
-            let x = rect.left() + 8.0_f32 + bin as f32 * (bar_width + gap);
-            let color = if bin % 2 == 0 {
-                pal.accent
-            } else {
-                pal.chart_bar_alt
-            };
-            painter.rect_filled(
-                egui::Rect::from_min_size(
-                    egui::pos2(x, rect.bottom() - height - 10.0_f32),
-                    Vec2::new(bar_width, height),
-                ),
-                3.0_f32,
-                color,
-            );
         }
     }
 }
@@ -1993,8 +1586,6 @@ impl eframe::App for OpAutoClickerApp {
                 }
             }
         }
-        self.drain_and_aggregate();
-
         // Detect natural session completion (repeat count reached) so the
         // status line and persistence react even without a button press.
         // Manual stops and worker errors keep their own status instead of
@@ -2121,6 +1712,20 @@ impl eframe::App for OpAutoClickerApp {
                             .color(pal.text_dim)
                             .small(),
                         );
+                        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().button_padding = Vec2::new(8.0_f32, 2.0_f32);
+                            let button = egui::Button::new(
+                                egui::RichText::new("Settings…")
+                                    .size(12.0_f32)
+                                    .color(pal.text),
+                            )
+                            .fill(pal.button)
+                            .stroke(Stroke::new(1.0_f32, pal.button_border))
+                            .rounding(Rounding::same(3.0_f32));
+                            if ui.add(button).clicked() {
+                                self.show_settings = true;
+                            }
+                        });
                     });
                 });
             });
@@ -2130,9 +1735,6 @@ impl eframe::App for OpAutoClickerApp {
         }
         if self.show_hotkey_dialog {
             self.draw_hotkey_dialog(ctx);
-        }
-        if self.show_advanced {
-            self.draw_advanced_window(ctx);
         }
         if self.show_macro_window {
             self.draw_macro_window(ctx);

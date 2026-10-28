@@ -24,12 +24,8 @@ Everything 4.1 does, plus the parts it cannot:
 | Current location / Pick location X,Y | Yes | Yes |
 | Remappable background hotkey (default F6) | Yes | Yes |
 | Record & Playback | Yes | Yes — exact positions, buttons **and gaps**, loop counts, F8 panic mid-playback |
-| Sub-millisecond intervals | No (1 ms floor) | Yes |
 | Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
-| Gaussian humanization (expert) | No | Yes |
-| Background clicking into unfocused/minimized windows | No | Yes |
 | Dedicated panic key (F8) always reserved | No | Yes |
-| Live telemetry: per-click CPS chart, histogram, missed-deadline stats | No | Yes |
 | Six themes + 75–200 % window scaling | No | Yes |
 | Open source with Windows CI and 67 automated tests | No | Yes |
 
@@ -56,9 +52,9 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   Click interval with the 4.1 Random offset row, side-by-side Click options
   and Click repeat, Cursor position with a real Pick location button
   (click the button, then click anywhere on screen; Esc cancels), and the
-  4.1 button rows — Start/Stop, then Hotkey setting/Record & Playback —
-  followed by Settings…/Advanced…. Start refuses invalid configurations
-  and Stop stays greyed until a session is running. The 560x480 viewport
+  4.1 button rows — Start/Stop, then Hotkey setting/Record & Playback.
+  Start refuses invalid configurations
+  and Stop stays greyed until a session is running. The 560x456 viewport
   hugs the content; the group-box titles sit on the face color and break
   the top border like the native control, and every numeric field and
   dropdown keeps readable contrast in all states.
@@ -69,8 +65,8 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   pollutes the macro; the hotkey and F8 also stop it). Playback replays the
   sequence through the same QPC-scheduled worker as ordinary sessions —
   exact buttons, positions and delays, drift-free, loop N times or until
-  stopped, F8 panic-stops instantly and the telemetry dashboard watches
-  every replayed click. Up to 2048 steps per macro.
+  stopped, and F8 panic-stops instantly mid-playback. Up to 2048 steps
+  per macro.
 - **Six themes + window scaling** — a **Settings…** button in the
   bottom-right corner opens a Settings window with a theme picker (Classic
   light, Dark, Midnight OLED, Terminal green, Vaporwave, and the
@@ -82,8 +78,8 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   fluent meme — "+1000 aura per click", "Aura cooling down…", "everyone
   brutally frame-mogged") and a window-scale picker (75–200 %):
   the whole UI zooms and the window resizes itself so every control stays
-  visible. Both choices restyle every window (main screen, Hotkey dialog,
-  Advanced window and its charts), are remembered across restarts, and all
+  visible. Both choices restyle every window (main screen, Hotkey dialog
+  and Settings window), are remembered across restarts, and all
   themes share the exact same layout, so switching never moves a control.
   (The native OS title bar follows the Windows app mode — black when
   Windows is in dark app mode; eframe/egui 0.27 cannot recolor native
@@ -92,8 +88,8 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 - Left, right and middle mouse buttons; single, double and triple click
   types (multi-clicks use QPC-spun gaps, never sleeps).
 - Hours/Mins/Secs/Milliseconds interval fields plus 4.1's uniform
-  **Random offset ± ms**, with optional expert Gaussian humanization behind
-  the Advanced window.
+  **Random offset ± ms** — every clicking control lives on the one main
+  screen, with nothing hidden behind extra windows.
 - Remappable global start/stop hotkey (default **F6**) that works from
   anywhere — the app keeps a light 20 Hz background heartbeat alive even
   while idle and unfocused, so pressing the hotkey inside a game or any
@@ -106,16 +102,9 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   QPC spin scheduling with no sleep calls, idle parking on a Win32
   manual-reset event, RAII `timeBeginPeriod(1)` and time-critical thread
   priority with verified failure reporting.
-- Global arrayed `SendInput` mode and background HWND message mode
-  (button-specific `WM_*BUTTON*` messages, `MK_*` flags, `MAKELPARAM`)
-  supporting unfocused and minimized targets.
-- Lock-free single-producer/single-consumer telemetry ring, live CPS graph,
-  interval histogram, consistency percentage and missed-deadline count in
-  the Advanced window. The Real-time CPS chart plots one sample per click
-  from the worker's measured click-to-click gap, so a fixed interval draws
-  a flat line; the QPC scheduler keeps an absolute, drift-free cadence with
-  bounded catch-up, so an OS stall is absorbed instead of being repaid as a
-  burst of fast clicks.
+- Global arrayed `SendInput` click delivery driven by a QPC scheduler that
+  keeps an absolute, drift-free cadence with bounded catch-up, so an OS
+  stall is absorbed instead of being repaid as a burst of fast clicks.
 - 67 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
