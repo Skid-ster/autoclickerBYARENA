@@ -30,7 +30,21 @@ jobs:
         run: cargo fmt --all --manifest-path autoclicker/Cargo.toml -- --check
 
       - name: Clippy (warnings denied)
-        run: cargo clippy --manifest-path autoclicker/Cargo.toml -- -D warnings
+        run: |
+          # Keep the exact Clippy exit status and include the tail of any
+          # failure in a check annotation, where it is easy to inspect.
+          $logPath = Join-Path $env:RUNNER_TEMP "macroclicker-clippy.log"
+          $command = "cargo clippy --manifest-path autoclicker/Cargo.toml -- -D warnings > `"$logPath`" 2>&1"
+          cmd.exe /d /s /c $command
+          $clippyExit = $LASTEXITCODE
+          Get-Content -Path $logPath | ForEach-Object { Write-Host $_ }
+          if ($clippyExit -ne 0) {
+            $tail = (Get-Content -Path $logPath -Tail 100) -join "`n"
+            $tail = $tail -replace '\x1B\[[0-9;]*[mK]', ''
+            $tail = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Host "::error title=Clippy diagnostics::$tail"
+            exit $clippyExit
+          }
 
       - name: Test suite
         run: cargo test --manifest-path autoclicker/Cargo.toml -- --nocapture
@@ -58,7 +72,9 @@ jobs:
           if ($packageVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Cargo package version '$packageVersion' is not a strict X.Y.Z release version" }
           if ($vi.FileVersion -ne $packageVersion -and !$vi.FileVersion.StartsWith("$packageVersion.")) { throw "exe FileVersion '$($vi.FileVersion)' does not match Cargo package version '$packageVersion'" }
           if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$packageVersion") { throw "release tag '${{ github.ref_name }}' does not match Cargo package version 'v$packageVersion'" }
-          Write-Host "Subsystem=$subsystem (Windows GUI) ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) PackageVersion=$packageVersion Size=$((Get-Item $exe).Length) bytes"
+          $summary = "Subsystem=$subsystem (Windows GUI) ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) PackageVersion=$packageVersion Size=$((Get-Item $exe).Length) bytes"
+          Write-Host $summary
+          Write-Host "::notice title=Windows binary metadata::$summary"
 
       - name: Upload release binary
         uses: actions/upload-artifact@v4
@@ -67,20 +83,46 @@ jobs:
           path: autoclicker/target/release/macro_clicker.exe
           if-no-files-found: error
 
-      # Pushing a version tag (v*.) publishes a GitHub Release with the
-      # compiled exe attached (GitHub displays the file's SHA-256 digest
-      # under the asset automatically, so no separate checksum file is
-      # needed). Re-running the workflow for an existing tag re-uploads
-      # the asset instead of failing on the already-created release.
+      # Pushing a version tag (v*.) publishes a GitHub Release from the
+      # checked-in notes in docs/releases/<tag>.md. The workflow appends
+      # the exact asset size and SHA-256 it computed for the binary it
+      # is publishing, and attaches the same digest as SHA256SUMS.txt.
+      # Re-running the workflow for an existing tag refreshes the assets
+      # and notes instead of failing on the already-created release.
       - name: Publish GitHub Release (version tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${{ github.ref_name }}"
+          $notesSource = "docs/releases/$tag.md"
+          if (!(Test-Path $notesSource)) {
+            throw "Missing release notes: $notesSource (see docs/RELEASING.md)"
+          }
           Copy-Item autoclicker/target/release/macro_clicker.exe ./macro_clicker.exe
-          gh release create $tag ./macro_clicker.exe --title "MacroClicker $tag" --generate-notes
+          $exeItem = Get-Item ./macro_clicker.exe
+          $sha256 = (Get-FileHash $exeItem.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$sha256  macro_clicker.exe" | Set-Content -Encoding ascii ./SHA256SUMS.txt
+          $checksumLine = (Get-Content -Raw -Encoding ascii ./SHA256SUMS.txt).Trim()
+          if ($checksumLine -cne "$sha256  macro_clicker.exe") { throw "SHA256SUMS.txt does not match the built executable" }
+          Write-Host "::notice title=Release checksum file::$checksumLine"
+          $notesFile = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          Copy-Item $notesSource $notesFile
+          Add-Content -Encoding utf8 $notesFile @(
+            "",
+            "## Download and verification",
+            "",
+            "- **Asset:** macro_clicker.exe",
+            "- **Size:** $($exeItem.Length) bytes",
+            "- **SHA-256:** $sha256",
+            "",
+            "SHA256SUMS.txt is attached to this release for offline verification."
+          )
+          gh release create $tag ./macro_clicker.exe ./SHA256SUMS.txt --title "MacroClicker $tag" --notes-file $notesFile --verify-tag
           if ($LASTEXITCODE -ne 0) {
-            gh release upload $tag ./macro_clicker.exe --clobber
+            gh release upload $tag ./macro_clicker.exe ./SHA256SUMS.txt --clobber
+            if ($LASTEXITCODE -eq 0) {
+              gh release edit $tag --notes-file $notesFile
+            }
           }
           exit $LASTEXITCODE

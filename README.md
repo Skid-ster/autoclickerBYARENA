@@ -1,5 +1,11 @@
 # MacroClicker
 
+[![CI](https://github.com/Skid-ster/autoclickerBYARENA/actions/workflows/ci.yml/badge.svg)](https://github.com/Skid-ster/autoclickerBYARENA/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/Skid-ster/autoclickerBYARENA?label=latest%20release)](https://github.com/Skid-ster/autoclickerBYARENA/releases/latest)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2021H2%2B%20%7C%20Windows%2011%20x64-blue)](https://github.com/Skid-ster/autoclickerBYARENA/releases/latest)
+[![Rust](https://img.shields.io/badge/Rust-stable%20%7C%20edition%202021-orange)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **MacroClicker** is a Windows x64 auto-clicker written in stable Rust with an
 egui interface that keeps the authentic classic OP Auto Clicker 4.x
 dialog layout in a modern card surface (the visual language of its
@@ -32,7 +38,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
 | Five themes + 75–200 % window scaling | No | Yes |
 | Built-in updates against GitHub releases | No | Yes — one click downloads, SHA-256-verifies, installs and restarts |
-| Open source with Windows CI and 103 automated tests | No | Yes |
+| Open source with Windows CI and 108 automated tests | No | Yes |
 
 \* Resizing/scaling is the researched part: OP's public 4.1 feature
 pages list no resize or UI-scale feature; the winget-catalogued 4.1
@@ -44,25 +50,28 @@ later closed builds are not public, so no stronger claim is made.
 
 ## Download
 
-Don't want to build? Grab the ready-to-run **`macro_clicker.exe`** from the
-[GitHub Releases page](https://github.com/Skid-ster/autoclickerBYARENA/releases)
-— every version tag is compiled by the Windows CI workflow (format, clippy,
-all 103 tests, release build) and published there automatically.
-CI also refuses a version tag unless the tag, Cargo package version
-and the EXE's embedded FileVersion all agree, so the in-app updater
-can never be pointed at a mislabelled release. The app keeps itself
-current too: the **Updates…** button in its footer shows the
-installed version, the latest version GitHub reported and when it
-last checked; a newer release turns the footer button into
-**Update vX.Y.Z**, and **Install vX.Y.Z** downloads the new EXE,
-verifies its size and SHA-256 fingerprint against GitHub's
-published values, swaps it into place (rolling back automatically
-if anything fails) and restarts into it. No installer; just
-download and run. The EXE is not code-signed, so on first launch
-Windows SmartScreen may ask — choose **More info → Run anyway**
-(it stops asking once the file is known on your PC). GitHub also
-displays the file's SHA-256 fingerprint under the download link
-if you want to verify your copy by hand.
+Download the ready-to-run **`macro_clicker.exe`** from the
+[latest GitHub release](https://github.com/Skid-ster/autoclickerBYARENA/releases/latest).
+Every version tag is compiled by the Windows CI workflow (format check,
+clippy with warnings denied, all 108 tests, release build, and embedded
+version/GUI-subsystem verification). Releases also include
+`SHA256SUMS.txt` for offline verification. CI refuses a version tag
+unless the tag, Cargo package version, and EXE FileVersion agree.
+
+MacroClicker updates itself after one explicit action. The footer
+**Update vX.Y.Z** button starts the complete sequence when no click or
+macro session is active: download, exact size and SHA-256 verification,
+rollback-safe replacement, and restart. The Updates window shows the
+installed and latest versions, installation type, download size,
+progress, and release notes. A recognized source checkout is handled
+explicitly: its clean `main` branch is fast-forwarded to the exact
+release tag before the verified release build is installed. No update
+installs silently in the background.
+
+No installer is required. The EXE is not code-signed, so on first launch
+Windows SmartScreen may ask for confirmation. Verify the published
+SHA-256 if the file was obtained from anywhere other than this
+repository's GitHub Releases.
 
 ## Quick start
 
@@ -78,6 +87,11 @@ cargo run --release
 ```
 
 The executable is `autoclicker/target/release/macro_clicker.exe`.
+When that executable is launched from this repository, the Updates
+window identifies it as a **Source checkout build**. Choosing an update
+fast-forwards a clean `main` checkout to the release tag and restarts
+into the matching verified release build; local tracked changes stop
+the update before the program file is replaced.
 
 ## Features
 
@@ -171,7 +185,7 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 103 unit tests over platform-independent modules, plus a Windows CI
+- 108 unit tests over platform-independent modules, plus a Windows CI
   workflow (format check, clippy with warnings denied, tests, release build
   and binary artifact), and a generated crosshair application icon.
 
@@ -185,5 +199,20 @@ for the full manual checklist and
 | Path | Purpose |
 | --- | --- |
 | `autoclicker/` | The Rust/egui application (the single shipped engine) |
-| `.github/workflows/ci.yml` | Windows MSVC build, test and artifact pipeline |
+| `.github/workflows/ci.yml` | Windows MSVC build, test, release, and artifact pipeline |
+| `CHANGELOG.md` | User-visible changes by release |
+| `docs/releases/` | Checked-in public notes for each tagged release |
+| `docs/RELEASING.md` | Versioning, release preparation, and publication checks |
 | `docs/VERIFICATION.md` | Toolchains, test evidence, defect history and limitations |
+
+## Project documents
+
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+- [Release process](docs/RELEASING.md)
+- [Verification record](docs/VERIFICATION.md)
+
+## License
+
+MacroClicker is open source under the [MIT License](LICENSE).

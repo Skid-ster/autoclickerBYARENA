@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a reproducible MacroClicker problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve MacroClicker. Please include enough detail to reproduce the problem without sharing private files or credentials.
+  - type: input
+    id: version
+    attributes:
+      label: MacroClicker version
+      description: The version shown in the Updates window, for example 1.5.0.
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation type
+      options:
+        - Portable release EXE
+        - Built from source
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and display setup
+      description: For example, Windows 11 23H2, 2560x1440 at 125% display scaling.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the smallest numbered sequence that reliably causes the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include the exact status or Updates-window message when one is shown.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Theme, window size, relevant settings, screenshots, or anything else that may help.

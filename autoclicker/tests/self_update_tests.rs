@@ -13,8 +13,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use self_update::{
-    cleanup_stale_update_files, hash_file, is_amd64_pe, is_cargo_target_exe, stale_update_files,
-    swap_in_new_exe, undo_swap, update_paths, verify_downloaded_exe,
+    cleanup_stale_update_files, hash_file, install_kind_for_exe, is_amd64_pe, is_cargo_target_exe,
+    is_supported_origin_url, package_version_from_manifest, source_checkout_for_exe,
+    stale_update_files, swap_in_new_exe, undo_swap, update_paths, verify_downloaded_exe,
+    InstallKind,
 };
 use update::Sha256;
 
@@ -205,6 +207,98 @@ fn undo_swap_restores_the_original_after_a_failed_launch() {
     assert!(!paths.backup.exists());
     assert!(!paths.download.exists());
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn source_checkout_detection_requires_the_real_project_layout() {
+    let root = scratch_dir("source-layout");
+    let crate_dir = root.join("autoclicker");
+    let exe = crate_dir
+        .join("target")
+        .join("release")
+        .join("macro_clicker.exe");
+    fs::create_dir_all(exe.parent().expect("exe parent")).expect("target dirs");
+    fs::create_dir_all(crate_dir.join("src")).expect("src dir");
+    fs::create_dir_all(root.join(".git")).expect("git dir");
+    fs::write(&exe, b"program").expect("exe");
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        b"[package]\nversion = \"1.5.0\"\n",
+    )
+    .expect("manifest");
+    fs::write(crate_dir.join("src").join("main.rs"), b"fn main() {}").expect("entry point");
+
+    let checkout = source_checkout_for_exe(&exe).expect("real checkout must be recognized");
+    assert_eq!(checkout.root, root);
+    assert_eq!(checkout.crate_dir, crate_dir);
+    assert_eq!(checkout.manifest, crate_dir.join("Cargo.toml"));
+    assert_eq!(checkout.profile, "release");
+    assert_eq!(
+        install_kind_for_exe(&exe),
+        InstallKind::SourceCheckout(checkout)
+    );
+
+    // A target tree without the project entry point is merely an
+    // unrecognized Cargo artifact, never a place to run Git.
+    fs::remove_file(crate_dir.join("src").join("main.rs")).expect("remove entry point");
+    assert!(source_checkout_for_exe(&exe).is_none());
+    assert_eq!(install_kind_for_exe(&exe), InstallKind::CargoBuild);
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn portable_executables_are_not_mistaken_for_source_builds() {
+    let dir = scratch_dir("portable-kind");
+    let exe = dir.join("macro_clicker.exe");
+    fs::write(&exe, b"program").expect("exe");
+    assert_eq!(install_kind_for_exe(&exe), InstallKind::Portable);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn source_update_accepts_only_the_project_origin() {
+    for url in [
+        "https://github.com/Skid-ster/autoclickerBYARENA",
+        "https://github.com/Skid-ster/autoclickerBYARENA.git",
+        "https://github.com/skid-ster/autoclickerbyarena.git/",
+        "git@github.com:Skid-ster/autoclickerBYARENA.git",
+        "ssh://git@github.com/Skid-ster/autoclickerBYARENA",
+    ] {
+        assert!(is_supported_origin_url(url), "must accept {url}");
+    }
+    for url in [
+        "https://github.com/Skid-ster/other",
+        "https://example.com/Skid-ster/autoclickerBYARENA",
+        "http://github.com/Skid-ster/autoclickerBYARENA",
+        "https://github.com/Skid-ster/autoclickerBYARENA.evil",
+        "",
+    ] {
+        assert!(!is_supported_origin_url(url), "must reject {url}");
+    }
+}
+
+#[test]
+fn manifest_version_comes_from_the_package_table_only() {
+    let manifest = r#"
+[build-dependencies]
+winresource = "=0.1.34"
+
+[package]
+name = "macro_clicker"
+version = "1.5.0" # release
+
+[dependencies]
+egui = "=0.27.2"
+"#;
+    assert_eq!(
+        package_version_from_manifest(manifest).as_deref(),
+        Some("1.5.0")
+    );
+    assert_eq!(package_version_from_manifest("version = \"9.9.9\""), None);
+    assert_eq!(
+        package_version_from_manifest("[package]\nversion = \"not-a-version\""),
+        None
+    );
 }
 
 #[test]

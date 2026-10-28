@@ -8,7 +8,7 @@ mod update;
 use std::time::Duration;
 
 use update::{
-    checked_ago_label, download_progress_label, download_request_for_version,
+    byte_size_label, checked_ago_label, download_progress_label, download_request_for_version,
     download_url_for_version, error_headline, evaluate_release, evaluate_update, is_newer,
     latest_tag_from_json, parse_https_url, parse_latest_release, parse_sha256_hex, parse_version,
     release_asset_from_json, release_page_url_for_version, sha256_hex, should_refresh, Sha256,
@@ -376,6 +376,14 @@ fn download_progress_wording_is_bounded_and_honest() {
         "9.5 of 3.6 MB (100%)"
     );
     assert_eq!(download_progress_label(1_048_576, 0), "1.0 MB downloaded");
+}
+
+#[test]
+fn byte_size_labels_use_the_same_units_as_progress() {
+    assert_eq!(byte_size_label(0), "0 B");
+    assert_eq!(byte_size_label(1023), "1023 B");
+    assert_eq!(byte_size_label(1536), "1.5 KB");
+    assert_eq!(byte_size_label(3_833_856), "3.7 MB");
 }
 
 #[test]

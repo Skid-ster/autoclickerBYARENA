@@ -5,7 +5,71 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Resize-stuck-at-large-scale bugfix round (current): v1.4.1
+## Professional release and one-click update round (current): v1.5.0
+
+The follow-up report after v1.4.1 had two parts: GitHub releases should
+read as a professional public project rather than a personal handoff,
+and the updater still did not “do it by itself and reopen.” A code
+audit found that the portable path already contained the complete
+download → verify → swap → relaunch sequence, but every executable
+under Cargo's `target/debug` or `target/release` was deliberately
+routed to a browser download. That distinction was invisible at the
+footer and was exactly the wrong result for the prescribed
+`cargo run --release` workflow: the application could find an update,
+but a source build could not act on it inside the app.
+
+- **One classified install model everywhere.** Startup now classifies
+  the process once as a portable release build, a recognized
+  MacroClicker source checkout, an unrecognized Cargo artifact, or
+  unknown. The footer and Updates window consume that same verdict.
+  The Updates card shows installation type, latest version, download
+  size, check age, and stable channel in a compact four-column facts
+  grid, plus a shape-coded stage path. With a proven update and no
+  click/macro activity running, the footer's **Update vX.Y.Z** button
+  starts the full update directly and opens the window for progress
+  and cancellation; otherwise it opens details without side effects.
+- **Source checkouts update the checkout and the program.** A
+  recognized layout is not inferred from `target/` alone: the
+  repository marker, crate manifest, and entry point must all exist.
+  Before any working-tree change, fixed no-shell Git commands require
+  no tracked changes, branch `main`, the exact project origin, and a
+  release tag resolving to a descendant commit. The branch is then
+  fast-forwarded to that exact tag and the destination manifest must
+  name the target version. Git output goes to bounded log files, each
+  command has a deadline, and cancellation kills the active child.
+  Only after that does the existing GitHub asset pipeline run: bounded
+  WinHTTP download, AMD64 PE gate, exact size and SHA-256 checks,
+  rename swap with rollback, relaunch, and close. If the checkout was
+  fast-forwarded but the binary phase fails or is cancelled, the
+  terminal notice says so instead of claiming nothing changed. The
+  official verified release binary replaces the Cargo artifact; a
+  later `cargo build` rebuilds from the updated source as usual.
+- **Public-project release system.** The repository gains a
+  Keep-a-Changelog-formatted `CHANGELOG.md`, public release notes under
+  `docs/releases/`, `docs/RELEASING.md`, `CONTRIBUTING.md`,
+  `SECURITY.md`, GitHub issue forms, a pull-request template, and a
+  generated-notes category config. The tag workflow now requires
+  `docs/releases/<tag>.md`, appends the exact size and SHA-256 of the
+  binary it built, and publishes `SHA256SUMS.txt` beside
+  `macro_clicker.exe`. Release prose is public-facing and omits empty
+  categories and personal acceptance requests. The project is now
+  licensed under the MIT License, with the canonical text at the
+  repository root and matching Cargo package metadata.
+- **Executed here.** With Rust 1.88.0, `cargo fmt --check` is clean and
+  all ten standalone integration suites pass: config 13, hotkey 8,
+  humanize 9, icon 6, macro 9, schedule 7, self_update 14, settings 9,
+  telemetry 8, update 25 — **108 total**. The new self-update tests
+  create real recognized/lookalike source layouts, require the exact
+  project origin, and prove package-version extraction reads only the
+  `[package]` table. Clippy is clean over the touched `self_update`
+  and `update` standalone test crates. These checks do not prove
+  WinHTTP, Git for Windows, process relaunch, DWM, or SmartScreen
+  behavior. Windows CI remains the compile/clippy/test/release gate,
+  and the user's Windows machine remains final acceptance for a
+  portable v1.4.1 → v1.5.0 one-click update, followed later by a
+  v1.5.0 source-checkout update when a newer release exists.
+
+## Resize-stuck-at-large-scale bugfix round: v1.4.1
 
 The user's real-Windows acceptance run found a serious v1.4.0 defect:
 stretching the window out large could leave it at a maximum-looking
