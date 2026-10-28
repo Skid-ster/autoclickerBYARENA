@@ -35,8 +35,9 @@ Everything 4.1 does, plus the parts it cannot:
 Don't want to build? Grab the ready-to-run **`macro_clicker.exe`** from the
 [GitHub Releases page](https://github.com/Skid-ster/autoclickerBYARENA/releases)
 — every version tag is compiled by the Windows CI workflow (format, clippy,
-all 68 tests, release build) and published there with a SHA-256 checksum.
-No installer; just download and run.
+all 68 tests, release build) and published there automatically.
+No installer; just download and run. (GitHub displays the file's SHA-256
+fingerprint right under the download link if you want to verify your copy.)
 
 ## Quick start
 

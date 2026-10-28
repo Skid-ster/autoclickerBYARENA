@@ -38,6 +38,22 @@ jobs:
       - name: Release build
         run: cargo build --release --manifest-path autoclicker/Cargo.toml
 
+      # The shipped binary must stay a pure GUI application: fail the
+      # build if the console subsystem ever creeps back (that is what
+      # opened a cmd window next to the app) or if the embedded icon /
+      # version metadata goes missing. ProductName can only exist if
+      # the resource compile that also embeds the icon succeeded.
+      - name: Verify GUI subsystem and embedded metadata
+        run: |
+          $exe = "autoclicker/target/release/macro_clicker.exe"
+          $bytes = [IO.File]::ReadAllBytes($exe)
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 4 + 20 + 68)
+          if ($subsystem -ne 2) { throw "exe subsystem is $subsystem, expected 2 (Windows GUI, no console)" }
+          $vi = (Get-Item $exe).VersionInfo
+          if ($vi.ProductName -ne "MacroClicker") { throw "embedded version metadata missing (ProductName='$($vi.ProductName)')" }
+          Write-Host "Subsystem=$subsystem (Windows GUI) ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) Size=$((Get-Item $exe).Length) bytes"
+
       - name: Upload release binary
         uses: actions/upload-artifact@v4
         with:
@@ -46,9 +62,10 @@ jobs:
           if-no-files-found: error
 
       # Pushing a version tag (v*.) publishes a GitHub Release with the
-      # compiled exe and its SHA-256 checksum attached. Re-running the
-      # workflow for an existing tag re-uploads the assets instead of
-      # failing on the already-created release.
+      # compiled exe attached (GitHub displays the file's SHA-256 digest
+      # under the asset automatically, so no separate checksum file is
+      # needed). Re-running the workflow for an existing tag re-uploads
+      # the asset instead of failing on the already-created release.
       - name: Publish GitHub Release (version tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -56,9 +73,8 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           Copy-Item autoclicker/target/release/macro_clicker.exe ./macro_clicker.exe
-          (Get-FileHash ./macro_clicker.exe -Algorithm SHA256).Hash.ToLower() + "  macro_clicker.exe" | Out-File -Encoding ascii ./macro_clicker.exe.sha256
-          gh release create $tag ./macro_clicker.exe ./macro_clicker.exe.sha256 --title "MacroClicker $tag" --generate-notes
+          gh release create $tag ./macro_clicker.exe --title "MacroClicker $tag" --generate-notes
           if ($LASTEXITCODE -ne 0) {
-            gh release upload $tag ./macro_clicker.exe ./macro_clicker.exe.sha256 --clobber
+            gh release upload $tag ./macro_clicker.exe --clobber
           }
           exit $LASTEXITCODE

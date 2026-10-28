@@ -5,7 +5,81 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Fill-the-window round: height-aware layout and the 1.60 tier (current)
+## Finished-exe round: GUI subsystem, embedded icon and metadata (current)
+
+Two reports about the first published release: launching the
+downloaded exe opened a **console window next to the app**, and the
+release page carried a puzzling `.sha256` download. Both traced to
+how the binary was packaged, not to application code — this round
+changes no app logic at all.
+
+### The console window
+
+`main.rs` had no `windows_subsystem` attribute, so the linker
+produced a *console-subsystem* PE and Windows allocated a console
+whenever the exe was launched from Explorer (running via
+`cargo run` from an existing terminal masked it — the app just
+shared that console). Release builds now compile with
+`#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`:
+the downloaded exe opens **only** the autoclicker, while debug
+builds keep their console for diagnostics. Nothing in the codebase
+prints to stdout or spawns child processes (verified by grep), so
+the GUI subsystem loses nothing. Because the sandbox cannot
+download CI artifacts (GitHub's storage hosts are unreachable from
+here), the proof is a new **permanent CI step**, "Verify GUI
+subsystem and embedded metadata", which reads the Subsystem field
+from the freshly built exe's PE optional header on the Windows
+runner and fails the build unless it is `2` (IMAGE_SUBSYSTEM_WINDOWS_GUI).
+It also asserts the version metadata below, so the console can
+never silently come back. Passed on PR run 40736837930.
+
+### Icon and version metadata in the exe
+
+A new `build.rs` (using the pinned, build-time-only `winresource`
+crate) embeds into the PE resources:
+- `assets/macro_clicker.ico`: the crosshair icon rendered natively
+  at 16/20/24/32/40/48/64/128/256 px from the exact signed-distance
+  spec in `src/icon.rs` (geometry scales by size/32, 0.5 px AA
+  ramps stay native, straight alpha instead of egui's
+  premultiplied). The 32 px render was cross-checked against every
+  property `icon_tests.rs` asserts and matches (transparent
+  corners, opaque blue-accent center, alpha symmetry, solid core;
+  counts: 48 AA edge pixels, 241 accent, 591 dark). The file icon,
+  taskbar icon and window icon are now the same artwork everywhere.
+- Version strings (ProductName "MacroClicker", FileDescription,
+  InternalName, OriginalFilename) and numeric FILEVERSION /
+  PRODUCTVERSION packed from the crate version, now 1.0.1.
+
+Resource embedding is cosmetic and **warns-and-continues** if the
+SDK resource compiler is missing, so it can never break a build;
+conversely, the CI step's `ProductName` assertion (via Windows'
+own VersionInfo API) proves the whole resource compile — icon
+included — succeeded on the release binary, since one `.rc` builds
+both and a bad icon path fails `rc.exe` outright.
+
+### Leaner binary, cleaner releases
+
+`strip = true` joins the release profile's existing fat LTO and
+single codegen unit. The separate `.sha256` release asset is gone:
+it was an integrity fingerprint of the exe, but GitHub now prints
+each asset's `sha256:` digest directly under its download link
+(visible in the user's own screenshot of the page), making the
+extra file pure clutter. Removed from the v1.0.0 release and from
+the workflow; README's Download section now points at GitHub's
+built-in digest instead.
+
+All 68 tests, clippy `-D warnings` and rustfmt pass on
+windows-latest; no source file under `src/` changed except the one
+attribute block in `main.rs`.
+
+Still honestly unobserved: the embedded icon as rendered by a real
+Explorer/taskbar at each size (the ICO passed structural and
+picture checks locally, and CI proved it is inside the exe, but no
+Windows desktop was available to look at it), and SmartScreen's
+reaction is unchanged — the exe is still unsigned, which metadata
+does not fix.
+
+## Fill-the-window round: height-aware layout and the 1.60 tier
 
 The two-axis step system shipped, Aurora was confirmed present in the
 running build, and the user's verdict on their 1440p screen was still
