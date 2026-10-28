@@ -188,12 +188,46 @@ pub const MAIN_WINDOW_SIZE: [f32; 2] = [
 /// maximized window never produces comically wide buttons.
 const MAIN_CONTENT_MAX_WIDTH: f32 = 736.0_f32;
 
-/// Most extra height each of the three breathing gaps absorbs before the
-/// remaining height centers the whole content column instead. Extra
-/// height beyond `3 * MAIN_GAP_EXTRA_MAX` is split above and below the
-/// column, so a tall window composes a centered dialog instead of three
-/// ever-deepening voids between control clusters that belong together.
+/// Most extra height each breathing gap absorbs before the remaining
+/// height centers the whole content column instead. Past the gaps'
+/// bounded share the rest splits above and below the column, so a tall
+/// window composes a centered dialog instead of ever-deepening voids
+/// between control clusters that belong together.
 const MAIN_GAP_EXTRA_MAX: f32 = 14.0_f32;
+
+/// Widest content column in the wide layout. Three group boxes across
+/// need more elbow room than the stacked classic column before the
+/// side margin takes over.
+const MAIN_CONTENT_MAX_WIDTH_WIDE: f32 = 880.0_f32;
+
+/// Window height at which the wide layout's column exactly fills the
+/// window (its three-across row and single button row are shorter than
+/// the stacked classic column, whose fill height is the 456-point
+/// floor). The vertical rhythm measures spare height from here.
+const MAIN_WIDE_FILL_HEIGHT: f32 = 372.0_f32;
+
+/// Window-driven UI scale steps: (engage at or above, disengage below,
+/// zoom factor). Widths are *neutral points* — live points times the
+/// total applied zoom, i.e. the width the window has at 100 % zoom —
+/// so a step describes the window's physical size and engages at the
+/// same physical size whatever the user's chosen percentage is.
+/// Growing the window past a step enlarges the whole UI inside the
+/// same physical window; shrinking back below the lower edge of the
+/// band restores the previous step. The gap between the two edges is
+/// the hysteresis that keeps a window parked on a boundary from
+/// flip-flopping scales.
+const AUTO_ZOOM_TIERS: [(f32, f32, f32); 3] = [
+    (800.0_f32, 744.0_f32, 1.10_f32),
+    (1024.0_f32, 968.0_f32, 1.25_f32),
+    (1440.0_f32, 1384.0_f32, 1.40_f32),
+];
+
+/// Wide-layout band, tracked to the second scale step: at or above the
+/// engage width the middle row becomes Click options | Click repeat |
+/// Cursor position and the action buttons form one row of four; below
+/// the disengage width the classic stack returns.
+const WIDE_LAYOUT_ENGAGE: f32 = 1024.0_f32;
+const WIDE_LAYOUT_DISENGAGE: f32 = 968.0_f32;
 
 /// Smallest side margin around the content column, kept at the floor
 /// size so the classic layout is pixel-identical there.
@@ -282,14 +316,30 @@ pub struct OpAutoClickerApp {
     // always resolves: observation resumes whether or not the OS granted
     // the exact requested size.
     window_settle_until: Instant,
-    // Taller of the two paired group boxes' content heights, rewritten
-    // every frame so both boxes meet at one bottom edge. Seeded with
-    // the classic pair height so the first frame already aligns.
-    pair_group_height: f32,
+    // Tallest content height among the middle row's group boxes (two in
+    // the classic stack, three in the wide layout), rewritten every
+    // frame so the whole row meets at one bottom edge. Seeded with the
+    // classic pair height so the first frame already aligns.
+    row_group_height: f32,
     // Natural widths of the four interval field+label groups, rewritten
     // every frame; the row's spare width is split between the groups
     // so the units spread tastefully without ever overflowing a cell.
     interval_group_widths: [f32; 4],
+    // Currently applied window-driven scale factor (1.0 when the
+    // feature is off or the window is below the first step). The total
+    // egui zoom is the user's percentage times this factor.
+    auto_zoom: f32,
+    // Wide three-across layout currently in effect.
+    wide_layout: bool,
+    // Scale-step debounce: the candidate factor and how many
+    // consecutive frames the neutral-point window size has held
+    // still while asking for it. A step is applied only once the size
+    // settles, so scaling never jumps mid-drag or chases OS resize
+    // transients.
+    tier_candidate: f32,
+    stable_frames: u32,
+    // Last neutral-point window size (live points x total zoom).
+    last_base_size: Vec2,
 
     // Persistence. The "last saved" fingerprints make the dirty check exact
     // so the disk is never written while nothing changed.
@@ -351,8 +401,13 @@ impl OpAutoClickerApp {
             pending_resize: false,
             restore_window_size: true,
             window_settle_until: Instant::now(),
-            pair_group_height: 60.0_f32,
+            row_group_height: 60.0_f32,
             interval_group_widths: [0.0_f32; 4],
+            auto_zoom: 1.0_f32,
+            wide_layout: false,
+            tier_candidate: 1.0_f32,
+            stable_frames: 0,
+            last_base_size: Vec2::ZERO,
             settings_path: Self::settings_file_path(),
             settings_dirty: false,
             last_save: Instant::now(),
@@ -406,6 +461,8 @@ impl OpAutoClickerApp {
     /// range, so the OS window can open directly at the right size. The
     /// running app re-applies the same size once its zoom factor settles,
     /// which also resolves the invalid-file case back to the defaults.
+    /// Persisted sizes are step-independent points; the builder wants
+    /// live points, so the opening scale step is divided back out.
     pub fn persisted_window_size() -> [f32; 2] {
         let Some(path) = Self::settings_file_path() else {
             return MAIN_WINDOW_SIZE;
@@ -414,7 +471,14 @@ impl OpAutoClickerApp {
             return MAIN_WINDOW_SIZE;
         };
         let (_, prefs) = settings::parse_settings(&text);
-        [prefs.window_width as f32, prefs.window_height as f32]
+        // Persisted widths are step-independent points; the step
+        // thresholds are neutral points, one user-factor further.
+        let neutral_width = prefs.window_width as f32 * (prefs.ui_scale_percent as f32 / 100.0_f32);
+        let auto = Self::initial_auto_zoom(neutral_width, prefs.auto_scale);
+        [
+            (prefs.window_width as f32 / auto).max(MAIN_WINDOW_SIZE[0]),
+            (prefs.window_height as f32 / auto).max(MAIN_WINDOW_SIZE[1]),
+        ]
     }
 
     fn load_persisted(&mut self) {
@@ -449,6 +513,15 @@ impl OpAutoClickerApp {
         }
         self.repeat_limited = self.config.max_clicks != 0;
         self.offset_ms = self.config.random_offset_ms;
+        // Open at the scale step (and layout) the persisted size calls
+        // for, so the first frames don't start small and then step up.
+        // Persisted widths are step-independent points; the thresholds
+        // are neutral points, one user-factor further.
+        let neutral_width =
+            self.prefs.window_width as f32 * (self.prefs.ui_scale_percent as f32 / 100.0_f32);
+        self.auto_zoom = Self::initial_auto_zoom(neutral_width, self.prefs.auto_scale);
+        self.tier_candidate = self.auto_zoom;
+        self.wide_layout = self.prefs.auto_scale && Self::wide_layout_for(neutral_width, false);
         self.sync_interval_editors();
         self.log(format!("Settings loaded from {}.", path.display()));
     }
@@ -888,6 +961,10 @@ impl OpAutoClickerApp {
         self.prefs = AppPrefs::default();
         // Factory defaults include the classic window size: re-apply the
         // (floor) persisted size once the 100 % zoom has settled.
+        self.auto_zoom = 1.0_f32;
+        self.tier_candidate = 1.0_f32;
+        self.wide_layout = false;
+        self.stable_frames = 0;
         self.restore_window_size = true;
         self.repeat_limited = false;
         self.offset_ms = 0.0;
@@ -946,40 +1023,82 @@ impl OpAutoClickerApp {
     /// Side margin that centers the content column once the window grows
     /// past the content cap. At (and below) the classic width the result
     /// is exactly the original 12-point margin in every theme.
-    fn centered_side_margin(window_width: f32) -> f32 {
+    fn centered_side_margin(window_width: f32, content_cap: f32) -> f32 {
         if !window_width.is_finite() {
             return MAIN_SIDE_MARGIN;
         }
-        let overflow = window_width - 2.0_f32 * MAIN_SIDE_MARGIN - MAIN_CONTENT_MAX_WIDTH;
+        let overflow = window_width - 2.0_f32 * MAIN_SIDE_MARGIN - content_cap;
         MAIN_SIDE_MARGIN + overflow.max(0.0_f32) / 2.0_f32
     }
 
-    /// Extra breathing room added to each of the three gaps between the
-    /// group boxes and the status strip. Zero at the floor height; grows
-    /// to `MAIN_GAP_EXTRA_MAX` per gap and never beyond — past that the
-    /// composition switches to vertical centering (see
-    /// `vertical_center_pad`) so related controls never drift apart.
-    fn distributed_gap_extra(window_height: f32) -> f32 {
-        if !window_height.is_finite() {
-            return 0.0_f32;
+    /// How spare window height is spent: each breathing gap between the
+    /// control clusters first loosens by up to `MAIN_GAP_EXTRA_MAX`, and
+    /// whatever remains centers the whole column (half lands in the
+    /// returned top pad; the other half is simply the leftover panel
+    /// space below the column). `fill_height` is the window height at
+    /// which the active layout's column exactly fills the window, so
+    /// both values are zero there and the classic composition is
+    /// reproduced exactly.
+    fn vertical_rhythm(window_height: f32, fill_height: f32, gaps: f32) -> (f32, f32) {
+        if !window_height.is_finite() || !fill_height.is_finite() || gaps <= 0.0_f32 {
+            return (0.0_f32, 0.0_f32);
         }
-        ((window_height - MAIN_WINDOW_SIZE[1]).max(0.0_f32) / 3.0_f32).min(MAIN_GAP_EXTRA_MAX)
+        let extra = (window_height - fill_height).max(0.0_f32);
+        let gap_extra = (extra / gaps).min(MAIN_GAP_EXTRA_MAX);
+        let top_pad = (extra - gaps * gap_extra).max(0.0_f32) / 2.0_f32;
+        (gap_extra, top_pad)
     }
 
-    /// Space placed above (and implicitly below) the content column once
-    /// the three gaps have absorbed their bounded share. The bottom half
-    /// of the residual is simply the leftover panel space below the
-    /// column; this returns only the top pad. Zero below the height
-    /// where the gaps reach their cap.
-    fn vertical_center_pad(window_height: f32) -> f32 {
-        if !window_height.is_finite() {
-            return 0.0_f32;
+    /// The window-driven scale factor for a neutral-point window
+    /// width, with per-step hysteresis against the currently applied
+    /// factor: a step engages at its upper edge and only releases below
+    /// its lower edge, so a width parked inside the band holds whatever
+    /// step it arrived with.
+    fn auto_zoom_for(base_width: f32, current: f32) -> f32 {
+        if !base_width.is_finite() || base_width <= 0.0_f32 {
+            return current;
         }
-        let extra = (window_height - MAIN_WINDOW_SIZE[1]).max(0.0_f32);
-        (extra - 3.0_f32 * MAIN_GAP_EXTRA_MAX).max(0.0_f32) / 2.0_f32
+        let mut target = 1.0_f32;
+        for &(engage, disengage, factor) in &AUTO_ZOOM_TIERS {
+            let threshold = if current >= factor { disengage } else { engage };
+            if base_width >= threshold {
+                target = target.max(factor);
+            }
+        }
+        target
     }
 
-    /// Records the live inner size as the size to restore next launch.
+    /// The scale step to open with for a neutral-point width. Rising
+    /// edges only: on a cold start there is no previous step for
+    /// hysteresis to protect.
+    fn initial_auto_zoom(base_width: f32, enabled: bool) -> f32 {
+        if !enabled || !base_width.is_finite() {
+            return 1.0_f32;
+        }
+        AUTO_ZOOM_TIERS
+            .iter()
+            .filter(|&&(engage, _, _)| base_width >= engage)
+            .map(|&(_, _, factor)| factor)
+            .fold(1.0_f32, f32::max)
+    }
+
+    /// Wide layout for a neutral-point width, with the same
+    /// arrive-and-hold hysteresis as the scale steps.
+    fn wide_layout_for(base_width: f32, current: bool) -> bool {
+        if !base_width.is_finite() {
+            return current;
+        }
+        if current {
+            base_width >= WIDE_LAYOUT_DISENGAGE
+        } else {
+            base_width >= WIDE_LAYOUT_ENGAGE
+        }
+    }
+
+    /// Records the live inner size as the size to restore next launch,
+    /// in step-independent points (live points times the applied
+    /// window-driven factor), so the physical size round-trips no
+    /// matter which scale step is active when it is written or read.
     /// Maximized, minimized and fullscreen sizes are never recorded (the
     /// last normal size is what a restore should return to), sub-floor
     /// transients are ignored, and recording stays paused while a zoom
@@ -1016,11 +1135,70 @@ impl OpAutoClickerApp {
         {
             return;
         }
-        let (width, height) = hotkey::sanitize_window_size(f64::from(size.x), f64::from(size.y));
+        let base = size * self.auto_zoom;
+        let (width, height) = hotkey::sanitize_window_size(f64::from(base.x), f64::from(base.y));
         if width != self.prefs.window_width || height != self.prefs.window_height {
             self.prefs.window_width = width;
             self.prefs.window_height = height;
             self.mark_dirty();
+        }
+    }
+
+    /// Window-driven presentation: derives the layout mode and the
+    /// target scale step from the neutral-point window width (live
+    /// points times the total applied zoom — invariant under the very
+    /// zoom changes it drives, which is what makes feedback impossible,
+    /// and under user-scale changes too, so re-picking a percentage
+    /// never by itself engages or releases a step).
+    /// The layout mode follows immediately (hysteresis only); a scale
+    /// step applies only once the size has held still for a few
+    /// consecutive frames, so it lands just after a drag ends rather
+    /// than jumping mid-drag, and never chases OS resize transients.
+    /// Runs only when the zoom machinery is idle (see `update`), so a
+    /// step never compounds with an in-flight zoom or restore.
+    fn adapt_to_window_size(&mut self, ctx: &egui::Context) {
+        const SETTLE_FRAMES: u32 = 6;
+        let (size, minimized) = ctx.input(|i| (i.screen_rect.size(), i.viewport().minimized));
+        if minimized == Some(true)
+            || !size.x.is_finite()
+            || !size.y.is_finite()
+            || size.x <= 0.0_f32
+            || size.y <= 0.0_f32
+        {
+            self.stable_frames = 0;
+            return;
+        }
+        // Neutral points via the applied zoom (not the desired one):
+        // this only runs once the applied zoom equals user x step, so
+        // the measure is the physical window size at 100 % zoom.
+        let base = size * ctx.zoom_factor();
+        self.wide_layout = self.prefs.auto_scale && Self::wide_layout_for(base.x, self.wide_layout);
+        let target = if self.prefs.auto_scale {
+            Self::auto_zoom_for(base.x, self.auto_zoom)
+        } else {
+            1.0_f32
+        };
+        let size_held = (base.x - self.last_base_size.x).abs() <= 1.5_f32
+            && (base.y - self.last_base_size.y).abs() <= 1.5_f32;
+        if size_held && (target - self.tier_candidate).abs() <= 0.001_f32 {
+            self.stable_frames = self.stable_frames.saturating_add(1);
+        } else {
+            self.stable_frames = 0;
+            self.tier_candidate = target;
+        }
+        self.last_base_size = base;
+        if self.stable_frames >= SETTLE_FRAMES && (target - self.auto_zoom).abs() > 0.001_f32 {
+            self.auto_zoom = target;
+            self.stable_frames = 0;
+            // The live point size this frame still belongs to the old
+            // factor (the new zoom applies next frame), so size
+            // observation must pause from this instant — otherwise the
+            // observer in this very frame would multiply pre-step
+            // points by the new factor and persist a phantom size.
+            // The zoom bookkeeping refreshes the same deadline when it
+            // runs.
+            self.window_settle_until = Instant::now() + Duration::from_millis(750);
+            ctx.request_repaint();
         }
     }
 
@@ -1251,189 +1429,277 @@ impl OpAutoClickerApp {
         });
     }
 
-    fn draw_options_and_repeat(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        let pair_height = self.pair_group_height.max(0.0_f32);
-        let mut taller_natural = 0.0_f32;
-        ui.columns(2, |columns| {
-            // The pair's shared height is last frame's taller content
-            // height (measured after the columns below are laid out):
-            // both boxes meet at one bottom edge and the column stays
-            // exactly as tall as its tallest member needs. The classic-
-            // height seed keeps the first frame already aligned, and
-            // the constant repaint heartbeat lands any later correction
-            // within tens of milliseconds, so no visible jump occurs.
-            let (_, left_natural) =
-                Self::group_box(&mut columns[0], pal, "Click options", pair_height, |ui| {
-                    Grid::new("click_options_grid")
-                        .num_columns(2)
-                        .spacing(Vec2::new(8.0_f32, 9.0_f32))
-                        .show(ui, |ui| {
-                            ui.label(egui::RichText::new("Mouse button:").color(pal.text));
-                            egui::ComboBox::from_id_source("mouse_button_combo")
-                                .width(ui.available_width())
-                                .selected_text(self.config.mouse_button.label())
-                                .show_ui(ui, |ui| {
-                                    for button in MouseButton::all() {
-                                        ui.selectable_value(
-                                            &mut self.config.mouse_button,
-                                            button,
-                                            button.label(),
-                                        );
-                                    }
-                                });
-                            ui.end_row();
-
-                            ui.label(egui::RichText::new("Click type:").color(pal.text));
-                            egui::ComboBox::from_id_source("click_type_combo")
-                                .width(ui.available_width())
-                                .selected_text(self.config.click_type.label())
-                                .show_ui(ui, |ui| {
-                                    for kind in ClickType::all() {
-                                        ui.selectable_value(
-                                            &mut self.config.click_type,
-                                            kind,
-                                            kind.label(),
-                                        );
-                                    }
-                                });
-                            ui.end_row();
-                        });
-                });
-
-            let (_, right_natural) =
-                Self::group_box(&mut columns[1], pal, "Click repeat", pair_height, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut self.repeat_limited, true, "Repeat");
-                        ui.add_enabled_ui(self.repeat_limited, |ui| {
-                            if self.repeat_limited && self.config.max_clicks == 0 {
-                                self.config.max_clicks = 1;
-                            }
-                            ui.add_sized(
-                                [76.0_f32, 22.0_f32],
-                                egui::DragValue::new(&mut self.config.max_clicks)
-                                    .clamp_range(1..=1_000_000_000),
+    fn options_group_contents(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        Grid::new("click_options_grid")
+            .num_columns(2)
+            .spacing(Vec2::new(8.0_f32, 9.0_f32))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("Mouse button:").color(pal.text));
+                egui::ComboBox::from_id_source("mouse_button_combo")
+                    .width(ui.available_width())
+                    .selected_text(self.config.mouse_button.label())
+                    .show_ui(ui, |ui| {
+                        for button in MouseButton::all() {
+                            ui.selectable_value(
+                                &mut self.config.mouse_button,
+                                button,
+                                button.label(),
                             );
-                        });
-                        ui.label(egui::RichText::new("times").color(pal.text));
+                        }
                     });
-                    ui.add_space(4.0_f32);
-                    ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
-                    if !self.repeat_limited {
-                        self.config.max_clicks = 0;
-                    }
-                });
-            taller_natural = left_natural.max(right_natural);
+                ui.end_row();
+
+                ui.label(egui::RichText::new("Click type:").color(pal.text));
+                egui::ComboBox::from_id_source("click_type_combo")
+                    .width(ui.available_width())
+                    .selected_text(self.config.click_type.label())
+                    .show_ui(ui, |ui| {
+                        for kind in ClickType::all() {
+                            ui.selectable_value(&mut self.config.click_type, kind, kind.label());
+                        }
+                    });
+                ui.end_row();
+            });
+    }
+
+    fn repeat_group_contents(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.repeat_limited, true, "Repeat");
+            ui.add_enabled_ui(self.repeat_limited, |ui| {
+                if self.repeat_limited && self.config.max_clicks == 0 {
+                    self.config.max_clicks = 1;
+                }
+                ui.add_sized(
+                    [76.0_f32, 22.0_f32],
+                    egui::DragValue::new(&mut self.config.max_clicks)
+                        .clamp_range(1..=1_000_000_000),
+                );
+            });
+            ui.label(egui::RichText::new("times").color(pal.text));
         });
-        if taller_natural > 0.0_f32 && taller_natural.is_finite() {
-            // Stored rounded up to a whole point: the painted frame of
-            // the taller box rounds outward to whole pixels, so feeding
-            // back the raw fractional height would leave the stretched
-            // box a pixel short of its sibling. A whole-point target
-            // can only ever meet the sibling exactly.
-            self.pair_group_height = taller_natural.ceil();
+        ui.add_space(4.0_f32);
+        ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
+        if !self.repeat_limited {
+            self.config.max_clicks = 0;
         }
     }
 
-    fn draw_position_group(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
-        let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, |ui| {
-            ui.horizontal(|ui| {
-                ui.radio_value(
-                    &mut self.config.coordinate_mode,
-                    CoordinateMode::CurrentCursor,
-                    "Current location",
-                );
-            });
-            ui.add_space(4.0_f32);
+    fn pick_location_button(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        let pick_label = if self.picking_location {
+            "Cancel pick"
+        } else {
+            "Pick location"
+        };
+        if Self::classic_button(ui, pal, pick_label, true, 104.0_f32).clicked() {
+            if self.picking_location {
+                self.picking_location = false;
+                self.set_status(StatusKind::Ready, "Location pick cancelled.");
+            } else {
+                self.arm_location_pick();
+            }
+        }
+    }
+
+    fn fixed_xy_fields(&mut self, ui: &mut egui::Ui) {
+        let fixed = self.config.coordinate_mode == CoordinateMode::FixedScreen;
+        ui.add_enabled_ui(fixed, |ui| {
+            ui.add_sized(
+                [78.0_f32, 22.0_f32],
+                egui::DragValue::new(&mut self.config.fixed_x)
+                    .clamp_range(-100_000..=100_000)
+                    .prefix("X: "),
+            );
+            ui.add_sized(
+                [78.0_f32, 22.0_f32],
+                egui::DragValue::new(&mut self.config.fixed_y)
+                    .clamp_range(-100_000..=100_000)
+                    .prefix("Y: "),
+            );
+        });
+    }
+
+    /// `stacked` is the narrow-column arrangement for the wide
+    /// layout's three-across row: the pick row folds into separate
+    /// radio, button and coordinate rows so nothing is squeezed
+    /// sideways. Unstacked, the classic full-width box keeps them
+    /// all on one line.
+    fn position_group_contents(&mut self, ui: &mut egui::Ui, pal: &Palette, stacked: bool) {
+        ui.horizontal(|ui| {
+            ui.radio_value(
+                &mut self.config.coordinate_mode,
+                CoordinateMode::CurrentCursor,
+                "Current location",
+            );
+        });
+        ui.add_space(4.0_f32);
+        if stacked {
             ui.horizontal(|ui| {
                 ui.radio_value(
                     &mut self.config.coordinate_mode,
                     CoordinateMode::FixedScreen,
                     "Pick location",
                 );
-                let pick_label = if self.picking_location {
-                    "Cancel pick"
-                } else {
-                    "Pick location"
-                };
-                if Self::classic_button(ui, pal, pick_label, true, 104.0_f32).clicked() {
-                    if self.picking_location {
-                        self.picking_location = false;
-                        self.set_status(StatusKind::Ready, "Location pick cancelled.");
-                    } else {
-                        self.arm_location_pick();
-                    }
-                }
-                let fixed = self.config.coordinate_mode == CoordinateMode::FixedScreen;
-                ui.add_enabled_ui(fixed, |ui| {
-                    ui.add_sized(
-                        [78.0_f32, 22.0_f32],
-                        egui::DragValue::new(&mut self.config.fixed_x)
-                            .clamp_range(-100_000..=100_000)
-                            .prefix("X: "),
-                    );
-                    ui.add_sized(
-                        [78.0_f32, 22.0_f32],
-                        egui::DragValue::new(&mut self.config.fixed_y)
-                            .clamp_range(-100_000..=100_000)
-                            .prefix("Y: "),
-                    );
-                });
             });
+            ui.add_space(4.0_f32);
+            ui.horizontal(|ui| self.pick_location_button(ui, pal));
+            ui.add_space(4.0_f32);
+            ui.horizontal(|ui| self.fixed_xy_fields(ui));
+        } else {
+            ui.horizontal(|ui| {
+                ui.radio_value(
+                    &mut self.config.coordinate_mode,
+                    CoordinateMode::FixedScreen,
+                    "Pick location",
+                );
+                self.pick_location_button(ui, pal);
+                self.fixed_xy_fields(ui);
+            });
+        }
+    }
+
+    /// Feeds a row of group boxes' tallest natural height back as the
+    /// shared minimum so they all meet at one bottom edge. Rounded up
+    /// to a whole point: the painted frame of the tallest box rounds
+    /// outward to whole pixels, so the raw fractional height would
+    /// leave the stretched boxes a pixel short of their sibling.
+    fn store_row_group_height(&mut self, natural: f32) {
+        if natural > 0.0_f32 && natural.is_finite() {
+            self.row_group_height = natural.ceil();
+        }
+    }
+
+    // The row's shared height is last frame's tallest content height
+    // (measured as the columns are laid out): every box meets at one
+    // bottom edge and the column stays exactly as tall as its tallest
+    // member needs. The classic-height seed keeps the first frame
+    // already aligned, and the constant repaint heartbeat lands any
+    // later correction within tens of milliseconds, so no visible
+    // jump occurs.
+    fn draw_options_and_repeat(&mut self, ui: &mut egui::Ui) {
+        let pal = self.palette();
+        let row_height = self.row_group_height.max(0.0_f32);
+        let mut taller_natural = 0.0_f32;
+        ui.columns(2, |columns| {
+            let (_, left_natural) =
+                Self::group_box(&mut columns[0], pal, "Click options", row_height, |ui| {
+                    self.options_group_contents(ui, pal)
+                });
+            let (_, right_natural) =
+                Self::group_box(&mut columns[1], pal, "Click repeat", row_height, |ui| {
+                    self.repeat_group_contents(ui, pal)
+                });
+            taller_natural = left_natural.max(right_natural);
         });
+        self.store_row_group_height(taller_natural);
+    }
+
+    /// Wide layout's middle row: Click options, Click repeat and
+    /// Cursor position three-abreast, still meeting at one bottom
+    /// edge through the same shared-height mechanism.
+    fn draw_wide_group_row(&mut self, ui: &mut egui::Ui) {
+        let pal = self.palette();
+        let row_height = self.row_group_height.max(0.0_f32);
+        let mut tallest_natural = 0.0_f32;
+        ui.columns(3, |columns| {
+            let (_, options_natural) =
+                Self::group_box(&mut columns[0], pal, "Click options", row_height, |ui| {
+                    self.options_group_contents(ui, pal)
+                });
+            let (_, repeat_natural) =
+                Self::group_box(&mut columns[1], pal, "Click repeat", row_height, |ui| {
+                    self.repeat_group_contents(ui, pal)
+                });
+            let (_, position_natural) =
+                Self::group_box(&mut columns[2], pal, "Cursor position", row_height, |ui| {
+                    self.position_group_contents(ui, pal, true)
+                });
+            tallest_natural = options_natural.max(repeat_natural).max(position_natural);
+        });
+        self.store_row_group_height(tallest_natural);
+    }
+
+    fn draw_position_group(&mut self, ui: &mut egui::Ui) {
+        let pal = self.palette();
+        let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, |ui| {
+            self.position_group_contents(ui, pal, false)
+        });
+    }
+
+    fn start_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
+        let running = self.engine.is_running();
+        let config_ok = self.validation_message().is_none();
+        let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
+        if Self::classic_button(
+            ui,
+            pal,
+            &format!("Start ({hotkey_name})"),
+            !running && config_ok,
+            width,
+        )
+        .clicked()
+        {
+            self.handle_start();
+        }
+    }
+
+    fn stop_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
+        let running = self.engine.is_running();
+        let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
+        if Self::classic_button(ui, pal, &format!("Stop ({hotkey_name})"), running, width).clicked()
+        {
+            self.engine.request_stop();
+            self.set_status(StatusKind::Stopping, "Stopping…");
+            self.log("Graceful stop requested.");
+            self.mark_dirty();
+            self.flush_settings();
+        }
+    }
+
+    fn hotkey_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
+        if Self::classic_button(ui, pal, "Hotkey setting", true, width).clicked() {
+            self.show_hotkey_dialog = true;
+            self.capturing = false;
+        }
+    }
+
+    fn record_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
+        if Self::classic_button(ui, pal, "Record & Playback", true, width).clicked() {
+            self.show_macro_window = true;
+        }
     }
 
     fn draw_action_buttons(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
-        let running = self.engine.is_running();
-        let config_ok = self.validation_message().is_none();
-        let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
         let gap = ui.spacing().item_spacing.x;
-        let button_width = (ui.available_width() - gap) / 2.0;
+        if self.wide_layout {
+            // One row of four: the wide canvas earns the flatter,
+            // single-glance action strip.
+            let button_width = (ui.available_width() - 3.0_f32 * gap) / 4.0_f32;
+            Grid::new("action_button_grid_wide")
+                .num_columns(4)
+                .spacing(Vec2::new(gap, 6.0_f32))
+                .show(ui, |ui| {
+                    self.start_button(ui, pal, button_width);
+                    self.stop_button(ui, pal, button_width);
+                    self.hotkey_button(ui, pal, button_width);
+                    self.record_button(ui, pal, button_width);
+                    ui.end_row();
+                });
+        } else {
+            let button_width = (ui.available_width() - gap) / 2.0_f32;
+            Grid::new("action_button_grid")
+                .num_columns(2)
+                .spacing(Vec2::new(gap, 6.0_f32))
+                .show(ui, |ui| {
+                    self.start_button(ui, pal, button_width);
+                    self.stop_button(ui, pal, button_width);
+                    ui.end_row();
 
-        Grid::new("action_button_grid")
-            .num_columns(2)
-            .spacing(Vec2::new(gap, 6.0_f32))
-            .show(ui, |ui| {
-                if Self::classic_button(
-                    ui,
-                    pal,
-                    &format!("Start ({hotkey_name})"),
-                    !running && config_ok,
-                    button_width,
-                )
-                .clicked()
-                {
-                    self.handle_start();
-                }
-                if Self::classic_button(
-                    ui,
-                    pal,
-                    &format!("Stop ({hotkey_name})"),
-                    running,
-                    button_width,
-                )
-                .clicked()
-                {
-                    self.engine.request_stop();
-                    self.set_status(StatusKind::Stopping, "Stopping…");
-                    self.log("Graceful stop requested.");
-                    self.mark_dirty();
-                    self.flush_settings();
-                }
-                ui.end_row();
-
-                if Self::classic_button(ui, pal, "Hotkey setting", true, button_width).clicked() {
-                    self.show_hotkey_dialog = true;
-                    self.capturing = false;
-                }
-                if Self::classic_button(ui, pal, "Record & Playback", true, button_width).clicked()
-                {
-                    self.show_macro_window = true;
-                }
-                ui.end_row();
-            });
+                    self.hotkey_button(ui, pal, button_width);
+                    self.record_button(ui, pal, button_width);
+                    ui.end_row();
+                });
+        }
     }
 
     // ---------------------------------------------------------- hotkey dialog
@@ -1669,6 +1935,35 @@ impl OpAutoClickerApp {
                     .color(pal.text_dim)
                     .small(),
                 );
+                ui.add_space(6.0_f32);
+                if ui
+                    .checkbox(
+                        &mut self.prefs.auto_scale,
+                        "Scale and rearrange with window size",
+                    )
+                    .changed()
+                {
+                    if !self.prefs.auto_scale {
+                        // Back to the fixed classic composition at once;
+                        // the evaluator would retire the step on its own,
+                        // just a few frames later.
+                        self.auto_zoom = 1.0_f32;
+                        self.tier_candidate = 1.0_f32;
+                        self.wide_layout = false;
+                        self.stable_frames = 0;
+                    }
+                    self.mark_dirty();
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "As the window grows past set widths the whole interface \
+                         steps up in scale, and the widest step rearranges the \
+                         middle groups three-abreast with one row of buttons. \
+                         The steps multiply with the percentage above.",
+                    )
+                    .color(pal.text_dim)
+                    .small(),
+                );
                 ui.add_space(10.0_f32);
                 ui.separator();
                 ui.add_space(6.0_f32);
@@ -1691,18 +1986,22 @@ impl eframe::App for OpAutoClickerApp {
         let pal = self.palette();
 
         // UI scale and window size: the zoom factor follows the persisted
-        // percentage; one frame later (once egui reports the new factor as
-        // applied) the window bookkeeping runs exactly once. The minimum
-        // size is re-declared in points — egui-winit multiplies viewport
-        // sizes by the current pixels-per-point (zoom x native scale)
-        // when it talks to the OS, so the physical floor rescales with
-        // the chosen percentage without any multiplication here (doing it
-        // in both places would double-scale the floor). A pending restore
-        // (startup, factory reset) applies the persisted size verbatim;
-        // a plain scale change only ever grows the window, and only if
-        // the new zoom left it below the floor, so a window the user
-        // enlarged is never forced back down.
-        let desired_zoom = self.prefs.ui_scale_percent as f32 / 100.0_f32;
+        // percentage times the window-driven step (`adapt_to_window_size`
+        // owns the step; it only moves on settled sizes, and because it
+        // changes no physical size the point size simply rescales inside
+        // the same window). One frame after a zoom change (once egui
+        // reports the new factor as applied) the window bookkeeping runs
+        // exactly once. The minimum size is re-declared in points —
+        // egui-winit multiplies viewport sizes by the current
+        // pixels-per-point (zoom x native scale) when it talks to the
+        // OS, so the physical floor rescales with the chosen percentage
+        // without any multiplication here (doing it in both places would
+        // double-scale the floor). A pending restore (startup, factory
+        // reset) applies the persisted size converted to live points; a
+        // plain scale change only ever grows the window, and only if the
+        // new zoom left it below the floor, so a window the user enlarged
+        // is never forced back down.
+        let desired_zoom = self.prefs.ui_scale_percent as f32 / 100.0_f32 * self.auto_zoom;
         if (ctx.zoom_factor() - desired_zoom).abs() > 0.001_f32 {
             ctx.set_zoom_factor(desired_zoom);
             self.pending_resize = true;
@@ -1716,8 +2015,8 @@ impl eframe::App for OpAutoClickerApp {
             if self.restore_window_size {
                 self.restore_window_size = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
-                    self.prefs.window_width as f32,
-                    self.prefs.window_height as f32,
+                    self.prefs.window_width as f32 / self.auto_zoom,
+                    self.prefs.window_height as f32 / self.auto_zoom,
                 )));
             } else {
                 let live = ctx.input(|i| i.screen_rect.size());
@@ -1738,6 +2037,10 @@ impl eframe::App for OpAutoClickerApp {
             // refuses the exact size (for example a smaller monitor).
             self.window_settle_until = Instant::now() + Duration::from_millis(750);
             ctx.request_repaint();
+        } else {
+            // Zoom is at its target and no resize bookkeeping is in
+            // flight: safe to evaluate the window-driven presentation.
+            self.adapt_to_window_size(ctx);
         }
         self.observe_live_window_size(ctx);
 
@@ -1860,16 +2163,30 @@ impl eframe::App for OpAutoClickerApp {
         // the OS-enforced floor and still fits above it. Growing the
         // window widens the group boxes and the button grid (all field
         // widths and control heights stay fixed) up to the content cap
-        // and centers the column beyond it. Extra height first loosens
-        // the three gaps between control clusters by a bounded amount,
-        // then centers the whole column so related controls stay
-        // visually grouped instead of drifting into separate islands.
-        // At the floor size every metric below reduces to the original
-        // classic layout. The top margin leaves room for the first
-        // group title, which rides half above its frame's top border.
+        // and centers the column beyond it; past the wide threshold
+        // (`adapt_to_window_size` owns the switch) the middle groups go
+        // three-abreast and the buttons form one row. Extra height
+        // first loosens the gaps between control clusters by a bounded
+        // amount, then centers the whole column so related controls
+        // stay visually grouped instead of drifting into separate
+        // islands. At the floor size every metric below reduces to the
+        // original classic layout. The top margin leaves room for the
+        // first group title, which rides half above its frame's top
+        // border.
         let window_size = ctx.screen_rect().size();
-        let side_margin = Self::centered_side_margin(window_size.x);
-        let gap_extra = Self::distributed_gap_extra(window_size.y);
+        let wide = self.wide_layout;
+        let content_cap = if wide {
+            MAIN_CONTENT_MAX_WIDTH_WIDE
+        } else {
+            MAIN_CONTENT_MAX_WIDTH
+        };
+        let side_margin = Self::centered_side_margin(window_size.x, content_cap);
+        let (fill_height, gap_count) = if wide {
+            (MAIN_WIDE_FILL_HEIGHT, 2.0_f32)
+        } else {
+            (MAIN_WINDOW_SIZE[1], 3.0_f32)
+        };
+        let (gap_extra, top_pad) = Self::vertical_rhythm(window_size.y, fill_height, gap_count);
         egui::CentralPanel::default()
             .frame(Frame::none().fill(pal.face).inner_margin(Margin {
                 left: side_margin,
@@ -1879,13 +2196,19 @@ impl eframe::App for OpAutoClickerApp {
             }))
             .show(ctx, |ui| {
                 ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.add_space(Self::vertical_center_pad(window_size.y));
+                    ui.add_space(top_pad);
                     self.draw_interval_group(ui);
-                    ui.add_space(7.0_f32 + gap_extra);
-                    self.draw_options_and_repeat(ui);
-                    ui.add_space(7.0_f32 + gap_extra);
-                    self.draw_position_group(ui);
-                    ui.add_space(6.0_f32 + gap_extra);
+                    if wide {
+                        ui.add_space(7.0_f32 + gap_extra);
+                        self.draw_wide_group_row(ui);
+                        ui.add_space(6.0_f32 + gap_extra);
+                    } else {
+                        ui.add_space(7.0_f32 + gap_extra);
+                        self.draw_options_and_repeat(ui);
+                        ui.add_space(7.0_f32 + gap_extra);
+                        self.draw_position_group(ui);
+                        ui.add_space(6.0_f32 + gap_extra);
+                    }
 
                     // Reserved one-line status strip; its height never
                     // changes, so the rows below it stay anchored.
