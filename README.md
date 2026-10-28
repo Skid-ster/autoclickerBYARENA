@@ -58,8 +58,10 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   past set sizes the whole interface steps up in scale — growing the
   window taller steps it up just like growing it wider (the wide step
   also rearranges the middle groups three-across with a single row
-  of action buttons) — so a big window is filled, never just
-  centered in. A Settings toggle turns the adaptation off. The size
+  of action buttons) — and the layout itself stretches to the
+  window's full height, groups flowing from the top with the status
+  and buttons riding at the bottom edge, so a big window is filled
+  at any size or resolution, never just centered in. A Settings toggle turns the adaptation off. The size
   you choose is remembered across restarts.
   Click interval with the 4.1 Random offset row, side-by-side Click options
   and Click repeat, Cursor position with a real Pick location button

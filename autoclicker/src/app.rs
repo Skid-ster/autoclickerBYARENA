@@ -240,7 +240,7 @@ const MAIN_CONTENT_MAX_WIDTH: f32 = 736.0_f32;
 /// bounded share the rest splits above and below the column, so a tall
 /// window composes a centered dialog instead of ever-deepening voids
 /// between control clusters that belong together.
-const MAIN_GAP_EXTRA_MAX: f32 = 14.0_f32;
+const MAIN_GAP_EXTRA_MAX: f32 = 40.0_f32;
 
 /// Widest content column in the wide layout. Three group boxes across
 /// need more elbow room than the stacked classic column before the
@@ -269,11 +269,27 @@ const MAIN_WIDE_FILL_HEIGHT: f32 = 372.0_f32;
 /// does. The height's vote is fit-capped (see `auto_zoom_for`) so it
 /// can never force the OS to grow the window past the size the user
 /// chose.
-const AUTO_ZOOM_TIERS: [(f32, f32, f32); 3] = [
+const AUTO_ZOOM_TIERS: [(f32, f32, f32); 4] = [
     (800.0_f32, 744.0_f32, 1.10_f32),
     (1024.0_f32, 968.0_f32, 1.25_f32),
     (1440.0_f32, 1384.0_f32, 1.40_f32),
+    (1600.0_f32, 1544.0_f32, 1.60_f32),
 ];
+
+/// Ceiling on the *total* applied zoom (user percentage x window
+/// step). 2.80 is the largest total that was reachable before the
+/// 1.60 tier existed (200 % x 1.40), so the new tier widens the
+/// step ladder without ever pushing a window's physical minimum
+/// size past the envelope every previous build was verified in.
+const AUTO_ZOOM_MAX_TOTAL: f32 = 2.80_f32;
+
+/// Narrowest live width the wide (three-abreast) arrangement is
+/// allowed to be squeezed into by an *automatic* step. The wide row
+/// was verified down to 714 points (150 % user scale case); the
+/// height vote respects 700 so it can never create a wide layout
+/// narrower than the proven floor. A user's own percentage may go
+/// further — that squeeze is their explicit choice, as before.
+const MAIN_WIDE_MIN_LIVE_WIDTH: f32 = 700.0_f32;
 
 /// Wide-layout band, tracked to the second scale step: at or above the
 /// engage width the middle row becomes Click options | Click repeat |
@@ -1123,22 +1139,33 @@ impl OpAutoClickerApp {
         MAIN_SIDE_MARGIN + overflow.max(0.0_f32) / 2.0_f32
     }
 
-    /// How spare window height is spent: each breathing gap between the
-    /// control clusters first loosens by up to `MAIN_GAP_EXTRA_MAX`, and
-    /// whatever remains centers the whole column (half lands in the
-    /// returned top pad; the other half is simply the leftover panel
-    /// space below the column). `fill_height` is the window height at
-    /// which the active layout's column exactly fills the window, so
-    /// both values are zero there and the classic composition is
-    /// reproduced exactly.
+    /// How spare window height is spent. The groups always flow from
+    /// the top of the panel, exactly as they do at the floor size;
+    /// surplus height first loosens every breathing gap between the
+    /// control clusters by an equal share (bounded by
+    /// `MAIN_GAP_EXTRA_MAX` so neighbouring clusters stay visually
+    /// related), and whatever remains collects as one spring directly
+    /// above the status strip. The status strip, action buttons and
+    /// footer therefore ride at the window's bottom edge like a
+    /// status bar at *every* height, instead of the whole column
+    /// floating centered between two voids once the window is much
+    /// taller than the dialog. The returned values always sum (with
+    /// the gaps) to the full surplus, so the column ends flush with
+    /// the panel's bottom margin at any size. `fill_height` is the
+    /// window height at which the active layout's column exactly
+    /// fills the window, so both values are zero there and the
+    /// classic composition is reproduced exactly.
     fn vertical_rhythm(window_height: f32, fill_height: f32, gaps: f32) -> (f32, f32) {
         if !window_height.is_finite() || !fill_height.is_finite() || gaps <= 0.0_f32 {
             return (0.0_f32, 0.0_f32);
         }
         let extra = (window_height - fill_height).max(0.0_f32);
-        let gap_extra = (extra / gaps).min(MAIN_GAP_EXTRA_MAX);
-        let top_pad = (extra - gaps * gap_extra).max(0.0_f32) / 2.0_f32;
-        (gap_extra, top_pad)
+        // The spring counts as two shares when the surplus is divided,
+        // so small surpluses mostly loosen the gaps and only large
+        // ones open up real space above the status strip.
+        let gap_extra = (extra / (gaps + 2.0_f32)).min(MAIN_GAP_EXTRA_MAX);
+        let spring = (extra - gaps * gap_extra).max(0.0_f32);
+        (gap_extra, spring)
     }
 
     /// One axis of the scale-step decision: maps a neutral-point
@@ -1177,7 +1204,7 @@ impl OpAutoClickerApp {
     /// — acceptable when the user's own percentage dictates it (that
     /// grow-only correction predates the step system), never as a
     /// surprise side effect of an automatic height-driven step.
-    fn largest_fittable_step(base: Vec2, user_factor: f32) -> f32 {
+    fn largest_fittable_step(base: Vec2, user_factor: f32, wide: bool) -> f32 {
         if !user_factor.is_finite()
             || user_factor <= 0.0_f32
             || !base.x.is_finite()
@@ -1185,12 +1212,39 @@ impl OpAutoClickerApp {
         {
             return 1.0_f32;
         }
-        let cap = (base.x / MAIN_WINDOW_SIZE[0]).min(base.y / MAIN_WINDOW_SIZE[1]) / user_factor;
+        // In the wide arrangement the width floor is the proven wide
+        // minimum rather than the compact 560: three groups abreast
+        // must never be squeezed narrower by an automatic step than
+        // the narrowest wide layout already verified.
+        let floor_width = if wide {
+            MAIN_WIDE_MIN_LIVE_WIDTH
+        } else {
+            MAIN_WINDOW_SIZE[0]
+        };
+        let cap = (base.x / floor_width).min(base.y / MAIN_WINDOW_SIZE[1]) / user_factor;
         AUTO_ZOOM_TIERS
             .iter()
             .map(|&(_, _, factor)| factor)
             .filter(|&factor| factor <= cap)
             .fold(1.0_f32, f32::max)
+    }
+
+    /// Caps a chosen step so the total applied zoom (user percentage
+    /// times step) never exceeds `AUTO_ZOOM_MAX_TOTAL` — the envelope
+    /// every build before the 1.60 tier was verified in. Applies to
+    /// the final step however it was earned; at 200 % it reproduces
+    /// exactly the old 1.40 maximum.
+    fn cap_step_to_total(step: f32, user_factor: f32) -> f32 {
+        if !user_factor.is_finite() || user_factor <= 0.0_f32 {
+            return step;
+        }
+        let max_step = AUTO_ZOOM_MAX_TOTAL / user_factor;
+        AUTO_ZOOM_TIERS
+            .iter()
+            .map(|&(_, _, factor)| factor)
+            .filter(|&factor| factor <= max_step)
+            .fold(1.0_f32, f32::max)
+            .min(step)
     }
 
     /// The window-driven scale factor for a neutral-point window size.
@@ -1201,13 +1255,14 @@ impl OpAutoClickerApp {
     /// space) without ever outvoting the physical size the user
     /// chose. Every input is a neutral-point extent or a persisted
     /// preference, so the result cannot feed back into itself.
-    fn auto_zoom_for(base: Vec2, user_factor: f32, current: f32) -> f32 {
+    fn auto_zoom_for(base: Vec2, user_factor: f32, wide: bool, current: f32) -> f32 {
         if !base.x.is_finite() || !base.y.is_finite() || base.x <= 0.0_f32 || base.y <= 0.0_f32 {
             return current;
         }
         let width_step = Self::tier_for_extent(base.x, current);
-        let height_step = Self::tier_for_extent(Self::height_equivalent(base.y), current);
-        width_step.max(height_step.min(Self::largest_fittable_step(base, user_factor)))
+        let height_step = Self::tier_for_extent(Self::height_equivalent(base.y), current)
+            .min(Self::largest_fittable_step(base, user_factor, wide));
+        Self::cap_step_to_total(width_step.max(height_step), user_factor)
     }
 
     /// The scale step to open with for a neutral-point window size.
@@ -1227,8 +1282,12 @@ impl OpAutoClickerApp {
                 .fold(1.0_f32, f32::max)
         };
         let width_step = rising(base.x);
-        let height_step = rising(Self::height_equivalent(base.y));
-        width_step.max(height_step.min(Self::largest_fittable_step(base, user_factor)))
+        let height_step = rising(Self::height_equivalent(base.y)).min(Self::largest_fittable_step(
+            base,
+            user_factor,
+            Self::wide_layout_for(base.x, false),
+        ));
+        Self::cap_step_to_total(width_step.max(height_step), user_factor)
     }
 
     /// Wide layout for a neutral-point width, with the same
@@ -1326,6 +1385,7 @@ impl OpAutoClickerApp {
             Self::auto_zoom_for(
                 base,
                 self.prefs.ui_scale_percent as f32 / 100.0_f32,
+                self.wide_layout,
                 self.auto_zoom,
             )
         } else {
@@ -2385,10 +2445,11 @@ impl eframe::App for OpAutoClickerApp {
         // and centers the column beyond it; past the wide threshold
         // (`adapt_to_window_size` owns the switch) the middle groups go
         // three-abreast and the buttons form one row. Extra height
-        // first loosens the gaps between control clusters by a bounded
-        // amount, then centers the whole column so related controls
-        // stay visually grouped instead of drifting into separate
-        // islands. At the floor size every metric below reduces to the
+        // loosens the gaps between control clusters by a bounded
+        // amount and gathers the rest above the status strip, so the
+        // groups flow from the top and the status/actions/footer sit
+        // at the bottom edge at any window height (see
+        // `vertical_rhythm`). At the floor size every metric below reduces to the
         // original classic layout. The top margin leaves room for the
         // first group title, which rides half above its frame's top
         // border.
@@ -2405,7 +2466,7 @@ impl eframe::App for OpAutoClickerApp {
         } else {
             (MAIN_WINDOW_SIZE[1], 3.0_f32)
         };
-        let (gap_extra, top_pad) = Self::vertical_rhythm(window_size.y, fill_height, gap_count);
+        let (gap_extra, spring) = Self::vertical_rhythm(window_size.y, fill_height, gap_count);
         egui::CentralPanel::default()
             .frame(Frame::none().fill(pal.face).inner_margin(Margin {
                 left: side_margin,
@@ -2415,7 +2476,6 @@ impl eframe::App for OpAutoClickerApp {
             }))
             .show(ctx, |ui| {
                 ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.add_space(top_pad);
                     self.draw_interval_group(ui);
                     if wide {
                         ui.add_space(7.0_f32 + gap_extra);
@@ -2428,6 +2488,10 @@ impl eframe::App for OpAutoClickerApp {
                         self.draw_position_group(ui);
                         ui.add_space(6.0_f32 + gap_extra);
                     }
+                    // Surplus height gathers here: everything below
+                    // (status, actions, footer) is the window's
+                    // bottom cluster and rides at its bottom edge.
+                    ui.add_space(spring);
 
                     // Reserved one-line status strip; its height never
                     // changes, so the rows below it stay anchored.

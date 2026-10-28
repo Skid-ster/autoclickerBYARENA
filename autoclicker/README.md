@@ -93,9 +93,12 @@ group boxes always claim the full content width (their borders stay
 flush at every size), the side-by-side Click options / Click repeat pair
 stays equal in width and height, and the button grid shares the extra
 width up to a content cap (beyond that the content column centers
-instead of producing over-wide buttons). Extra height first loosens the
-gaps between groups by a bounded amount and then centers the whole
-column, so related controls never drift apart. On top of that, the
+instead of producing over-wide buttons). Extra height loosens the
+gaps between groups by a bounded amount and gathers the rest above
+the status strip, so the groups flow from the top and the status,
+buttons and footer ride at the window's bottom edge at any height —
+the window is filled top-to-bottom, never a fixed island centered
+in empty space. On top of that, the
 window size drives the presentation itself (Settings → "Scale and
 rearrange with window size", on by default): past 800 points of width
 (measured at 100 % zoom, so the steps land at the same physical size
@@ -106,8 +109,11 @@ height vote is capped at the largest step that still fits the width
 you chose, so it can never force the window wider) —
 past 1024 to 125 %
 with Click options / Click repeat / Cursor position rearranged
-three-abreast and one row of four action buttons, and past 1440 to
-140 % — each step multiplying your chosen Window scale, engaging only
+three-abreast and one row of four action buttons, past 1440 to
+140 %, and past 1600 to 160 % for large and maximized windows —
+each step multiplying your chosen Window scale (with the total zoom
+capped at 280 %, so even 200 % + the widest step can never force a
+window larger than your screen), engaging only
 once the size settles (never mid-drag) and releasing on a lower
 threshold so a window parked on a boundary never flip-flops. Sizes are
 remembered in scale-independent points, so the same physical window
