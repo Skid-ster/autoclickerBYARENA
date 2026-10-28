@@ -5,7 +5,8 @@ mod hotkey;
 
 use hotkey::{
     capturable_vks, is_reserved_panic_vk, is_supported_toggle_vk, sanitize_ui_scale,
-    vk_display_name, AppPrefs, AppTheme, PANIC_VK, UI_SCALE_OPTIONS, VK_ESCAPE, VK_F6,
+    sanitize_window_size, vk_display_name, AppPrefs, AppTheme, PANIC_VK, UI_SCALE_OPTIONS,
+    VK_ESCAPE, VK_F6,
 };
 
 #[test]
@@ -19,6 +20,11 @@ fn default_prefs_use_f6() {
         "fresh installs start with the classic light theme"
     );
     assert_eq!(prefs.ui_scale_percent, 100);
+    assert_eq!(
+        (prefs.window_width, prefs.window_height),
+        (560, 456),
+        "fresh installs open at the exact classic window size"
+    );
 }
 
 #[test]
@@ -54,6 +60,15 @@ fn ui_scale_sanitizer_keeps_every_offered_option() {
     assert_eq!(sanitize_ui_scale(74), 75);
     assert_eq!(sanitize_ui_scale(201), 200);
     assert_eq!(sanitize_ui_scale(u32::MAX), 200);
+
+    // The window-size sanitizer shares the same contract: the floor is
+    // kept verbatim, in-range sizes round to whole points, out-of-range
+    // sizes clamp to [floor, 4x floor] and non-finite values fall back.
+    assert_eq!(sanitize_window_size(560.0, 456.0), (560, 456));
+    assert_eq!(sanitize_window_size(720.6, 559.4), (721, 559));
+    assert_eq!(sanitize_window_size(0.0, -10.0), (560, 456));
+    assert_eq!(sanitize_window_size(99_999.0, 99_999.0), (2240, 1824));
+    assert_eq!(sanitize_window_size(f64::NAN, f64::INFINITY), (560, 456));
 }
 
 #[test]

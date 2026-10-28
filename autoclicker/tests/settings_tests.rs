@@ -43,6 +43,8 @@ fn full_round_trip_preserves_every_field() {
         random_offset_enabled: true,
         theme: AppTheme::Matrix,
         ui_scale_percent: 150,
+        window_width: 720,
+        window_height: 560,
     };
 
     let document = serialize_settings(&config, &prefs);
@@ -226,4 +228,37 @@ fn ui_scale_is_clamped_and_defaulted() {
 ",
     );
     assert_eq!(prefs.ui_scale_percent, 100);
+}
+
+#[test]
+fn window_size_is_clamped_and_defaulted() {
+    // Missing keys keep the classic floor size.
+    let (_, prefs) = parse_settings("");
+    assert_eq!((prefs.window_width, prefs.window_height), (560, 456));
+
+    // A normal user-chosen size round-trips exactly.
+    let (_, prefs) = parse_settings("window_width=720\nwindow_height=560\n");
+    assert_eq!((prefs.window_width, prefs.window_height), (720, 560));
+
+    // Fractional points from a live resize round to the nearest point.
+    let (_, prefs) = parse_settings("window_width=720.6\nwindow_height=559.4\n");
+    assert_eq!((prefs.window_width, prefs.window_height), (721, 559));
+
+    // Below-floor values clamp up: a restored window can never hide a
+    // control. Above-ceiling values clamp to 4x the floor.
+    let (_, prefs) = parse_settings("window_width=10\nwindow_height=0\n");
+    assert_eq!((prefs.window_width, prefs.window_height), (560, 456));
+    let (_, prefs) = parse_settings("window_width=99999\nwindow_height=1e30\n");
+    assert_eq!((prefs.window_width, prefs.window_height), (2240, 1824));
+
+    // Garbage, empty and non-finite values keep the floor for that
+    // dimension only; the other dimension still applies.
+    let (_, prefs) = parse_settings("window_width=wide\nwindow_height=600\n");
+    assert_eq!((prefs.window_width, prefs.window_height), (560, 600));
+    let (_, prefs) = parse_settings("window_width=\nwindow_height=\n");
+    assert_eq!((prefs.window_width, prefs.window_height), (560, 456));
+    let (_, prefs) = parse_settings("window_width=NaN\nwindow_height=inf\n");
+    assert_eq!((prefs.window_width, prefs.window_height), (560, 456));
+    let (_, prefs) = parse_settings("window_width=-800\nwindow_height=-1\n");
+    assert_eq!((prefs.window_width, prefs.window_height), (560, 456));
 }

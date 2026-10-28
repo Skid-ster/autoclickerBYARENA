@@ -11,7 +11,10 @@
 //! serialization logic unit testable on every host.
 
 use crate::config::{ClickType, CoordinateMode, EngineConfig, InputMode, MouseButton};
-use crate::hotkey::{sanitize_ui_scale as hotkey_scale_sanitize, AppPrefs, AppTheme};
+use crate::hotkey::{
+    sanitize_ui_scale as hotkey_scale_sanitize, sanitize_window_dimension, AppPrefs, AppTheme,
+    WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
+};
 
 const SETTINGS_VERSION: &str = "1";
 
@@ -140,6 +143,8 @@ pub fn serialize_settings(config: &EngineConfig, prefs: &AppPrefs) -> String {
         "[ui]".to_string(),
         format!("theme={}", prefs.theme.key()),
         format!("ui_scale={}", prefs.ui_scale_percent),
+        format!("window_width={}", prefs.window_width),
+        format!("window_height={}", prefs.window_height),
     ];
     lines.join("\n") + "\n"
 }
@@ -316,6 +321,19 @@ pub fn parse_settings(text: &str) -> (EngineConfig, AppPrefs) {
                 if let Some(parsed) = parse_u64(value) {
                     prefs.ui_scale_percent =
                         hotkey_scale_sanitize(u32::try_from(parsed).unwrap_or(u32::MAX));
+                }
+            }
+            // Missing or non-finite size values keep the floor default for
+            // that dimension; finite values clamp into the supported range
+            // so a hand-edited file can never restore an unusable window.
+            "window_width" => {
+                if let Some(parsed) = parse_f64(value) {
+                    prefs.window_width = sanitize_window_dimension(parsed, WINDOW_MIN_WIDTH);
+                }
+            }
+            "window_height" => {
+                if let Some(parsed) = parse_f64(value) {
+                    prefs.window_height = sanitize_window_dimension(parsed, WINDOW_MIN_HEIGHT);
                 }
             }
             _ => {}

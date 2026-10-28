@@ -1,9 +1,13 @@
 //! MacroClicker — an OP Auto Clicker 4.1-style dashboard (classic Win32 look).
 //!
-//! The main window is a fixed-size, non-scrolling replica of the classic
-//! OP Auto Clicker 4.x screen: four bordered group boxes (Click interval,
-//! Click options, Click repeat, Cursor position) above the authentic 2x2
-//! grid of standard push buttons. There is no diagnostics surface: every
+//! The main window is a naturally resizable, non-scrolling replica of the
+//! classic OP Auto Clicker 4.x screen: four bordered group boxes (Click
+//! interval, Click options, Click repeat, Cursor position) above the
+//! authentic 2x2 grid of standard push buttons. The classic 560x456 size
+//! is the enforced minimum; a larger window only widens the group boxes
+//! and the button grid and adds breathing room between the groups, so
+//! every control stays the same size and visible at every reachable
+//! window size. There is no diagnostics surface: every
 //! control on screen configures clicking, and the engine's telemetry stays
 //! an internal, test-verified concern.
 //!
@@ -168,10 +172,25 @@ static MATRIX_PALETTE: Palette = Palette {
     selection_bg: Color32::from_rgba_premultiplied(0, 70, 36, 150),
 };
 
-/// Logical (point) size of the fixed main window; the Settings window's
-/// scale option zooms the UI and re-applies this size so the physical
-/// window grows or shrinks with the chosen percentage.
-pub const MAIN_WINDOW_SIZE: [f32; 2] = [560.0, 456.0];
+/// Logical (point) floor size of the main window: the exact classic
+/// footprint, declared to the OS as the minimum inner size so the window
+/// can never shrink to a size where a control would not fit. Larger
+/// sizes are restored from the persisted preferences.
+pub const MAIN_WINDOW_SIZE: [f32; 2] = [
+    hotkey::WINDOW_MIN_WIDTH as f32,
+    hotkey::WINDOW_MIN_HEIGHT as f32,
+];
+
+/// Widest the centered content column ever grows, in logical points.
+/// The floor content is 536 points wide (560 minus the side margins);
+/// the cap lets group boxes and the button grid share 200 points of
+/// extra width before extra space becomes side margin instead, so a
+/// maximized window never produces comically wide buttons.
+const MAIN_CONTENT_MAX_WIDTH: f32 = 736.0_f32;
+
+/// Smallest side margin around the content column, kept at the floor
+/// size so the classic layout is pixel-identical there.
+const MAIN_SIDE_MARGIN: f32 = 12.0_f32;
 
 const LOG_LIMIT: usize = 200;
 const SAVE_THROTTLE_MS: u64 = 1_000;
@@ -243,9 +262,19 @@ pub struct OpAutoClickerApp {
     capturing: bool,
     show_settings: bool,
 
-    // Window-chrome bookkeeping: retitle and re-icon on theme change,
-    // resize once the zoom factor for the chosen scale has been applied.
+    // Window-chrome bookkeeping: once the zoom factor for the chosen
+    // scale has been applied, re-declare the minimum size and apply the
+    // floor-aware size correction for that scale.
     pending_resize: bool,
+    // Apply the persisted window size once (at startup and after a
+    // factory reset) as soon as the zoom factor has settled.
+    restore_window_size: bool,
+    // Live-size observation stays paused until this instant so the
+    // transient point sizes seen while a zoom or restore resize is in
+    // flight are never mistaken for a size the user chose. The deadline
+    // always resolves: observation resumes whether or not the OS granted
+    // the exact requested size.
+    window_settle_until: Instant,
 
     // Persistence. The "last saved" fingerprints make the dirty check exact
     // so the disk is never written while nothing changed.
@@ -305,6 +334,8 @@ impl OpAutoClickerApp {
             capturing: false,
             show_settings: false,
             pending_resize: false,
+            restore_window_size: true,
+            window_settle_until: Instant::now(),
             settings_path: Self::settings_file_path(),
             settings_dirty: false,
             last_save: Instant::now(),
@@ -349,6 +380,24 @@ impl OpAutoClickerApp {
         }
         let exe = std::env::current_exe().ok()?;
         Some(exe.parent()?.join("settings.conf"))
+    }
+
+    /// The persisted inner size for the not-yet-created main window, read
+    /// through the same tolerant parser the app itself loads with. Any
+    /// problem (no file, unreadable file) falls back to the classic
+    /// floor, and parsed values are already sanitized into the supported
+    /// range, so the OS window can open directly at the right size. The
+    /// running app re-applies the same size once its zoom factor settles,
+    /// which also resolves the invalid-file case back to the defaults.
+    pub fn persisted_window_size() -> [f32; 2] {
+        let Some(path) = Self::settings_file_path() else {
+            return MAIN_WINDOW_SIZE;
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return MAIN_WINDOW_SIZE;
+        };
+        let (_, prefs) = settings::parse_settings(&text);
+        [prefs.window_width as f32, prefs.window_height as f32]
     }
 
     fn load_persisted(&mut self) {
@@ -820,6 +869,9 @@ impl OpAutoClickerApp {
         self.engine.request_stop();
         self.config = EngineConfig::default();
         self.prefs = AppPrefs::default();
+        // Factory defaults include the classic window size: re-apply the
+        // (floor) persisted size once the 100 % zoom has settled.
+        self.restore_window_size = true;
         self.repeat_limited = false;
         self.offset_ms = 0.0;
         self.picking_location = false;
@@ -870,6 +922,76 @@ impl OpAutoClickerApp {
             return Some("Interval must be at least 1 millisecond.".to_string());
         }
         self.config.validate().err()
+    }
+
+    // ----------------------------------------------------------- window sizing
+
+    /// Side margin that centers the content column once the window grows
+    /// past the content cap. At (and below) the classic width the result
+    /// is exactly the original 12-point margin in every theme.
+    fn centered_side_margin(window_width: f32) -> f32 {
+        if !window_width.is_finite() {
+            return MAIN_SIDE_MARGIN;
+        }
+        let overflow = window_width - 2.0_f32 * MAIN_SIDE_MARGIN - MAIN_CONTENT_MAX_WIDTH;
+        MAIN_SIDE_MARGIN + overflow.max(0.0_f32) / 2.0_f32
+    }
+
+    /// Extra breathing room added to each of the three gaps between the
+    /// group boxes and the status strip. Extra height is spacing only:
+    /// no control ever grows taller, and because the gaps sit above the
+    /// status/buttons/footer block, that block stays anchored to the
+    /// bottom of the window at every height. Zero at the floor height.
+    fn distributed_gap_extra(window_height: f32) -> f32 {
+        if !window_height.is_finite() {
+            return 0.0_f32;
+        }
+        (window_height - MAIN_WINDOW_SIZE[1]).max(0.0_f32) / 3.0_f32
+    }
+
+    /// Records the live inner size as the size to restore next launch.
+    /// Maximized, minimized and fullscreen sizes are never recorded (the
+    /// last normal size is what a restore should return to), sub-floor
+    /// transients are ignored, and recording stays paused while a zoom
+    /// or restore resize is in flight. Persistence itself flows through
+    /// the existing dirty fingerprint and 1-second autosave throttle, so
+    /// a drag-resize writes at most once per second plus once on exit.
+    fn observe_live_window_size(&mut self, ctx: &egui::Context) {
+        if self.restore_window_size
+            || self.pending_resize
+            || Instant::now() < self.window_settle_until
+        {
+            return;
+        }
+        let (size, maximized, minimized, fullscreen) = ctx.input(|i| {
+            let viewport = i.viewport();
+            (
+                i.screen_rect.size(),
+                viewport.maximized,
+                viewport.minimized,
+                viewport.fullscreen,
+            )
+        });
+        if maximized == Some(true) || minimized == Some(true) || fullscreen == Some(true) {
+            return;
+        }
+        // The OS minimum is enforced in physical pixels, so a live point
+        // size can land a fraction below the floor after rounding; allow
+        // that much slack, and treat anything further below (or not
+        // finite) as a transient that must not be recorded.
+        if !size.x.is_finite()
+            || !size.y.is_finite()
+            || size.x < MAIN_WINDOW_SIZE[0] - 2.0_f32
+            || size.y < MAIN_WINDOW_SIZE[1] - 2.0_f32
+        {
+            return;
+        }
+        let (width, height) = hotkey::sanitize_window_size(f64::from(size.x), f64::from(size.y));
+        if width != self.prefs.window_width || height != self.prefs.window_height {
+            self.prefs.window_width = width;
+            self.prefs.window_height = height;
+            self.mark_dirty();
+        }
     }
 
     // --------------------------------------------------------- classic widgets
@@ -1426,7 +1548,9 @@ impl OpAutoClickerApp {
                     });
                 ui.label(
                     egui::RichText::new(
-                        "The window resizes itself so every control stays visible.",
+                        "You can also drag any window edge or corner: the chosen size \
+                         is remembered, and a scale change only enlarges the window \
+                         if the controls would otherwise no longer fit.",
                     )
                     .color(pal.text_dim)
                     .small(),
@@ -1452,23 +1576,56 @@ impl eframe::App for OpAutoClickerApp {
         self.apply_style(ctx);
         let pal = self.palette();
 
-        // UI scale: the zoom factor follows the persisted percentage; one
-        // frame later (once egui reports the new factor as applied) the OS
-        // window is re-sized to the same logical size so the physical
-        // window actually grows or shrinks and no control is cut off.
+        // UI scale and window size: the zoom factor follows the persisted
+        // percentage; one frame later (once egui reports the new factor as
+        // applied) the window bookkeeping runs exactly once. The minimum
+        // size is re-declared in points — egui-winit multiplies viewport
+        // sizes by the current pixels-per-point (zoom x native scale)
+        // when it talks to the OS, so the physical floor rescales with
+        // the chosen percentage without any multiplication here (doing it
+        // in both places would double-scale the floor). A pending restore
+        // (startup, factory reset) applies the persisted size verbatim;
+        // a plain scale change only ever grows the window, and only if
+        // the new zoom left it below the floor, so a window the user
+        // enlarged is never forced back down.
         let desired_zoom = self.prefs.ui_scale_percent as f32 / 100.0_f32;
         if (ctx.zoom_factor() - desired_zoom).abs() > 0.001_f32 {
             ctx.set_zoom_factor(desired_zoom);
             self.pending_resize = true;
             ctx.request_repaint();
-        } else if self.pending_resize {
+        } else if self.pending_resize || self.restore_window_size {
             self.pending_resize = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(
                 MAIN_WINDOW_SIZE[0],
                 MAIN_WINDOW_SIZE[1],
             )));
+            if self.restore_window_size {
+                self.restore_window_size = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
+                    self.prefs.window_width as f32,
+                    self.prefs.window_height as f32,
+                )));
+            } else {
+                let live = ctx.input(|i| i.screen_rect.size());
+                if live.x.is_finite() && live.y.is_finite() && live.x > 0.0_f32 && live.y > 0.0_f32
+                {
+                    let grown = Vec2::new(
+                        live.x.max(MAIN_WINDOW_SIZE[0]),
+                        live.y.max(MAIN_WINDOW_SIZE[1]),
+                    );
+                    if (grown.x - live.x).abs() > 0.5_f32 || (grown.y - live.y).abs() > 0.5_f32 {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(grown));
+                    }
+                }
+            }
+            // Point sizes are meaningless for a few frames while the OS
+            // applies a resize under a new zoom; pause live observation
+            // briefly. The deadline resolves on its own even if the OS
+            // refuses the exact size (for example a smaller monitor).
+            self.window_settle_until = Instant::now() + Duration::from_millis(750);
             ctx.request_repaint();
         }
+        self.observe_live_window_size(ctx);
 
         self.poll_hotkeys();
         self.poll_pick_capture();
@@ -1585,26 +1742,36 @@ impl eframe::App for OpAutoClickerApp {
         };
         ctx.request_repaint_after(heartbeat);
 
-        // Single fixed-size screen: no ScrollArea, everything fits. The top
+        // Single non-scrolling screen: no ScrollArea, everything fits at
+        // the OS-enforced floor and still fits above it. Growing the
+        // window widens the group boxes and the button grid (all field
+        // widths and control heights stay fixed) up to the content cap,
+        // centers the column beyond it, and spends extra height as
+        // breathing room between the groups. At the floor size every
+        // metric below reduces to the original classic layout. The top
         // margin leaves room for the first group title, which rides half
         // above its frame's top border.
+        let window_size = ctx.screen_rect().size();
+        let side_margin = Self::centered_side_margin(window_size.x);
+        let gap_extra = Self::distributed_gap_extra(window_size.y);
         egui::CentralPanel::default()
             .frame(Frame::none().fill(pal.face).inner_margin(Margin {
-                left: 12.0_f32,
-                right: 12.0_f32,
+                left: side_margin,
+                right: side_margin,
                 top: 14.0_f32,
                 bottom: 10.0_f32,
             }))
             .show(ctx, |ui| {
                 ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
                     self.draw_interval_group(ui);
-                    ui.add_space(7.0_f32);
+                    ui.add_space(7.0_f32 + gap_extra);
                     self.draw_options_and_repeat(ui);
-                    ui.add_space(7.0_f32);
+                    ui.add_space(7.0_f32 + gap_extra);
                     self.draw_position_group(ui);
-                    ui.add_space(6.0_f32);
+                    ui.add_space(6.0_f32 + gap_extra);
 
-                    // Reserved one-line status strip keeps the layout fixed.
+                    // Reserved one-line status strip; its height never
+                    // changes, so the rows below it stay anchored.
                     let (rect, _) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), 16.0_f32),
                         Sense::hover(),

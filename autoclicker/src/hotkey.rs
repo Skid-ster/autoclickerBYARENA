@@ -101,6 +101,34 @@ pub fn sanitize_ui_scale(percent: u32) -> u32 {
     percent.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
 }
 
+/// Minimum inner width of the main window, in logical (point) units: the
+/// classic dialog footprint below which a control would have to shrink.
+pub const WINDOW_MIN_WIDTH: u32 = 560;
+/// Minimum inner height of the main window, in logical (point) units.
+pub const WINDOW_MIN_HEIGHT: u32 = 456;
+const WINDOW_SIZE_MAX_FACTOR: u32 = 4;
+
+/// Sanitizes one persisted window dimension: non-finite values fall back
+/// to the floor, finite values clamp into [floor, 4x floor] and round to
+/// a whole point. A hand-edited or corrupt file can therefore never
+/// produce an unusable (tiny, giant or non-finite) restored window, which
+/// mirrors the `ui_scale` guarantee above.
+pub fn sanitize_window_dimension(points: f64, floor: u32) -> u32 {
+    if !points.is_finite() {
+        return floor;
+    }
+    let ceiling = f64::from(floor * WINDOW_SIZE_MAX_FACTOR);
+    points.clamp(f64::from(floor), ceiling).round() as u32
+}
+
+/// Sanitizes a persisted window size against the main-window floor.
+pub fn sanitize_window_size(width: f64, height: f64) -> (u32, u32) {
+    (
+        sanitize_window_dimension(width, WINDOW_MIN_WIDTH),
+        sanitize_window_dimension(height, WINDOW_MIN_HEIGHT),
+    )
+}
+
 /// Application-level hotkey and UI preferences persisted between sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppPrefs {
@@ -112,9 +140,17 @@ pub struct AppPrefs {
     /// Color/label theme for every window. Classic light by default so a
     /// fresh install shows the dialog the 4.x look is modeled on.
     pub theme: AppTheme,
-    /// Window scale percentage (75–200). The whole UI zooms and the fixed
-    /// window resizes itself so every control stays visible.
+    /// Window scale percentage (75–200). The whole UI zooms and the
+    /// window only grows if the content would otherwise no longer fit,
+    /// so every control stays visible at every scale.
     pub ui_scale_percent: u32,
+    /// Last user-chosen inner window width in logical points, sanitized
+    /// to [WINDOW_MIN_WIDTH, 4x WINDOW_MIN_WIDTH]. The floor defaults mean
+    /// a fresh install opens at the exact classic size.
+    pub window_width: u32,
+    /// Last user-chosen inner window height in logical points, sanitized
+    /// to [WINDOW_MIN_HEIGHT, 4x WINDOW_MIN_HEIGHT].
+    pub window_height: u32,
 }
 
 impl Default for AppPrefs {
@@ -125,6 +161,8 @@ impl Default for AppPrefs {
             random_offset_enabled: false,
             theme: AppTheme::Classic,
             ui_scale_percent: UI_SCALE_DEFAULT,
+            window_width: WINDOW_MIN_WIDTH,
+            window_height: WINDOW_MIN_HEIGHT,
         }
     }
 }
