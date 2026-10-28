@@ -497,6 +497,76 @@ Real-time CPS line is flat at the target rate with "Missed deadlines" at
 or near zero. With Random offset or humanization enabled the line wanders
 by design because the produced intervals genuinely vary.
 
+## MacroClicker rebrand + Record & Playback round (fully beating 4.1)
+
+User request: keep the look "super super" matched to OP Auto Clicker 4.1,
+rename the main title to **MacroClicker**, and make the app actually fully
+beat OP Auto Clicker 4.1. The one 4.1 capability still missing was the
+bottom-row **Record & Playback** button, so this round ships it for real —
+not as a dead control — plus the rebrand and the authentic 4.1 button rows.
+
+What changed:
+
+- **Rebrand.** The default window/taskbar title, the eframe app id, the
+  first log line, the settings-file header comment and the binary name
+  (`macro_clicker.exe`, CI artifact `macro_clicker-windows-x64`) now say
+  MacroClicker. The MogClicker theme keeps its own "MogClicker" retitle.
+  The settings folder stays `%APPDATA%\op-auto-clicker` so every existing
+  user setting survives the rename.
+- **Authentic 4.1 button rows.** The footer grid now mirrors 4.1 exactly:
+  Start (F6) / Stop (F6), then Hotkey setting / Record & Playback, with
+  this app's extra Settings… / Advanced… as a third row. The fixed window
+  grew from 560x448 to 560x480 to seat the third row; the headless layout
+  probe re-measured all six themes at 548.50x471.75 inside 560x480.
+- **Record.** A new `MacroRecorder` (pure module `macro_rec.rs`) captures
+  real clicks: while recording is armed the existing GetAsyncKeyState
+  heartbeat (the same 16 ms poll that powers the global hotkeys, so it
+  works while other apps are focused) edge-detects the three physical
+  mouse buttons, reads GetCursorPos, and stores position + button + the
+  measured gap since the previous click. Clicks are ignored while the
+  foreground window belongs to this process (new
+  `win32::foreground_is_own_process()` via GetForegroundWindow +
+  GetWindowThreadProcessId + GetCurrentProcessId), so pressing "Stop
+  recording" never records itself. The toggle hotkey and F8 also stop a
+  recording; a 2048-step cap stops runaway recordings.
+- **Playback.** `ClickEngine::start_with_macro` hands the recorded steps
+  to the worker (one mutex clone at session entry — the click loop itself
+  stays lock-free). Each iteration overrides position, button and gap from
+  the current step through the existing dispatch and the bounded-catch-up
+  absolute QPC schedule, so playback inherits drift-free timing, the F8
+  panic path, telemetry and the CPS chart unchanged. Loop budgets reuse
+  `max_clicks` (`steps x loops`, or unlimited for "until stopped"), and
+  playback refuses background-HWND mode (global SendInput only). The UI
+  never pushes its live config into the engine during playback, so the
+  loop budget cannot be overwritten mid-run.
+
+Verification through the offline real-egui harness and standalone rustc:
+
+- `cargo fmt --check` clean over every source and test file.
+- **67/67 tests pass** (config 13, humanize 9, telemetry 8, settings 8,
+  hotkey 7, icon 6, schedule 7, macro 9 — a new eighth binary), all eight
+  test files also compile standalone with zero warnings via bare
+  `rustc --test` against the pinned 1.88.0 sysroot.
+- `cargo clippy -- -D warnings` on the harness lib (real `app.rs`,
+  `engine.rs`, `macro_rec.rs` against real egui 0.27.2): zero findings.
+- New `verify_macro` probe drives the real UI headlessly: the root
+  viewport retitles to "MacroClicker" on frame one; the footer paints
+  Start (F6), Stop (F6), Hotkey setting, Record & Playback, Settings… and
+  Advanced…; clicking Record & Playback opens the window showing
+  "Recorded steps: 0", Record, Clear, the loop radios and Play; the loop
+  controls survive real pointer events.
+- The layout probe re-measured all six themes at the new window size:
+  maximum content extent 548.50x471.75 inside 560x480, idle repaint
+  heartbeat <= 50 ms everywhere.
+- Marker grep stays clean; no `mouse_event`/`keybd_event`; no
+  `std::thread::sleep` anywhere in a click or playback path.
+
+Windows acceptance for this round: confirm the title bar reads
+MacroClicker; record a short macro across another window, replay it 2x and
+until-stopped, stop with the button, the hotkey and F8; confirm clicks on
+MacroClicker's own windows are never recorded; and confirm an ordinary
+(non-macro) session still behaves exactly as before.
+
 ## MogClicker accent round (presentation-only)
 
 User-requested follow-up: make the MogClicker meme theme the "absolute

@@ -14,6 +14,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
 use crate::config::{AtomicConfigSnapshot, CoordinateMode, EngineConfig, InputMode, MouseButton};
 use crate::humanize;
+use crate::macro_rec::{self, MacroStep};
 use crate::schedule;
 use crate::telemetry::{ClickRecord, TelemetryStore};
 use crate::timing::{self, ScopedTimerResolution, SpinResult};
@@ -80,6 +81,10 @@ struct Shared {
     last_elapsed: Arc<AtomicI64>,
     error: Arc<Mutex<Option<String>>>,
     rect_cache: Arc<RectCache>,
+    /// Steps replayed by a Record & Playback session; empty for ordinary
+    /// sessions. Locked only at session start (store) and session entry
+    /// (one clone), never inside the click loop.
+    macro_steps: Mutex<Arc<[MacroStep]>>,
 }
 
 pub struct ClickEngine {
@@ -110,6 +115,7 @@ impl ClickEngine {
             last_elapsed: Arc::new(AtomicI64::new(0)),
             error: Arc::new(Mutex::new(None)),
             rect_cache: Arc::new(RectCache::new()),
+            macro_steps: Mutex::new(Arc::from(Vec::new())),
         });
         let worker_shared = Arc::clone(&shared);
         let worker = thread::spawn(move || worker_loop(worker_shared));
@@ -121,10 +127,25 @@ impl ClickEngine {
     }
 
     pub fn start(&self, config: &EngineConfig) -> Result<(), String> {
+        self.start_with_macro(config, Arc::from(Vec::new()))
+    }
+
+    /// Starts a session that replays recorded `steps` in order, looping
+    /// until the configured click budget (or a stop/panic) ends it. An
+    /// empty slice degenerates to an ordinary single-point session.
+    pub fn start_with_macro(
+        &self,
+        config: &EngineConfig,
+        steps: Arc<[MacroStep]>,
+    ) -> Result<(), String> {
         if self.is_running() {
             return Err("A click session is already running.".to_string());
         }
+        if !steps.is_empty() && config.input_mode != InputMode::GlobalSendInput {
+            return Err("Macro playback requires global SendInput delivery.".to_string());
+        }
         config.validate()?;
+        *self.shared.macro_steps.lock().expect("macro mutex") = steps;
         self.shared.telemetry.reset();
         self.shared.last_elapsed.store(0, Ordering::Release);
         self.shared.priority_denied.store(false, Ordering::Release);
@@ -327,25 +348,45 @@ fn run_click_session(shared: &Shared) {
     let session_start = timing::qpc_now();
     shared.start_tick.store(session_start, Ordering::Release);
     humanize::reseed_thread_humanizer(session_start as u64);
+    // One clone of the macro sequence at session entry; the click loop
+    // itself never touches the lock.
+    let macro_steps = shared.macro_steps.lock().expect("macro mutex").clone();
     let mut next_deadline = session_start;
     let mut previous_completion: Option<i64> = None;
     let mut sequence: u64 = 0;
 
     while !shared.stop.load(Ordering::Acquire) && !shared.panic.load(Ordering::Acquire) {
-        let config = shared.config.load();
+        let mut config = shared.config.load();
         if config.max_clicks != 0 && sequence >= config.max_clicks {
             break;
         }
 
+        // Macro playback: the current step dictates position, button and
+        // gap, replayed exactly as recorded through the same scheduler.
+        let playback_step = if macro_steps.is_empty() {
+            None
+        } else {
+            Some(macro_steps[macro_rec::step_index(sequence, macro_steps.len())])
+        };
+        if let Some(step) = playback_step {
+            config.coordinate_mode = CoordinateMode::FixedScreen;
+            config.fixed_x = step.x;
+            config.fixed_y = step.y;
+            config.mouse_button = step.button;
+        }
+
         // A positive 4.1-style random offset selects uniform jitter around the
         // base interval; otherwise the Gaussian humanizer rules apply.
-        let interval_ms = humanize::with_thread_humanizer(|h| {
-            if config.random_offset_ms > 0.0 {
-                h.next_offset_interval_ms(&config)
-            } else {
-                h.next_interval_ms(&config)
-            }
-        });
+        let interval_ms = match playback_step {
+            Some(step) => macro_rec::clamp_delay(step.delay_ms),
+            None => humanize::with_thread_humanizer(|h| {
+                if config.random_offset_ms > 0.0 {
+                    h.next_offset_interval_ms(&config)
+                } else {
+                    h.next_interval_ms(&config)
+                }
+            }),
+        };
         let hold_ms = humanize::with_thread_humanizer(|h| h.next_hold_ms(&config));
         // Absolute schedule with bounded catch-up: a stall longer than the
         // slack re-anchors to "now" instead of firing instant make-up

@@ -1,7 +1,8 @@
-# OP Auto Clicker (Rust / eframe egui / windows-sys)
+# MacroClicker (Rust / eframe egui / windows-sys)
 
-Windows x64 auto-clicker written in stable Rust with an egui interface that
-reproduces the authentic classic OP Auto Clicker 4.x Win32 dialog — a fixed,
+**MacroClicker** — a Windows x64 auto-clicker written in stable Rust with an
+egui interface that reproduces the authentic classic OP Auto Clicker 4.x
+Win32 dialog — a fixed,
 non-resizable light-gray window with native-style group boxes and push
 buttons, every control visible without scrolling. It is backed by a
 dedicated QPC spin-scheduled worker thread, uniform/Gaussian timing jitter,
@@ -25,7 +26,7 @@ cargo build --release
 The release profile is fixed to `opt-level = 3`, `lto = true`,
 `codegen-units = 1`, `incremental = false`, `debug = false` and
 `panic = "abort"`. The binary is
-`target/release/op_auto_clicker.exe`.
+`target/release/macro_clicker.exe`.
 
 ## Run
 
@@ -39,7 +40,7 @@ cargo run --release
 cargo test --release
 ```
 
-Seven integration test binaries run platform-independent logic (58 tests):
+Eight integration test binaries run platform-independent logic (67 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -51,6 +52,12 @@ Seven integration test binaries run platform-independent logic (58 tests):
 - `telemetry_tests` — SPSC ring FIFO, slot wrapping, drop-newest back
   pressure, dropped counters, real two-thread producer/consumer traffic,
   statistics moments and histogram totals.
+- `macro_tests` — the Record & Playback bookkeeping: the first step keeps
+  the lead-in delay, later steps store measured gaps (clamped so 0 ms or
+  non-monotonic polls never schedule an impossible click), the 2048-step
+  cap refuses further clicks, clear resets the timeline, loop indexing
+  wraps exactly, and finite loop counts produce an exact saturating click
+  budget while "until stopped" stays unlimited.
 - `schedule_tests` — the pure absolute-schedule arithmetic: exact drift-free
   cadence when on time, jitter within the catch-up slack absorbed without
   re-anchoring, a stall beyond the slack re-anchoring to "now" instead of
@@ -74,7 +81,7 @@ and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window is a pixel-faithful, fixed-size (560x448 logical points,
+The main window is a pixel-faithful, fixed-size (560x480 logical points,
 non-resizable, non-scrolling) recreation of the classic OP Auto Clicker 4.x
 dialog. The **Settings…** button in the bottom-right corner opens a
 Settings window with two persisted choices:
@@ -286,7 +293,15 @@ previous session is never reused.
     returns to its original size; both choices survive a restart.
 14. Close the window: the worker is signaled, joined and its event handle
     closed cleanly.
-15. Open Advanced… and watch the Real-time CPS chart during a session with
+15. The title bar and taskbar read "MacroClicker" (the MogClicker theme
+    still retitles to "MogClicker" and back when you leave it).
+16. Open Record & Playback, press Record, click 3–4 spots in another
+    window (clicks on MacroClicker itself are ignored), press Stop
+    recording: the step count matches. Press Play with "Play 2 times":
+    every spot is clicked in order twice with your original rhythm, then
+    "Playback complete" appears. Playback honors F8 panic and the Stop
+    button; "Play until stopped" loops until stopped.
+17. Open Advanced… and watch the Real-time CPS chart during a session with
     a fixed interval (Random offset 0, humanization off): the line stays
     flat at the target CPS — one sample per click from the worker's own
     measured click-to-click gap — and "Missed deadlines" stays at or near

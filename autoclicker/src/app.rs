@@ -1,4 +1,4 @@
-//! OP Auto Clicker 4.1-style dashboard (classic Win32 look).
+//! MacroClicker — an OP Auto Clicker 4.1-style dashboard (classic Win32 look).
 //!
 //! The main window is a fixed-size, non-scrolling replica of the classic
 //! OP Auto Clicker 4.x screen: four bordered group boxes (Click interval,
@@ -25,6 +25,7 @@ use crate::hotkey::{
     UI_SCALE_OPTIONS, VK_ESCAPE,
 };
 use crate::icon;
+use crate::macro_rec::{self, MacroRecorder};
 use crate::settings;
 use crate::telemetry::{
     compute_stats, ClickRecord, TelemetryStats, GRAPH_HISTORY_SIZE, HISTOGRAM_BINS,
@@ -259,7 +260,7 @@ struct ThemeText {
 }
 
 static CLASSIC_TEXT: ThemeText = ThemeText {
-    window_title: "OP Auto Clicker",
+    window_title: "MacroClicker",
     group_interval: "Click interval",
     group_options: "Click options",
     group_repeat: "Click repeat",
@@ -297,7 +298,7 @@ static MOG_TEXT: ThemeText = ThemeText {
 /// Logical (point) size of the fixed main window; the Settings window's
 /// scale option zooms the UI and re-applies this size so the physical
 /// window grows or shrinks with the chosen percentage.
-pub const MAIN_WINDOW_SIZE: [f32; 2] = [560.0, 448.0];
+pub const MAIN_WINDOW_SIZE: [f32; 2] = [560.0, 480.0];
 
 const LOG_LIMIT: usize = 200;
 const SAVE_THROTTLE_MS: u64 = 1_000;
@@ -341,6 +342,18 @@ pub struct OpAutoClickerApp {
     // Screen-point capture for "Pick location".
     picking_location: bool,
     pick_was_down: bool,
+
+    // Record & Playback.
+    show_macro_window: bool,
+    macro_recorder: MacroRecorder,
+    macro_recording: bool,
+    macro_record_started: Option<Instant>,
+    macro_lmb_was_down: bool,
+    macro_rmb_was_down: bool,
+    macro_mmb_was_down: bool,
+    macro_until_stopped: bool,
+    macro_loops: u64,
+    macro_playing: bool,
 
     // Background targeting (Advanced window).
     windows: Vec<WindowInfo>,
@@ -409,11 +422,20 @@ impl OpAutoClickerApp {
             repeat_limited: false,
             picking_location: false,
             pick_was_down: false,
+            show_macro_window: false,
+            macro_recorder: MacroRecorder::new(),
+            macro_recording: false,
+            macro_record_started: None,
+            macro_lmb_was_down: false,
+            macro_rmb_was_down: false,
+            macro_mmb_was_down: false,
+            macro_until_stopped: true,
+            macro_loops: 1,
+            macro_playing: false,
             windows: Vec::new(),
             selected_window: None,
             logs: vec![
-                "OP Auto Clicker initialized. F6 starts/stops, F8 is the panic stop key."
-                    .to_string(),
+                "MacroClicker initialized. F6 starts/stops, F8 is the panic stop key.".to_string(),
             ],
             last_seen_error: None,
             sliding_window: Vec::new(),
@@ -624,6 +646,9 @@ impl OpAutoClickerApp {
 
     fn poll_hotkeys(&mut self) {
         let f8_down = win32::is_f8_down();
+        if f8_down && !self.f8_was_down && self.macro_recording {
+            self.stop_macro_recording("F8");
+        }
         if f8_down && !self.f8_was_down && self.engine.is_running() {
             self.engine.panic_stop();
             self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
@@ -732,6 +757,135 @@ impl OpAutoClickerApp {
         self.pick_was_down = mouse_down;
     }
 
+    // -------------------------------------------------------- record & play
+
+    fn start_macro_recording(&mut self) {
+        if self.engine.is_running() || self.macro_recording {
+            return;
+        }
+        self.macro_recorder.clear();
+        self.macro_recording = true;
+        self.macro_record_started = Some(Instant::now());
+        // The click that pressed "Record" must not capture itself.
+        self.macro_lmb_was_down = true;
+        self.macro_rmb_was_down = win32::is_vk_down(win32::VK_RBUTTON);
+        self.macro_mmb_was_down = win32::is_vk_down(win32::VK_MBUTTON);
+        self.set_status(
+            StatusKind::Warning,
+            "Recording clicks — click anywhere; clicks on this window are ignored. \
+             Stop with the button, the hotkey or F8.",
+        );
+        self.log("Macro recording started.");
+    }
+
+    fn stop_macro_recording(&mut self, via: &str) {
+        if !self.macro_recording {
+            return;
+        }
+        self.macro_recording = false;
+        self.macro_record_started = None;
+        let count = self.macro_recorder.len();
+        self.set_status(
+            StatusKind::Ready,
+            format!("Recording stopped: {count} steps captured."),
+        );
+        self.log(format!("Macro recording stopped via {via}: {count} steps."));
+    }
+
+    /// Polls the three physical mouse buttons while a recording is armed.
+    /// Runs on the same GetAsyncKeyState heartbeat as the global hotkeys,
+    /// so clicks are captured even while another application is focused.
+    fn poll_macro_record(&mut self) {
+        let Some(started) = self.macro_record_started else {
+            return;
+        };
+        let lmb = win32::is_vk_down(win32::VK_LBUTTON);
+        let rmb = win32::is_vk_down(win32::VK_RBUTTON);
+        let mmb = win32::is_vk_down(win32::VK_MBUTTON);
+        let edges = [
+            (lmb && !self.macro_lmb_was_down, MouseButton::Left),
+            (rmb && !self.macro_rmb_was_down, MouseButton::Right),
+            (mmb && !self.macro_mmb_was_down, MouseButton::Middle),
+        ];
+        self.macro_lmb_was_down = lmb;
+        self.macro_rmb_was_down = rmb;
+        self.macro_mmb_was_down = mmb;
+
+        for (pressed, button) in edges {
+            if !pressed {
+                continue;
+            }
+            // Clicks aimed at MacroClicker itself (stopping the recording,
+            // moving the window) never belong in the macro.
+            if win32::foreground_is_own_process() {
+                continue;
+            }
+            let Some((x, y)) = win32::get_cursor_pos() else {
+                continue;
+            };
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            if !self
+                .macro_recorder
+                .record_click(elapsed_ms, x as i64, y as i64, button)
+            {
+                self.stop_macro_recording("step limit");
+                self.set_status(
+                    StatusKind::Warning,
+                    format!(
+                        "Recording stopped: the {} step limit was reached.",
+                        macro_rec::MAX_STEPS
+                    ),
+                );
+                return;
+            }
+        }
+    }
+
+    fn start_macro_playback(&mut self) {
+        if self.engine.is_running() || self.macro_recording || self.macro_recorder.is_empty() {
+            return;
+        }
+        let steps: std::sync::Arc<[macro_rec::MacroStep]> =
+            std::sync::Arc::from(self.macro_recorder.steps().to_vec());
+        let loops = if self.macro_until_stopped {
+            0
+        } else {
+            self.macro_loops.max(1)
+        };
+        let mut config = self.config.clone();
+        config.input_mode = InputMode::GlobalSendInput;
+        config.coordinate_mode = CoordinateMode::FixedScreen;
+        config.target_hwnd = 0;
+        config.max_clicks = macro_rec::clicks_for_loops(steps.len(), loops);
+        match self.engine.start_with_macro(&config, steps) {
+            Ok(()) => {
+                self.macro_playing = true;
+                self.cps_head = 0;
+                self.cps_count = 0;
+                self.cps_history.fill(0.0);
+                self.sliding_window.clear();
+                self.last_seen_error = None;
+                let count = self.macro_recorder.len();
+                let loops_text = if loops == 0 {
+                    "until stopped".to_string()
+                } else {
+                    format!("{loops}x")
+                };
+                self.set_status(
+                    StatusKind::Running,
+                    format!("Playing macro — {count} steps, {loops_text}."),
+                );
+                self.log(format!(
+                    "Macro playback started: {count} steps, {loops_text}."
+                ));
+            }
+            Err(error) => {
+                self.set_status(StatusKind::Error, format!("Error: {error}"));
+                self.log(format!("Macro playback rejected: {error}"));
+            }
+        }
+    }
+
     // ------------------------------------------------------------- engine I/O
 
     fn surface_engine_errors(&mut self) {
@@ -777,6 +931,10 @@ impl OpAutoClickerApp {
     }
 
     fn toggle_session(&mut self) {
+        if self.macro_recording {
+            self.stop_macro_recording("hotkey");
+            return;
+        }
         if self.engine.is_running() {
             self.engine.request_stop();
             self.set_status(StatusKind::Stopping, self.theme_text().stopping_line);
@@ -1176,6 +1334,15 @@ impl OpAutoClickerApp {
                     self.show_hotkey_dialog = true;
                     self.capturing = false;
                 }
+                if Self::classic_button(ui, pal, "Record & Playback", true, button_width).clicked()
+                {
+                    self.show_macro_window = true;
+                }
+                ui.end_row();
+
+                if Self::classic_button(ui, pal, "Settings…", true, button_width).clicked() {
+                    self.show_settings = true;
+                }
                 if Self::classic_button(ui, pal, "Advanced…", true, button_width).clicked() {
                     self.show_advanced = true;
                 }
@@ -1241,6 +1408,119 @@ impl OpAutoClickerApp {
             self.mark_dirty();
             self.flush_settings();
         }
+    }
+
+    // --------------------------------------------------- record & playback UI
+
+    fn draw_macro_window(&mut self, ctx: &egui::Context) {
+        let pal = self.palette();
+        let mut open = self.show_macro_window;
+        egui::Window::new("Record & Playback")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(360.0_f32)
+            .show(ctx, |ui| {
+                let steps = self.macro_recorder.len();
+                let duration_s = self.macro_recorder.total_duration_ms() / 1000.0;
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Recorded steps: {steps}   ·   one loop: {duration_s:.1} s"
+                    ))
+                    .color(pal.text)
+                    .strong(),
+                );
+                if self.macro_recording {
+                    ui.label(
+                        egui::RichText::new(
+                            "Recording… click anywhere on screen. Clicks on this \
+                             window are ignored; the hotkey or F8 also stops recording.",
+                        )
+                        .color(pal.warning),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(
+                            "Record real clicks (position, button and timing), then \
+                             replay them exactly through the precision engine.",
+                        )
+                        .color(pal.text_dim)
+                        .small(),
+                    );
+                }
+                ui.add_space(6.0_f32);
+
+                let engine_running = self.engine.is_running();
+                ui.horizontal(|ui| {
+                    if self.macro_recording {
+                        if ui.button("Stop recording").clicked() {
+                            self.stop_macro_recording("button");
+                        }
+                    } else {
+                        ui.add_enabled_ui(!engine_running, |ui| {
+                            if ui.button("Record").clicked() {
+                                self.start_macro_recording();
+                            }
+                        });
+                    }
+                    ui.add_enabled_ui(
+                        steps > 0 && !self.macro_recording && !engine_running,
+                        |ui| {
+                            if ui.button("Clear").clicked() {
+                                self.macro_recorder.clear();
+                                self.set_status(StatusKind::Ready, "Macro cleared.");
+                                self.log("Macro cleared.");
+                            }
+                        },
+                    );
+                });
+                ui.add_space(6.0_f32);
+
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.macro_until_stopped, true, "Play until stopped");
+                    ui.radio_value(&mut self.macro_until_stopped, false, "Play");
+                    let mut loops = self.macro_loops.max(1);
+                    ui.add_enabled_ui(!self.macro_until_stopped, |ui| {
+                        ui.add_sized(
+                            [64.0_f32, 20.0_f32],
+                            egui::DragValue::new(&mut loops).clamp_range(1..=1_000_000),
+                        );
+                    });
+                    self.macro_loops = loops;
+                    ui.label("times");
+                });
+                ui.add_space(8.0_f32);
+
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(
+                        steps > 0 && !self.macro_recording && !engine_running,
+                        |ui| {
+                            if ui.button("Play").clicked() {
+                                self.start_macro_playback();
+                            }
+                        },
+                    );
+                    ui.add_enabled_ui(engine_running && self.macro_playing, |ui| {
+                        if ui.button("Stop playback").clicked() {
+                            self.engine.request_stop();
+                            self.set_status(StatusKind::Stopping, "Stopping playback…");
+                            self.log("Playback stop requested.");
+                        }
+                    });
+                });
+                ui.add_space(6.0_f32);
+                ui.label(
+                    egui::RichText::new(
+                        "Playback uses global SendInput at the recorded screen \
+                         positions; gaps are replayed on the drift-free QPC \
+                         schedule and F8 still panic-stops instantly.",
+                    )
+                    .color(pal.text_dim)
+                    .small(),
+                );
+            });
+        self.show_macro_window = open;
     }
 
     // ------------------------------------------------------------ advanced UI
@@ -1699,8 +1979,12 @@ impl eframe::App for OpAutoClickerApp {
 
         self.poll_hotkeys();
         self.poll_pick_capture();
+        self.poll_macro_record();
         self.surface_engine_errors();
-        if self.engine.is_running() {
+        // During macro playback the engine runs a cloned configuration
+        // (fixed-step budget, per-step positions); pushing the live UI
+        // config into it would overwrite that budget mid-run.
+        if self.engine.is_running() && !self.macro_playing {
             if let Err(error) = self.engine.update_config(&self.config) {
                 if self.last_seen_error.as_deref() != Some(error.as_str()) {
                     self.log(format!("Engine error: {error}"));
@@ -1715,8 +1999,26 @@ impl eframe::App for OpAutoClickerApp {
         // status line and persistence react even without a button press.
         // Manual stops and worker errors keep their own status instead of
         // being misreported as a clean completion.
+        let was_macro_playback = self.macro_playing;
+        if self.was_running && !self.engine.is_running() && was_macro_playback {
+            self.macro_playing = false;
+            if self.engine.state() != STATE_PANIC {
+                self.set_status(
+                    StatusKind::Ready,
+                    format!(
+                        "Playback complete: {} clicks delivered.",
+                        self.engine.click_count()
+                    ),
+                );
+                self.log(format!(
+                    "Macro playback finished after {} clicks.",
+                    self.engine.click_count()
+                ));
+            }
+        }
         if self.was_running && !self.engine.is_running() {
-            let count_reached = self.repeat_limited
+            let count_reached = !was_macro_playback
+                && self.repeat_limited
                 && self.config.max_clicks > 0
                 && self.engine.click_count() >= self.config.max_clicks;
             if count_reached && self.engine.state() != STATE_PANIC {
@@ -1749,7 +2051,11 @@ impl eframe::App for OpAutoClickerApp {
         // window was being interacted with). Interactive states keep the
         // fast 16 ms tick; idle keeps a light 50 ms tick so an F6 press
         // from inside a game is noticed within one poll interval.
-        let heartbeat = if self.engine.is_running() || self.capturing || self.picking_location {
+        let heartbeat = if self.engine.is_running()
+            || self.capturing
+            || self.picking_location
+            || self.macro_recording
+        {
             Duration::from_millis(16)
         } else {
             Duration::from_millis(50)
@@ -1815,20 +2121,6 @@ impl eframe::App for OpAutoClickerApp {
                             .color(pal.text_dim)
                             .small(),
                         );
-                        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().button_padding = Vec2::new(8.0_f32, 2.0_f32);
-                            let button = egui::Button::new(
-                                egui::RichText::new("Settings…")
-                                    .size(12.0_f32)
-                                    .color(pal.text),
-                            )
-                            .fill(pal.button)
-                            .stroke(Stroke::new(1.0_f32, pal.button_border))
-                            .rounding(Rounding::same(3.0_f32));
-                            if ui.add(button).clicked() {
-                                self.show_settings = true;
-                            }
-                        });
                     });
                 });
             });
@@ -1841,6 +2133,9 @@ impl eframe::App for OpAutoClickerApp {
         }
         if self.show_advanced {
             self.draw_advanced_window(ctx);
+        }
+        if self.show_macro_window {
+            self.draw_macro_window(ctx);
         }
     }
 
