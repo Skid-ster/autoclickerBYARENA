@@ -72,7 +72,9 @@ jobs:
           if ($packageVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "Cargo package version '$packageVersion' is not a strict X.Y.Z release version" }
           if ($vi.FileVersion -ne $packageVersion -and !$vi.FileVersion.StartsWith("$packageVersion.")) { throw "exe FileVersion '$($vi.FileVersion)' does not match Cargo package version '$packageVersion'" }
           if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}" -ne "v$packageVersion") { throw "release tag '${{ github.ref_name }}' does not match Cargo package version 'v$packageVersion'" }
-          Write-Host "Subsystem=$subsystem (Windows GUI) ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) PackageVersion=$packageVersion Size=$((Get-Item $exe).Length) bytes"
+          $summary = "Subsystem=$subsystem (Windows GUI) ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) PackageVersion=$packageVersion Size=$((Get-Item $exe).Length) bytes"
+          Write-Host $summary
+          Write-Host "::notice title=Windows binary metadata::$summary"
 
       - name: Upload release binary
         uses: actions/upload-artifact@v4
@@ -101,6 +103,9 @@ jobs:
           $exeItem = Get-Item ./macro_clicker.exe
           $sha256 = (Get-FileHash $exeItem.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           "$sha256  macro_clicker.exe" | Set-Content -Encoding ascii ./SHA256SUMS.txt
+          $checksumLine = (Get-Content -Raw -Encoding ascii ./SHA256SUMS.txt).Trim()
+          if ($checksumLine -cne "$sha256  macro_clicker.exe") { throw "SHA256SUMS.txt does not match the built executable" }
+          Write-Host "::notice title=Release checksum file::$checksumLine"
           $notesFile = Join-Path $env:RUNNER_TEMP "release-notes.md"
           Copy-Item $notesSource $notesFile
           Add-Content -Encoding utf8 $notesFile @(
