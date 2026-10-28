@@ -163,6 +163,18 @@ pub fn parse_https_url(url: &str) -> Option<(String, String)> {
     Some((host.to_string(), path))
 }
 
+/// Compact byte-count wording for facts such as a release download
+/// size. Binary units keep the value aligned with the progress row.
+pub fn byte_size_label(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    if bytes < 1024 * 1024 {
+        return format!("{:.1} KB", bytes as f64 / 1024.0_f64);
+    }
+    format!("{:.1} MB", bytes as f64 / 1_048_576.0_f64)
+}
+
 /// Compact transfer wording for the install progress row, e.g.
 /// "2.0 of 3.6 MB (55%)". A missing total (never expected for a
 /// GitHub asset) degrades to the downloaded amount alone.

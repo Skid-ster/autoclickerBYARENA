@@ -40,7 +40,7 @@ cargo run --release
 cargo test --release
 ```
 
-Ten integration test binaries run platform-independent logic (103 tests):
+Ten integration test binaries run platform-independent logic (108 tests):
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
@@ -95,7 +95,9 @@ Ten integration test binaries run platform-independent logic (103 tests):
   file fails), the replace-with-backup swap, rollback when the
   download is missing or the new program won't launch, clearing
   a crashed attempt's stale backup, development-build (`target/`)
-  detection, and leftover-file cleanup that touches nothing else.
+  detection, recognized source-checkout layout and origin checks,
+  manifest-version extraction, and leftover-file cleanup that
+  touches nothing else.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
@@ -234,29 +236,33 @@ bar agree.
   footer row: a short key reminder on the left (it tracks the actual
   assigned hotkey, e.g. "F6 start/stop · F8 emergency stop") and the
   **Updates…** and **Settings…** buttons on the right. The footer
-  button mirrors the checker in place (**Checking…**, or
-  **Update vX.Y.Z** when a download is ready). The Updates window is
-  a centered status card with a state glyph and the three facts
-  needed to trust it — **Installed**, **Latest on GitHub** and
-  **Last checked** — so "up to date" always names the version GitHub
-  actually reported (and a source build newer than the latest
-  release says so). It checks once per launch, refreshes a stale
-  result when the window is opened, and can always be re-run with
-  **Check now**; failures resolve to a plain-language headline with
-  the technical detail underneath, never an endless spinner. The
-  action button stays greyed out until an update is proven, then
-  **Install vX.Y.Z** updates in place: it streams the new EXE next
-  to the running one with a progress bar and a working **Cancel**,
-  verifies its exact size and SHA-256 fingerprint against the
-  values GitHub published for that release (no published
-  fingerprint, no install — the browser download is offered
-  instead), moves the running EXE aside, puts the verified one
-  in its place, launches it and closes; any failure along the
-  way restores the current build untouched and says so. The new
-  build confirms with "Updated from v… — now running v…" and
-  sweeps the leftover file. **Release notes** and **Copy download
-  link** remain beside it, and if Windows refuses to open the
-  browser the window says so and the copy-link path still works.
+  button mirrors the checker in place (**Checking…**, **Update
+  vX.Y.Z**, or **Updating…**). When a verified update is ready and
+  no click or macro session is active, pressing the footer button
+  starts the complete update directly and opens the Updates window
+  for progress and cancellation. The Updates window is a centered
+  status card with a state glyph, a shape-coded stage path, and the
+  facts needed to trust the result — **Installed**, **Latest**,
+  **Installation**, **Size**, **Checked**, and **Channel** —
+  so both the verdict and the exact update route are visible. It
+  checks once per launch, refreshes a stale result when opened, and
+  can always be re-run with **Check now**; failures resolve to a
+  plain-language headline with the technical detail underneath,
+  never an endless spinner. The action stays disabled until an
+  update is proven, then **Update to vX.Y.Z** does the work in
+  place. Portable builds stream the new EXE beside the running one
+  with progress and cancellation. A recognized source checkout is
+  first required to be a clean `main` branch with this project's
+  GitHub origin, then fast-forwarded to the exact release tag and
+  its manifest version is confirmed. Both paths then verify exact
+  size and SHA-256 against GitHub's published values (no published
+  fingerprint, no install), move the running EXE aside, put the
+  verified one in place, launch it, and close. Failure restores
+  the current program and says whether a source checkout had
+  already been fast-forwarded. The new build confirms with
+  "Updated from v… — now running v…" and sweeps the leftover file.
+  **Release notes** and **Copy download link** remain available,
+  and browser failures are reported in the window.
 
 Every push button is painted with full interaction feedback: the fill,
 border and elevation all track the pointer (an eased ~180 ms hover lift
@@ -306,7 +312,7 @@ previous session is never reused.
 | `src/telemetry.rs` | Lock-free SPSC ring buffer over atomic `Atom` slots (`Send + Sync`, no `unsafe`), drop-newest back pressure, sliding-window statistics |
 | `src/config.rs` | Configuration struct, validation, h/m/s/ms helpers and the all-atomic runtime snapshot |
 | `src/update.rs` | Pure update decisions: version ordering, release/asset JSON scanning (tag, size, SHA-256 digest), validated release/download/redirect URLs, refresh policy, error headlines and a dependency-free streaming SHA-256 |
-| `src/self_update.rs` | Verified self-replacement over `std` file ops: PE gate, size+fingerprint verification, rename-aside/swap-in with rollback, undo after a failed launch, stale-file cleanup, Cargo-target detection |
+| `src/self_update.rs` | Installation classification and verified self-replacement: recognized source-checkout fast-forward with bounded/cancellable Git commands, PE gate, size+fingerprint verification, rename-aside/swap-in with rollback, undo after a failed launch, and stale-file cleanup |
 
 ### Timing and threading rules
 
@@ -441,32 +447,38 @@ previous session is never reused.
     the settings file back and confirm the saved size wins again.
 18. Updates: with the machine online, open **Updates…** — a stale or
     missing result refreshes on open, and the status card must show
-    **Installed**, **Latest on GitHub** and **Last checked: just now**
-    with the verdict naming the version GitHub reported. The real
-    end-to-end rehearsal is the v1.3.0 → v1.4.0 hop — the first
-    physical self-update: v1.3.0's footer must turn into **Update
-    v1.4.0** without opening anything, and pressing **Install
-    v1.4.0** in its window must download, verify, and reopen as
-    v1.4.0. In any v1.3.0+ window, **Install vX.Y.Z** must be greyed out unless a
-    newer release is proven; when clicked it shows live download
-    progress, then "Verifying…", and the app closes and reopens by
-    itself as the new version with the status strip confirming
-    "Updated from v… — now running v…", settings and window size
-    intact and no `macro_clicker.exe.old-*` file left beside the
-    EXE. Repeat and press **Cancel download** mid-transfer: it must
-    stop, report "nothing was changed", and the current build must
-    keep working. **Release notes** opens that version's GitHub
-    page and **Copy download link** puts the exact asset URL on the
-    clipboard. Disconnect the network and press **Check now**: the
-    window must settle on a plain-language failure with the
-    technical detail under it and a **Try again** button — never an
-    endless spinner. If an update was already confirmed before the
-    network dropped, a failed refresh must keep that update
+    **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**, and **Channel**, with the verdict naming
+    the version GitHub reported. Use a portable v1.4.1 EXE for the
+    v1.4.1 → v1.5.0 rehearsal: its footer must become **Update
+    v1.5.0** without opening anything. With no session running,
+    press that one footer button: the Updates window must open on
+    live progress, move through **Download → Verify → Install →
+    Restart**, then close and reopen by itself as v1.5.0 with
+    "Updated from v1.4.1 — now running v1.5.0", settings and window
+    size intact and no `macro_clicker.exe.old-*` file left beside
+    the EXE. In the window itself, **Update to vX.Y.Z** must stay
+    disabled unless a newer release is proven. Repeat an update and
+    press **Cancel update** mid-transfer: it must stop, report that
+    the running version was not changed, and keep the current build
+    working. **Release notes** opens that version's GitHub page and
+    **Copy download link** puts the exact asset URL on the clipboard.
+    For the source path, wait until a release newer than a v1.5.0
+    checkout exists, then launch `target\release\macro_clicker.exe`
+    from a clean `main` checkout: **Installation** must say
+    **Source checkout build**, the stages must begin with **Source**,
+    the checkout must land exactly on that release tag, and the app
+    must reopen as the new version. Make a tracked local edit and
+    retry: the update must refuse before replacing the EXE; repeat
+    from a non-`main` branch and confirm the same. Disconnect the
+    network and press **Check now**: the window must settle on a
+    plain-language failure with technical detail and **Try again** —
+    never an endless spinner. If an update was already confirmed
+    before the network dropped, a failed refresh must keep it
     installable and say it is showing the last confirmed result.
     Untick **Check for updates on startup** and restart: no check
     runs in the background (the footer stays **Updates…**), while
     opening the window counts as asking and refreshes then. Finally
-    confirm the safety rails: run a copy from `target\release`
-    (it must offer the browser download, never **Install**), and
-    run one from a read-only folder (the install must fail cleanly
-    with the current version untouched).
+    confirm the remaining safety rails: an unrecognized Cargo
+    artifact outside this checkout must offer only the browser
+    download, and a portable copy in a read-only folder must fail
+    cleanly with the current version untouched.

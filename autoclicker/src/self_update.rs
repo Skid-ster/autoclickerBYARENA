@@ -1,7 +1,9 @@
 //! Verified self-replacement: turning a downloaded release EXE
 //! into the running program, safely.
 //!
-//! The flow the app drives is download → verify → swap → relaunch:
+//! A recognized source checkout first fast-forwards its clean `main`
+//! branch to the exact release tag; from there both installation kinds
+//! use the same verified flow: download → verify → swap → relaunch:
 //!
 //! 1. The new EXE is streamed (by `win32::https_download_to_file`)
 //!    to `macro_clicker.exe.update-<pid>` **next to the running
@@ -22,17 +24,28 @@
 //!    remains (retrying briefly, because the old process may
 //!    still be exiting while the new one starts).
 //!
-//! Everything here is `std`-only file work, so the swap, the
-//! rollback and the verification are exercised by ordinary tests
-//! on any platform; the only Windows fact relied on is the
-//! rename-a-running-image permission above.
+//! Everything here is `std`-only file and process work, so the
+//! path classification, swap, rollback, and verification logic are
+//! exercised by ordinary tests on any platform. Actually invoking Git
+//! and the rename-a-running-image permission are the platform/runtime
+//! facts reserved for Windows acceptance.
 
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
-use crate::update::Sha256;
+/// Windows process-creation flag that keeps console helpers such as
+/// Git from flashing a console window when launched by this GUI app.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+use crate::update::{self, Sha256};
 
 /// The three paths one update attempt juggles. `download` and
 /// `backup` are siblings of `exe` with a per-process suffix, so
@@ -64,12 +77,94 @@ pub fn update_paths(exe: &Path, unique: &str) -> UpdatePaths {
     }
 }
 
+/// A recognized MacroClicker source checkout behind a Cargo-built
+/// executable. `root` is the repository root, `crate_dir` is the
+/// `autoclicker/` crate directory and `profile` is the Cargo profile
+/// directory (`debug` or `release`) the running EXE came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceCheckout {
+    pub root: PathBuf,
+    pub crate_dir: PathBuf,
+    pub manifest: PathBuf,
+    pub profile: String,
+}
+
+/// How this process is installed, for update routing and for telling
+/// the user exactly what an in-app update will change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallKind {
+    /// A normal portable/release EXE outside a Cargo target tree.
+    Portable,
+    /// A Cargo-built EXE inside a recognizable MacroClicker checkout.
+    SourceCheckout(SourceCheckout),
+    /// A Cargo-built EXE whose surrounding checkout is not recognized.
+    CargoBuild,
+    /// The process could not identify its own EXE path.
+    Unknown,
+}
+
+/// Derives the source-checkout paths implied by a Cargo-built EXE
+/// path, without touching the filesystem. Only the project layout
+/// (`<root>/autoclicker/target/<profile>/macro_clicker.exe`, or the
+/// same with the crate at the repository root) is recognized; test
+/// binaries under `deps/` and arbitrary Cargo artifacts are not
+/// treated as the installed application.
+fn source_checkout_paths(exe: &Path) -> Option<SourceCheckout> {
+    let profile = exe.parent()?.file_name()?.to_string_lossy().into_owned();
+    if profile != "debug" && profile != "release" {
+        return None;
+    }
+    let target_dir = exe.parent()?.parent()?;
+    if target_dir.file_name()?.to_string_lossy() != "target" {
+        return None;
+    }
+    let crate_dir = target_dir.parent()?.to_path_buf();
+    let root = if crate_dir.file_name().map(|name| name.to_string_lossy())
+        == Some(std::borrow::Cow::Borrowed("autoclicker"))
+    {
+        crate_dir.parent()?.to_path_buf()
+    } else {
+        crate_dir.clone()
+    };
+    Some(SourceCheckout {
+        manifest: crate_dir.join("Cargo.toml"),
+        root,
+        crate_dir,
+        profile,
+    })
+}
+
+/// Returns the checkout behind `exe` when the path-derived layout is
+/// backed by the files that make it this project: a Git checkout, the
+/// crate manifest and the crate entry point. This deliberately refuses
+/// lookalike target trees rather than running Git somewhere surprising.
+pub fn source_checkout_for_exe(exe: &Path) -> Option<SourceCheckout> {
+    let checkout = source_checkout_paths(exe)?;
+    let git_marker = checkout.root.join(".git");
+    let entry_point = checkout.crate_dir.join("src").join("main.rs");
+    if git_marker.exists() && checkout.manifest.is_file() && entry_point.is_file() {
+        Some(checkout)
+    } else {
+        None
+    }
+}
+
+/// Classifies the running executable for update routing.
+pub fn install_kind_for_exe(exe: &Path) -> InstallKind {
+    if let Some(checkout) = source_checkout_for_exe(exe) {
+        InstallKind::SourceCheckout(checkout)
+    } else if is_cargo_target_exe(exe) {
+        InstallKind::CargoBuild
+    } else {
+        InstallKind::Portable
+    }
+}
+
 /// Whether `exe` lives in a Cargo build tree (`target/debug` or
-/// `target/release`, possibly a subdirectory like `deps`). A
-/// development binary must never replace itself with a release
-/// build — the next `cargo build` would silently undo it and the
-/// developer would be testing a file they did not compile — so
-/// the app offers these the browser download instead.
+/// `target/release`, possibly a subdirectory like `deps`). A bare
+/// development artifact is not silently treated as a portable install:
+/// source checkouts get their own explicit update path above, and
+/// unrecognized Cargo artifacts keep the browser download.
 pub fn is_cargo_target_exe(exe: &Path) -> bool {
     let components: Vec<String> = exe
         .components()
@@ -78,6 +173,339 @@ pub fn is_cargo_target_exe(exe: &Path) -> bool {
     components
         .windows(2)
         .any(|pair| pair[0] == "target" && (pair[1] == "debug" || pair[1] == "release"))
+}
+
+/// Error text returned when the user cancels a source-checkout update.
+/// Callers compare against it to land on the ordinary "cancelled"
+/// terminal state instead of presenting cancellation as a failure.
+pub const SOURCE_UPDATE_CANCELLED: &str = "source update cancelled";
+
+/// Whether an `origin` URL names this project's GitHub repository in
+/// one of the standard HTTPS or SSH spellings. The source updater runs
+/// Git only against the expected upstream, never against whatever a
+/// lookalike checkout happens to configure.
+pub fn is_supported_origin_url(url: &str) -> bool {
+    // GitHub owner/repository paths are case-insensitive, and clone URLs
+    // preserve whatever spelling the user copied. Normalize case (and a
+    // trailing slash/`.git`) before requiring the exact project path.
+    let normalized = url.trim().trim_end_matches('/').to_ascii_lowercase();
+    let normalized = normalized.strip_suffix(".git").unwrap_or(&normalized);
+    matches!(
+        normalized,
+        "https://github.com/skid-ster/autoclickerbyarena"
+            | "git@github.com:skid-ster/autoclickerbyarena"
+            | "ssh://git@github.com/skid-ster/autoclickerbyarena"
+    )
+}
+
+/// Extracts the `[package]` version from Cargo manifest text. This is
+/// a deliberately small line parser for the one field the source
+/// updater must confirm after a fast-forward; malformed or non-version
+/// values yield None rather than being coerced.
+pub fn package_version_from_manifest(text: &str) -> Option<String> {
+    let mut in_package = false;
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "version" {
+            continue;
+        }
+        let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+        let clean = value.strip_prefix('v').unwrap_or(value);
+        if update::parse_version(clean).is_some() {
+            return Some(clean.to_string());
+        }
+        return None;
+    }
+    None
+}
+
+fn bounded_file_text(path: &Path, max_bytes: u64) -> String {
+    let Ok(mut file) = fs::File::open(path) else {
+        return String::new();
+    };
+    let mut bytes = Vec::new();
+    if file
+        .by_ref()
+        .take(max_bytes)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn collapsed_command_detail(stdout_path: &Path, stderr_path: &Path) -> String {
+    let mut combined = bounded_file_text(stderr_path, 16 * 1024);
+    if combined.trim().is_empty() {
+        combined = bounded_file_text(stdout_path, 16 * 1024);
+    }
+    let mut detail = String::new();
+    for word in combined.split_whitespace() {
+        if !detail.is_empty() {
+            detail.push(' ');
+        }
+        detail.push_str(word);
+        if detail.len() >= 360 {
+            break;
+        }
+    }
+    while detail.len() > 360 {
+        if detail.pop().is_none() {
+            break;
+        }
+    }
+    detail
+}
+
+fn terminate_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Runs one fixed command without a shell, with output redirected to
+/// bounded log files so the caller can poll cancellation and enforce a
+/// deadline without risking a pipe deadlock. On Windows the helper is
+/// created without a console window, so Git never flashes terminal
+/// windows over the GUI. Only the source updater's hard-coded Git
+/// invocations use this; no user text becomes an argument.
+fn run_update_command(
+    program: &str,
+    args: &[OsString],
+    cwd: &Path,
+    cancel: &AtomicBool,
+    timeout: Duration,
+    label: &str,
+) -> Result<String, String> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(SOURCE_UPDATE_CANCELLED.to_string());
+    }
+    let stamp = format!("macroclicker-source-update-{}-{label}", std::process::id());
+    let stdout_path = std::env::temp_dir().join(format!("{stamp}.stdout.log"));
+    let stderr_path = std::env::temp_dir().join(format!("{stamp}.stderr.log"));
+    let stdout_file = fs::File::create(&stdout_path)
+        .map_err(|error| format!("the source update log couldn't be created: {error}"))?;
+    let stderr_file = fs::File::create(&stderr_path)
+        .map_err(|error| format!("the source update log couldn't be created: {error}"))?;
+
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("CARGO_TERM_COLOR", "never");
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("{label} couldn't be started: {error}"))?;
+
+    let started = Instant::now();
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) {
+            terminate_child(&mut child);
+            let _ = fs::remove_file(&stdout_path);
+            let _ = fs::remove_file(&stderr_path);
+            return Err(SOURCE_UPDATE_CANCELLED.to_string());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if started.elapsed() > timeout {
+                    terminate_child(&mut child);
+                    let _ = fs::remove_file(&stdout_path);
+                    let _ = fs::remove_file(&stderr_path);
+                    return Err(format!("{label} timed out"));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&stdout_path);
+                let _ = fs::remove_file(&stderr_path);
+                return Err(format!("{label} couldn't be monitored: {error}"));
+            }
+        }
+    };
+
+    let stdout = bounded_file_text(&stdout_path, 64 * 1024);
+    let result = if status.success() {
+        Ok(stdout)
+    } else {
+        let detail = collapsed_command_detail(&stdout_path, &stderr_path);
+        if detail.is_empty() {
+            Err(format!("{label} failed ({status})"))
+        } else {
+            Err(format!("{label} failed ({status}): {detail}"))
+        }
+    };
+    let _ = fs::remove_file(stdout_path);
+    let _ = fs::remove_file(stderr_path);
+    result
+}
+
+fn run_git(
+    checkout: &SourceCheckout,
+    args: &[&str],
+    cancel: &AtomicBool,
+    timeout: Duration,
+    label: &str,
+) -> Result<String, String> {
+    let mut full_args: Vec<OsString> = vec![OsString::from("-C"), checkout.root.clone().into()];
+    full_args.extend(args.iter().map(OsString::from));
+    run_update_command("git", &full_args, &checkout.root, cancel, timeout, label)
+}
+
+/// Fast-forwards a recognized source checkout to an exact release tag.
+///
+/// Safety rails, in order: no tracked changes, the current branch is
+/// `main`, `origin` is this project's GitHub repository, the release
+/// tag resolves to a commit, the current HEAD is an ancestor of that
+/// commit, and the manifest at the destination names the expected
+/// version. Any refusal happens before the working tree is changed
+/// (fetching refs aside). The checked-out source is updated even if a
+/// later binary download fails; callers word that state honestly.
+pub fn fast_forward_source_checkout(
+    checkout: &SourceCheckout,
+    version: &str,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let clean_version = version.trim().strip_prefix('v').unwrap_or(version.trim());
+    if update::parse_version(clean_version).is_none() {
+        return Err(format!("release version {version} is not a version number"));
+    }
+
+    let short_timeout = Duration::from_secs(20);
+    let status = run_git(
+        checkout,
+        &["status", "--porcelain=v1", "--untracked-files=no"],
+        cancel,
+        short_timeout,
+        "git status",
+    )?;
+    if !status.trim().is_empty() {
+        return Err(
+            "the source checkout has uncommitted tracked changes; commit or stash them before updating in the app"
+                .to_string(),
+        );
+    }
+
+    let branch = run_git(
+        checkout,
+        &["branch", "--show-current"],
+        cancel,
+        short_timeout,
+        "git branch",
+    )?;
+    if branch.trim() != "main" {
+        let current = branch.trim();
+        let shown = if current.is_empty() {
+            "a detached HEAD".to_string()
+        } else {
+            format!("branch {current}")
+        };
+        return Err(format!(
+            "the source checkout is on {shown}, not main; switch to main before updating in the app"
+        ));
+    }
+
+    let origin = run_git(
+        checkout,
+        &["remote", "get-url", "origin"],
+        cancel,
+        short_timeout,
+        "git remote",
+    )?;
+    if !is_supported_origin_url(origin.trim()) {
+        return Err(
+            "the source checkout's origin is not the MacroClicker GitHub repository".to_string(),
+        );
+    }
+
+    run_git(
+        checkout,
+        &["fetch", "--prune", "--tags", "origin", "main"],
+        cancel,
+        Duration::from_secs(120),
+        "git fetch",
+    )?;
+
+    let tag_ref = format!("refs/tags/v{clean_version}^{{commit}}");
+    let target = run_git(
+        checkout,
+        &["rev-parse", "--verify", &tag_ref],
+        cancel,
+        short_timeout,
+        "git rev-parse",
+    )?;
+    let target = target.trim();
+    if target.len() < 7 || !target.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "Git did not resolve release tag v{clean_version} to a commit"
+        ));
+    }
+
+    let head = run_git(
+        checkout,
+        &["rev-parse", "HEAD"],
+        cancel,
+        short_timeout,
+        "git rev-parse",
+    )?;
+    let head = head.trim();
+    if head != target {
+        let merge_base = run_git(
+            checkout,
+            &["merge-base", "HEAD", target],
+            cancel,
+            short_timeout,
+            "git merge-base",
+        )?;
+        if merge_base.trim() != head {
+            return Err(format!(
+                "the source checkout cannot fast-forward cleanly to v{clean_version}; no source files were changed"
+            ));
+        }
+        run_git(
+            checkout,
+            &["merge", "--ff-only", target],
+            cancel,
+            Duration::from_secs(60),
+            "git merge",
+        )?;
+        let new_head = run_git(
+            checkout,
+            &["rev-parse", "HEAD"],
+            cancel,
+            short_timeout,
+            "git rev-parse",
+        )?;
+        if new_head.trim() != target {
+            return Err(format!(
+                "the source checkout did not land exactly on v{clean_version}; no program file was replaced"
+            ));
+        }
+    }
+
+    let manifest_text = bounded_file_text(&checkout.manifest, 256 * 1024);
+    if package_version_from_manifest(&manifest_text).as_deref() != Some(clean_version) {
+        return Err(format!(
+            "the source checkout at v{clean_version} does not name that version in its Cargo manifest; no program file was replaced"
+        ));
+    }
+    Ok(())
 }
 
 /// True when `header` (the first bytes of a file) opens as an

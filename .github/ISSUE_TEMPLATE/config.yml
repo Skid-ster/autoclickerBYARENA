@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Latest release
+    url: https://github.com/Skid-ster/autoclickerBYARENA/releases/latest
+    about: Download the newest stable MacroClicker build and read its release notes.
+  - name: Project documentation
+    url: https://github.com/Skid-ster/autoclickerBYARENA#readme
+    about: Installation, usage, build, and update documentation.
