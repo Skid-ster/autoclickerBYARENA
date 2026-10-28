@@ -24,6 +24,7 @@ mod macro_rec;
 mod schedule;
 mod settings;
 mod telemetry;
+mod update;
 
 #[cfg(windows)]
 mod app;

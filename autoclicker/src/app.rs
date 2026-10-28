@@ -15,6 +15,7 @@
 //! blocks on the worker.
 
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use egui::{Align2, Color32, FontId, Frame, Grid, Layout, Margin, Rounding, Sense, Stroke, Vec2};
@@ -30,6 +31,7 @@ use crate::hotkey::{
 };
 use crate::macro_rec::{self, MacroRecorder};
 use crate::settings;
+use crate::update::{self, UpdateOutcome};
 use crate::win32;
 
 /// Complete color scheme for one theme. Both themes share every layout
@@ -305,6 +307,23 @@ const MAIN_SIDE_MARGIN: f32 = 12.0_f32;
 const LOG_LIMIT: usize = 200;
 const SAVE_THROTTLE_MS: u64 = 1_000;
 
+/// What the Updates window can currently say about the newest
+/// published release. `Checking` always resolves into exactly one of
+/// the other states: the worker thread reports once on every path,
+/// and a dropped channel counts as `Failed` (see
+/// `poll_update_check`), so the window can never claim to be
+/// checking forever.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UpdateUiState {
+    NotChecked,
+    Checking,
+    UpToDate,
+    /// Newer release version, without the leading "v".
+    Available(String),
+    /// User-facing reason the check could not complete.
+    Failed(String),
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusKind {
     Ready,
@@ -371,6 +390,14 @@ pub struct OpAutoClickerApp {
     show_hotkey_dialog: bool,
     capturing: bool,
     show_settings: bool,
+    show_updates: bool,
+
+    // Update checker: the Updates window's state, the latch for the
+    // once-per-launch background check, and the channel its detached
+    // worker reports through (None while no check is in flight).
+    update_state: UpdateUiState,
+    update_auto_check_started: bool,
+    update_rx: Option<mpsc::Receiver<Result<UpdateOutcome, String>>>,
 
     // Window-chrome bookkeeping: once the zoom factor for the chosen
     // scale has been applied, re-declare the minimum size and apply the
@@ -475,6 +502,10 @@ impl OpAutoClickerApp {
             show_hotkey_dialog: false,
             capturing: false,
             show_settings: false,
+            show_updates: false,
+            update_state: UpdateUiState::NotChecked,
+            update_auto_check_started: false,
+            update_rx: None,
             pending_resize: false,
             restore_window_size: true,
             window_settle_until: Instant::now(),
@@ -2255,6 +2286,155 @@ impl OpAutoClickerApp {
             self.show_settings = false;
         }
     }
+
+    // ----------------------------------------------------------- updates
+
+    /// Starts a background update check unless one is already in
+    /// flight. The detached worker performs a single HTTPS GET of
+    /// GitHub's latest-release metadata and sends exactly one
+    /// result; if the app closes mid-check the send simply fails
+    /// and the thread exits.
+    fn start_update_check(&mut self) {
+        if self.update_rx.is_some() {
+            return;
+        }
+        self.update_state = UpdateUiState::Checking;
+        let (sender, receiver) = mpsc::channel();
+        self.update_rx = Some(receiver);
+        std::thread::spawn(move || {
+            let result = win32::https_get_text(update::UPDATE_API_HOST, update::UPDATE_API_PATH)
+                .map_err(|error| error.to_string())
+                .and_then(|body| update::evaluate_update(&body, env!("CARGO_PKG_VERSION")));
+            let _ = sender.send(result);
+        });
+    }
+
+    /// Applies a finished worker's verdict. A disconnected channel
+    /// (worker gone without reporting) also resolves the state, as
+    /// Failed, so the Updates window can never sit in Checking
+    /// forever.
+    fn poll_update_check(&mut self) {
+        let Some(result) = self.update_rx.as_ref().map(|receiver| receiver.try_recv()) else {
+            return;
+        };
+        match result {
+            Ok(Ok(UpdateOutcome::UpToDate)) => {
+                self.update_state = UpdateUiState::UpToDate;
+                self.update_rx = None;
+            }
+            Ok(Ok(UpdateOutcome::Available(version))) => {
+                self.update_state = UpdateUiState::Available(version);
+                self.update_rx = None;
+            }
+            Ok(Err(message)) => {
+                self.update_state = UpdateUiState::Failed(message);
+                self.update_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.update_state =
+                    UpdateUiState::Failed("the check stopped unexpectedly".to_string());
+                self.update_rx = None;
+            }
+        }
+    }
+
+    fn draw_updates_window(&mut self, ctx: &egui::Context) {
+        let pal = self.palette();
+        let mut open = self.show_updates;
+        egui::Window::new("Updates")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0_f32)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Current version: {}", env!("CARGO_PKG_VERSION")))
+                        .color(pal.text)
+                        .strong(),
+                );
+                ui.add_space(6.0_f32);
+                match &self.update_state {
+                    UpdateUiState::NotChecked => {
+                        ui.label(
+                            egui::RichText::new("Not checked yet in this session.")
+                                .color(pal.text_dim),
+                        );
+                    }
+                    UpdateUiState::Checking => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(egui::RichText::new("Checking for updates…").color(pal.text));
+                        });
+                    }
+                    UpdateUiState::UpToDate => {
+                        ui.label(
+                            egui::RichText::new("You're up to date — no new updates available.")
+                                .color(pal.success),
+                        );
+                    }
+                    UpdateUiState::Available(version) => {
+                        ui.label(
+                            egui::RichText::new(format!("A new version is available: v{version}"))
+                                .color(pal.success)
+                                .strong(),
+                        );
+                    }
+                    UpdateUiState::Failed(message) => {
+                        ui.label(
+                            egui::RichText::new(format!("Couldn't check for updates: {message}"))
+                                .color(pal.warning),
+                        );
+                    }
+                }
+                ui.add_space(10.0_f32);
+                ui.horizontal(|ui| {
+                    let checking = matches!(self.update_state, UpdateUiState::Checking);
+                    if ui
+                        .add_enabled(!checking, egui::Button::new("Check now"))
+                        .clicked()
+                    {
+                        self.start_update_check();
+                    }
+                    // Greyed out until a check has actually proven a
+                    // newer release exists, so it can never look
+                    // clickable when there is nothing to download.
+                    let can_download = matches!(self.update_state, UpdateUiState::Available(_));
+                    let download =
+                        ui.add_enabled(can_download, egui::Button::new("Download update…"));
+                    if download.clicked() {
+                        let _opened = win32::open_url(update::RELEASES_PAGE_URL);
+                    }
+                });
+                ui.add_space(6.0_f32);
+                ui.label(
+                    egui::RichText::new(
+                        "The download button opens the GitHub release page in your \
+                         browser: grab the new macro_clicker.exe there and replace \
+                         the old one — your settings are kept. Nothing is ever \
+                         downloaded or installed behind your back; checking only \
+                         reads the latest version number.",
+                    )
+                    .color(pal.text_dim)
+                    .small(),
+                );
+                ui.add_space(10.0_f32);
+                ui.separator();
+                ui.add_space(6.0_f32);
+                if ui
+                    .checkbox(
+                        &mut self.prefs.check_updates,
+                        "Check for updates on startup",
+                    )
+                    .changed()
+                {
+                    self.mark_dirty();
+                }
+            });
+        if !open {
+            self.show_updates = false;
+        }
+    }
 }
 
 impl eframe::App for OpAutoClickerApp {
@@ -2262,6 +2442,17 @@ impl eframe::App for OpAutoClickerApp {
         self.ui_clock_secs = ctx.input(|i| i.time);
         self.apply_style(ctx);
         let pal = self.palette();
+
+        // One background update check per launch (unless the user
+        // switched it off in the Updates window; manual checks are
+        // always available there). The worker resolves the state
+        // exactly once and the poll applies it on whatever frame
+        // happens to run next, so the UI never waits on the network.
+        if self.prefs.check_updates && !self.update_auto_check_started {
+            self.update_auto_check_started = true;
+            self.start_update_check();
+        }
+        self.poll_update_check();
 
         // UI scale and window size: the zoom factor follows the persisted
         // percentage times the window-driven step (`adapt_to_window_size`
@@ -2580,7 +2771,8 @@ impl eframe::App for OpAutoClickerApp {
                     ui.add_space(5.0_f32);
                     // Status-bar style footer: key reminder on the left
                     // (tracking the real assigned hotkey, in the active
-                    // theme's wording), Settings entry point on the right.
+                    // theme's wording), Updates and Settings entry
+                    // points on the right.
                     ui.horizontal(|ui| {
                         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
                         ui.label(
@@ -2606,6 +2798,28 @@ impl eframe::App for OpAutoClickerApp {
                             if settings_response.clicked() {
                                 self.show_settings = true;
                             }
+                            // The Updates entry point flags a known newer
+                            // release in place, so the once-per-launch
+                            // background check is visible without opening
+                            // anything.
+                            let (updates_label, updates_color) = match &self.update_state {
+                                UpdateUiState::Available(_) => ("Update available!", pal.success),
+                                _ => ("Updates…", pal.text),
+                            };
+                            let updates_button = egui::Button::new(
+                                egui::RichText::new(updates_label)
+                                    .size(12.0_f32)
+                                    .color(updates_color),
+                            )
+                            .fill(pal.button)
+                            .stroke(Stroke::new(1.0_f32, pal.button_border))
+                            .rounding(Rounding::same(3.0_f32));
+                            let updates_response = ui.add(updates_button).on_hover_text(
+                                "See whether a newer MacroClicker release is available",
+                            );
+                            if updates_response.clicked() {
+                                self.show_updates = true;
+                            }
                         });
                     });
                 });
@@ -2613,6 +2827,9 @@ impl eframe::App for OpAutoClickerApp {
 
         if self.show_settings {
             self.draw_settings_window(ctx);
+        }
+        if self.show_updates {
+            self.draw_updates_window(ctx);
         }
         if self.show_hotkey_dialog {
             self.draw_hotkey_dialog(ctx);

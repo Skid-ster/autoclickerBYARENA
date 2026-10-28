@@ -144,6 +144,7 @@ pub fn serialize_settings(config: &EngineConfig, prefs: &AppPrefs) -> String {
         format!("theme={}", prefs.theme.key()),
         format!("ui_scale={}", prefs.ui_scale_percent),
         format!("auto_scale={}", prefs.auto_scale),
+        format!("check_updates={}", prefs.check_updates),
         format!("window_width={}", prefs.window_width),
         format!("window_height={}", prefs.window_height),
     ];
@@ -327,6 +328,11 @@ pub fn parse_settings(text: &str) -> (EngineConfig, AppPrefs) {
             "auto_scale" => {
                 if let Some(parsed) = parse_bool(value) {
                     prefs.auto_scale = parsed;
+                }
+            }
+            "check_updates" => {
+                if let Some(parsed) = parse_bool(value) {
+                    prefs.check_updates = parsed;
                 }
             }
             // Missing or non-finite size values keep the floor default for

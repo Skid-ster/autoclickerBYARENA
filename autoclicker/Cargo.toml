@@ -1,6 +1,6 @@
 [package]
 name = "macro_clicker"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 description = "MacroClicker — OP Auto Clicker 4.1-style Rust/egui Windows auto-clicker with record & playback, global and background click modes"
 
@@ -16,6 +16,8 @@ windows-sys = { version = "=0.52.0", features = [
     "Win32_System_Performance",
     "Win32_Media",
     "Win32_Graphics_Gdi",
+    "Win32_Networking_WinHttp",
+    "Win32_UI_Shell",
 ] }
 
 [build-dependencies]

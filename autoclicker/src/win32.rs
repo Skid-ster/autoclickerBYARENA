@@ -5,6 +5,7 @@
 //! referenced. Message and flag constants are declared locally so the wrapper
 //! surface stays independent of internal metadata re-exports.
 
+use std::ffi::c_void;
 use std::io;
 
 use windows_sys::Win32::Foundation::{
@@ -12,6 +13,13 @@ use windows_sys::Win32::Foundation::{
     WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+use windows_sys::Win32::Networking::WinHttp::{
+    WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
+    WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
+    WinHttpSendRequest, WinHttpSetTimeouts, INTERNET_DEFAULT_HTTPS_PORT,
+    WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_ADDREQ_FLAG_ADD, WINHTTP_FLAG_SECURE,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
+};
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, GetCurrentThread, ResetEvent, SetEvent, SetThreadPriority,
@@ -20,10 +28,11 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, MOUSEINPUT,
 };
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClientRect, GetCursorPos, GetForegroundWindow, GetSystemMetrics,
     GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
-    SendMessageTimeoutW, WNDENUMPROC,
+    SendMessageTimeoutW, SW_SHOWNORMAL, WNDENUMPROC,
 };
 
 use crate::hotkey::PANIC_VK;
@@ -402,4 +411,215 @@ pub fn send_message_timeout(
 pub fn make_lparam(x: i32, y: i32) -> isize {
     let packed = (x as u32) | ((y as u32) << 16);
     packed as i32 as isize
+}
+
+// --------------------------------------------------------------- networking
+
+/// Null-terminated UTF-16 copy of `text`, the shape every wide Win32
+/// string parameter expects.
+fn wide_null(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// RAII owner for a WinHTTP handle, so every early return in the
+/// request sequence still releases the OS resources.
+struct HttpHandle(*mut c_void);
+
+impl Drop for HttpHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: the handle came from a WinHttpOpen-family call
+            // and is closed exactly once, here.
+            unsafe { WinHttpCloseHandle(self.0) };
+        }
+    }
+}
+
+/// Largest body `https_get_text` will buffer. The only consumer reads
+/// a few KB of release metadata; the cap turns a hostile or broken
+/// endpoint into a clean error instead of an unbounded allocation.
+const HTTPS_BODY_LIMIT: usize = 256 * 1024;
+
+/// Performs one HTTPS GET via WinHTTP — the OS HTTP stack, so system
+/// proxy settings, TLS and certificate validation all come from
+/// Windows — and returns the body decoded as text. Synchronous and
+/// bounded (10 s timeouts, [`HTTPS_BODY_LIMIT`]): callers run it on a
+/// worker thread. Every handle closes on every path and every
+/// failure names its stage.
+pub fn https_get_text(host: &str, path: &str) -> io::Result<String> {
+    let agent = wide_null(&format!("MacroClicker/{}", env!("CARGO_PKG_VERSION")));
+    // SAFETY: `agent` is a live null-terminated wide string for the
+    // call; automatic proxy resolution honors the system proxy
+    // settings, and null proxy name/bypass are its documented pair.
+    let session = HttpHandle(unsafe {
+        WinHttpOpen(
+            agent.as_ptr(),
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+        )
+    });
+    if session.0.is_null() {
+        return Err(last_os_error("WinHttpOpen failed"));
+    }
+    // SAFETY: `session` is a valid WinHTTP session handle. Timeouts
+    // are best-effort tuning, so the result is intentionally ignored.
+    let _timeouts_set = unsafe { WinHttpSetTimeouts(session.0, 10_000, 10_000, 10_000, 10_000) };
+
+    let host_wide = wide_null(host);
+    // SAFETY: session handle plus a live null-terminated host name;
+    // the reserved parameter is zero as documented.
+    let connect = HttpHandle(unsafe {
+        WinHttpConnect(
+            session.0,
+            host_wide.as_ptr(),
+            INTERNET_DEFAULT_HTTPS_PORT,
+            0,
+        )
+    });
+    if connect.0.is_null() {
+        return Err(last_os_error("WinHttpConnect failed"));
+    }
+
+    let verb = wide_null("GET");
+    let path_wide = wide_null(path);
+    // SAFETY: connect handle plus live null-terminated verb/path.
+    // Null version/referrer/accept-types select HTTP/1.1 defaults;
+    // WINHTTP_FLAG_SECURE makes the request HTTPS.
+    let request = HttpHandle(unsafe {
+        WinHttpOpenRequest(
+            connect.0,
+            verb.as_ptr(),
+            path_wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            WINHTTP_FLAG_SECURE,
+        )
+    });
+    if request.0.is_null() {
+        return Err(last_os_error("WinHttpOpenRequest failed"));
+    }
+
+    let headers = wide_null("Accept: application/vnd.github+json\r\n");
+    // SAFETY: request handle plus a live null-terminated header
+    // block; the u32::MAX length tells WinHTTP the string is
+    // null-terminated, per the API contract.
+    let added = unsafe {
+        WinHttpAddRequestHeaders(
+            request.0,
+            headers.as_ptr(),
+            u32::MAX,
+            WINHTTP_ADDREQ_FLAG_ADD,
+        )
+    };
+    if added == 0 {
+        return Err(last_os_error("WinHttpAddRequestHeaders failed"));
+    }
+
+    // SAFETY: this GET sends no headers of its own and no body.
+    let sent =
+        unsafe { WinHttpSendRequest(request.0, std::ptr::null(), 0, std::ptr::null(), 0, 0, 0) };
+    if sent == 0 {
+        return Err(last_os_error("WinHttpSendRequest failed"));
+    }
+
+    // SAFETY: the reserved parameter must be null.
+    let received = unsafe { WinHttpReceiveResponse(request.0, std::ptr::null_mut()) };
+    if received == 0 {
+        return Err(last_os_error("WinHttpReceiveResponse failed"));
+    }
+
+    let mut status: u32 = 0;
+    let mut status_len = std::mem::size_of::<u32>() as u32;
+    // SAFETY: with QUERY_FLAG_NUMBER the buffer is exactly one u32,
+    // and `status_len` in/out describes it.
+    let queried = unsafe {
+        WinHttpQueryHeaders(
+            request.0,
+            WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            std::ptr::null(),
+            &mut status as *mut u32 as *mut c_void,
+            &mut status_len,
+            std::ptr::null_mut(),
+        )
+    };
+    if queried == 0 {
+        return Err(last_os_error("WinHttpQueryHeaders failed"));
+    }
+    if status != 200 {
+        return Err(io::Error::other(format!(
+            "the update server answered HTTP {status}"
+        )));
+    }
+
+    let mut body: Vec<u8> = Vec::new();
+    loop {
+        let mut available: u32 = 0;
+        // SAFETY: single u32 out-parameter on a live request handle.
+        let ok = unsafe { WinHttpQueryDataAvailable(request.0, &mut available) };
+        if ok == 0 {
+            return Err(last_os_error("WinHttpQueryDataAvailable failed"));
+        }
+        if available == 0 {
+            break;
+        }
+        if body.len() + available as usize > HTTPS_BODY_LIMIT {
+            return Err(io::Error::other(
+                "the update server sent an oversized reply",
+            ));
+        }
+        let start = body.len();
+        body.resize(start + available as usize, 0);
+        let mut read: u32 = 0;
+        // SAFETY: the tail slice is writable for `available` bytes
+        // and WinHTTP writes at most that many, reporting the true
+        // count in `read`.
+        let ok = unsafe {
+            WinHttpReadData(
+                request.0,
+                body[start..].as_mut_ptr() as *mut c_void,
+                available,
+                &mut read,
+            )
+        };
+        if ok == 0 {
+            return Err(last_os_error("WinHttpReadData failed"));
+        }
+        body.truncate(start + read as usize);
+        if read == 0 {
+            break;
+        }
+    }
+
+    String::from_utf8(body).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the update server sent a non-text reply",
+        )
+    })
+}
+
+/// Opens a URL in the user's default handler (for an https link,
+/// the default browser) via the shell. Fire-and-forget from the
+/// caller's perspective; returns false only if the shell refused
+/// outright (return values up to 32 are the documented failure
+/// codes).
+pub fn open_url(url: &str) -> bool {
+    let operation = wide_null("open");
+    let target = wide_null(url);
+    // SAFETY: both strings are live and null-terminated for the
+    // call; null owner/parameters/directory are the defaults.
+    let result = unsafe {
+        ShellExecuteW(
+            0,
+            operation.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    result > 32
 }
