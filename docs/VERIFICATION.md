@@ -5,7 +5,166 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Built-in updater round (current)
+## Continuous fit-to-window scaling round (current)
+
+The shipped tier system was still judged "off" on the user's 1440p
+display, and the user asked for two things with no exaggeration:
+research exactly how OP Auto Clicker 4.1 resizes/scales, then beat
+that behavior. Both the research and the replacement design turned
+out to need more care than the previous rounds gave them.
+
+### What is actually proven about OP Auto Clicker 4.1
+
+"OP Auto Clicker 4.1" is not one publicly inspectable artifact, so
+the evidence has to be separated by lineage:
+
+- **The winget-catalogued 4.1 portable build.** Microsoft's
+  winget-pkgs manifest for `OPAutoClicker.OPAutoClicker` 4.1 points
+  to a SourceForge `AutoClicker.exe` with SHA-256
+  `1ce7da6f2813c2ad1d2e496be6714e08cd618e6d9fe2df26c2bd4d894c9a6ec1`.
+  Public binary analyses of that exact hash (Gridinsoft,
+  Joe Sandbox/JoeReverser and ANY.RUN) identify a native PE32+
+  x86-64 GUI program, FileVersion 4.1, built with **AutoIt v3**.
+  AutoIt's own `GUICreate` documentation says its default dialog
+  is "non sizable and non maximizable" unless the program opts in
+  with `WS_SIZEBOX`/`WS_MAXIMIZEBOX`, and `GUICtrlSetResizing`
+  documents that controls react to resizing only through explicit
+  docking modes. No public analysis inspected exposes this build's
+  actual `GUICreate` call, style bits, dimensions, resizing modes
+  or manifest DPI values, so those specifics are **not claimed**.
+- **The original open-source Orphamiel line.** The inspected
+  `matt81093/AutoClicker` source is a .NET Framework 4.5 WinForms
+  program, AssemblyVersion 1.0.0.2: `Form1.Designer.cs` sets a
+  284x280 client size, `AutoScaleDimensions` 6x13 with
+  `AutoScaleMode.Font`, `FormBorderStyle.FixedSingle` and
+  `MaximizeBox=false`; the inspected project/config files contain
+  no application DPI declaration. Two descendant repositories keep
+  the same fixed-single, maximize-disabled arrangement. This proves
+  the behavior of that source line; it does **not** prove that a
+  later closed binary labelled 4.1 has the same dimensions or code.
+- **OP's public feature/download pages** list no window-resize or
+  in-app UI-scaling feature.
+
+The robust conclusion across the identified artifacts is therefore
+narrower than earlier rounds stated: the classic OP presentation
+in evidence is a fixed dialog with no free resize/maximize and no
+app-level proportional scaling system. An earlier entry in this
+file called OP 4.1 a ".NET Framework 4.7.2 application"; that was
+unsupported and is corrected below. MacroClicker is claimed to
+beat the *evidenced resizing/scaling behavior*, not undisclosed
+internals of every binary ever mirrored under the 4.1 label.
+
+### The replacement: fit the design canvas to the window
+
+The four discrete scale tiers (x1.10/1.25/1.40/1.60) are gone.
+Window-driven presentation is now one continuous uniform fit:
+
+- The decision variable is the neutral-point window size
+  `B = live points x total applied zoom` (the physical size at
+  100 % zoom for a given monitor DPI). It is invariant under the
+  zoom changes it drives, so a feedback loop is mathematically
+  impossible rather than merely unlikely.
+- `fit_total = min(B.x / canvas.x, B.y / canvas.y)` against the
+  compact 560x456 canvas or the wide 904x456 canvas. The user's
+  own percentage divides back out of the window-driven share; the
+  total zoom is capped at the previously verified 2.80 envelope;
+  the factor is quantized **down** to whole percent (so it can
+  never push the live size under the OS-declared floor); a new
+  factor applies only after the neutral size has held still for
+  six frames and differs from the applied factor by more than a
+  0.011 dead band. The cold-start path runs the identical
+  calculation, so the opening frame and settled frame agree.
+- The wide three-across layout is chosen by shape, not by a width
+  tier: it engages when the window aspect is at least 1.58:1 and
+  the wide fit's predicted live width is at least 760 pt, and
+  holds down to 1.46:1 / 700 pt. A high personal percentage in a
+  small window therefore keeps the proven compact stack instead of
+  squeezing three boxes into an unproven width.
+- Vertical surplus loosens further than the previous round: each
+  inter-group gap may absorb up to 72 pt, the spring above the
+  bottom cluster counts as one equal share beside the gaps, and
+  the status/actions/footer remain pinned to the bottom edge.
+- A fresh install (no settings file existed at load, size still
+  exactly the classic floor) opens once at a display-aware size:
+  the same fraction of the monitor the classic dialog occupies on
+  the 1920x1080 reference, clamped to [1, 2] and measured in
+  neutral points so Windows DPI scaling is never double-counted.
+  Any existing settings file — including one deliberately storing
+  the floor — bypasses this completely.
+
+Persistence, the 560x456 OS minimum, native resizing/snap/maximize,
+themes and the engine are unchanged; the code diff is confined to
+`app.rs` (fit evaluation, wide gate, first-run sizing, wording) and
+documentation comments in `hotkey.rs`.
+
+### Measured (headless real-egui harness, this round)
+
+The sandbox toolchain and egui harness were rebuilt from pinned
+sources: Rust 1.88.0, real egui/epaint/emath/ecolor 0.27.2 with
+vendored ab-glyph/ttf-parser/parking_lot dependencies, local
+ahash/nohash/eframe shims, and a signature-faithful windows-sys
+0.52 stub (signatures copied from microsoft/windows-rs 0.52.0; the
+stub's event wait deliberately fails so the click worker exits —
+its harness-only status text is the one visible difference from a
+Windows run). The harness drives the app's real `update` through
+`egui::Context::run`, modeling the OS by holding the neutral
+physical size fixed while zoom changes, granting `InnerSize`
+requests, and ignoring them while maximized.
+
+Settled end-states (100 % user scale unless noted; every case:
+36 text shapes, **zero** outside the live rect, **zero** pairwise
+text overlaps, zoom unchanged over 30 further frames):
+
+| Case | Neutral size | Total zoom | Live points | Layout |
+| --- | ---: | ---: | ---: | --- |
+| Classic floor | 560x456 | x1.00 | 560x456 | compact |
+| Enlarged | 900x700 | x1.53 | 588x458 | compact |
+| Snapped half of 2560x1440 | 1280x1392 | x2.28 | 561x611 | compact |
+| Tall 973x1404 | 973x1404 | x1.73 | 562x812 | compact |
+| Wide 1920x1040 | 1920x1040 | x2.12 | 906x491 | wide |
+| Laptop 1366x720 | 1366x720 | x1.51 | 905x477 | wide |
+| User 200 % at floor | 1120x912 | x2.00 | 560x456 | compact |
+| User 75 % maximized-size | 2560x1392 | x2.798 | 915x498 | wide |
+| **2560x1440 maximized** | 2560x1392 | **x2.80** | 914x497 | wide |
+
+Plus the boundary behaviors:
+
+- **Drag**: 24 frames of continuous resizing from 560x456 to
+  1800x1000 — the zoom never moved during the drag, then landed
+  once at x1.99 after the size settled and held.
+- **Fresh install, 2560x1440 monitor**: opens at neutral 747x608
+  (the 1080p-reference fraction), settling at x1.33 / 562x457 pt.
+- **Fresh install, 1920x1080 monitor**: opens exactly at the
+  classic 560x456 floor.
+- **Existing settings storing the floor, 2560x1440 monitor**: the
+  floor is respected exactly; no first-run upgrade.
+- **Adaptation off, 1600x1200**: zoom stays at the user's x1.00
+  and the fixed classic composition centers — the escape hatch is
+  unchanged.
+
+For comparison, the previously shipped tier system fed the same
+2560x1392 maximized window at x1.60 (1600x870 live points, the
+880 pt content column centered with ~360 pt of side margin). The
+fit system feeds it at x2.80 (914x497 live points): every control
+is physically 75 % larger again and the text bounding box spans
+x18..888 of the 914 pt width.
+
+Also re-verified this round: `cargo fmt --check` clean; clippy
+`--lib -- -D warnings` exit 0 in the harness; all **77** standalone
+test-crate tests pass under `rustc -D warnings --test` (config 13,
+hotkey 7, humanize 9, icon 6, macro 9, schedule 7, settings 9,
+telemetry 8, update 9); `src/main.rs` compiles under `-D
+warnings`. Windows CI remains the authority for MSVC
+compilation/clippy/tests/release build.
+
+Still honestly unobserved: the feel of the one-step rescale at the
+end of a real Windows drag and the maximized 1440p result on the
+user's actual monitor. The probes prove settled geometry, input
+invariance and non-oscillation in real egui layout; they are not a
+substitute for looking at the panel, which is step 17 of the
+manual checklist in `autoclicker/README.md`.
+
+## Built-in updater round
 
 The user asked for an in-app updater: notice when a new release
 exists, offer an update button that sits blanked out with "no new
@@ -236,20 +395,18 @@ decision + one palette) and `hotkey.rs` (one theme variant).
 
 ### Research findings (what "OP 4.1 scaling" actually is)
 
-- **OP Auto Clicker 4.1 does no in-app scaling at all.** The 4.1
-  release notes and feature pages list exactly two additions — Random
-  offset and Record & Playback — over a fixed-size dialog
+- **No in-app resize/scaling feature is evidenced for OP 4.1.** The
+  4.1 feature pages list no resize or UI-scale capability
   (https://opautoclicker.io/features.html,
-  https://opautoclicker.io/download.html). It is a .NET Framework
-  4.7.2 application whose support pages treat Windows DPI scaling as
-  an external condition ("restart Windows after a DPI change, then
-  re-pick your click location",
-  https://www.opauto-clicker.com/auto-clicker-not-working). Its
-  "scaling" is whatever Windows does to a fixed dialog: PerMonitorV2
-  if the manifest asks, bitmap stretching if not. There is no
-  window-size-driven presentation to imitate — our resizable window
-  already exceeds it, and the right lesson from OP is the opposite
-  of dynamism: a fixed dialog never surprises anyone, so every
+  https://opautoclicker.io/download.html). *(Correction, added in
+  the continuous-fit round above: this bullet originally called
+  4.1 a ".NET Framework 4.7.2 application" and speculated about
+  its DPI manifest. That was unsupported. The winget-catalogued
+  4.1 build is publicly analysed as AutoIt v3, and the inspected
+  open-source Orphamiel source is .NET Framework 4.5 / version
+  1.0.0.2 with a fixed-single, maximize-disabled form. See the
+  current round for the full evidence boundary.)* The durable
+  lesson stands: a fixed dialog never surprises anyone, so every
   dynamic behavior we add must be provably incapable of surprising
   (no feedback loops, no fighting the user's chosen size).
 - **egui's model is already the stable one, and we already use it.**

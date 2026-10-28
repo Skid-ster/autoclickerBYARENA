@@ -104,24 +104,29 @@ buttons and footer ride at the window's bottom edge at any height —
 the window is filled top-to-bottom, never a fixed island centered
 in empty space. On top of that, the
 window size drives the presentation itself (Settings → "Scale and
-rearrange with window size", on by default): past 800 points of width
-(measured at 100 % zoom, so the steps land at the same physical size
-whatever percentage you pick) the whole interface steps to 110 %
-— and height votes too, converted by the floor dialog's aspect ratio,
-so growing the window taller steps the scale up the same way (the
-height vote is capped at the largest step that still fits the width
-you chose, so it can never force the window wider) —
-past 1024 to 125 %
-with Click options / Click repeat / Cursor position rearranged
-three-abreast and one row of four action buttons, past 1440 to
-140 %, and past 1600 to 160 % for large and maximized windows —
-each step multiplying your chosen Window scale (with the total zoom
-capped at 280 %, so even 200 % + the widest step can never force a
-window larger than your screen), engaging only
-once the size settles (never mid-drag) and releasing on a lower
-threshold so a window parked on a boundary never flip-flops. Sizes are
-remembered in scale-independent points, so the same physical window
-comes back on every launch whichever step is active. The size you leave the window at is saved
+rearrange with window size", on by default): the interface fits
+itself to the window **continuously**. The decision is made in
+neutral points — the live point size times the total zoom already
+applied, i.e. the physical size at 100 % zoom — which is invariant
+under the very zoom changes it drives, so feedback is mathematically
+impossible. That neutral size is fitted uniformly against the
+active design canvas (560x456 for the classic stack, 904x456 for
+the wide layout): the smaller of the width and height ratios is
+the fit factor, so the dialog scales proportionally, the limiting
+axis fills exactly, and nothing is stretched or clipped. The
+result (divided by your own Window scale percentage and capped so
+the total never exceeds 280 %) is rounded down to a whole percent
+and applied only after the size has held still for a few frames —
+never mid-drag — with a small dead band so pixel rounding cannot
+nudge it back and forth. The wide three-across layout engages in
+panoramic windows (aspect and predicted live width both qualify,
+with arrive-and-hold hysteresis). A fresh install on a monitor
+larger than the 1920x1080 reference opens once at a proportionally
+larger size (so 1440p first runs are not comparatively tiny); an
+existing settings file — even one that deliberately stores the
+classic floor — is always respected exactly. Sizes are remembered
+in fit-independent points, so the same physical window comes back
+on every launch whatever fit factor is active. The size you leave the window at is saved
 to the settings file and restored on the next launch (maximized state
 is never saved as a raw size: restoring comes back at your last normal
 size). The **Settings…** button in the bottom-right corner opens a
@@ -353,17 +358,27 @@ previous session is never reused.
 17. Resizing: drag each edge in and out, then a corner toward the middle
     and back out: the window follows with the OS resize cursors and
     stops dead at the classic 560x456 size — it must not go smaller, and
-    every control stays whole at the limit. Pull the window wide: only
-    the group boxes and bottom buttons widen (fields keep their width);
-    pull it tall: only the gaps between groups grow, with the buttons
-    and footer staying at the bottom. On a large monitor maximize the
-    window: the content column centers instead of stretching forever.
-    Double-click the title bar and use Win+arrow / Snap Layouts: snap
-    left and right must work on normal desktop resolutions (a snap zone
-    narrower than 560 points is refused, which is expected). Leave the
-    window at a non-standard size, close and reopen: it comes back at
-    that size. Maximize, close and reopen: it comes back unmaximized at
-    the last normal dragged size.
+    every control stays whole at the limit. Grow the window in any
+    direction and let go: just after the drag ends, the whole
+    interface rescales once to fit the new size (text, fields and
+    buttons all physically larger, proportions unchanged); it must
+    never rescale repeatedly while you are still dragging, and the
+    physical window size itself must not jump. Pull it panoramic:
+    the three middle groups sit three-across with one row of four
+    action buttons. Pull it tall: the gaps between groups loosen and
+    the status, buttons and footer stay pinned at the bottom. Snap
+    it to half of a 1440p screen and maximize it: in both cases the
+    interface fills the window at a large, readable scale — never a
+    small dialog marooned in empty space. Double-click the title
+    bar and use Win+arrow / Snap Layouts: snap left and right must
+    work on normal desktop resolutions (a snap zone narrower than
+    560 points is refused, which is expected). Leave the window at a
+    non-standard size, close and reopen: it comes back at that size
+    and scale. Maximize, close and reopen: it comes back
+    unmaximized at the last normal dragged size. Finally delete the
+    settings file and relaunch on the large monitor: the first-run
+    window opens proportionally larger than the classic dialog; put
+    the settings file back and confirm the saved size wins again.
 18. Open **Updates…**: it shows the current version; with the machine
     online press **Check now** — it resolves within a few seconds to
     "You're up to date" (or names a newer version if one exists, with

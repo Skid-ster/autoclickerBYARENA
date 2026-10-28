@@ -3,7 +3,7 @@
 **MacroClicker** is a Windows x64 auto-clicker written in stable Rust with an
 egui interface that reproduces the authentic classic OP Auto Clicker 4.x
 Win32 dialog — a naturally resizable light-gray window whose classic
-560x456 size is the enforced minimum (with four
+560x456 size is the enforced minimum (with five
 persisted themes, a 75–200 % window scale and a remembered window size)
 with group boxes, sunken numeric fields and classic push buttons, nothing
 scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
@@ -27,9 +27,18 @@ Everything 4.1 does, plus the parts it cannot:
 | Record & Playback | Yes | Yes — exact positions, buttons **and gaps**, loop counts, F8 panic mid-playback |
 | Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
 | Dedicated panic key (F8) always reserved | No | Yes |
+| Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
 | Five themes + 75–200 % window scaling | No | Yes |
 | Built-in update check against GitHub releases | No | Yes — one click to the download page |
 | Open source with Windows CI and 77 automated tests | No | Yes |
+
+\* Resizing/scaling is the researched part: OP's public 4.1 feature
+pages list no resize or UI-scale feature; the winget-catalogued 4.1
+portable build (SHA-256 `1ce7da6f…a6ec1`) is publicly analysed as a
+native AutoIt v3 program (AutoIt's default dialogs are non-sizable
+and non-maximizable), and the inspected open-source Orphamiel line
+is a fixed-size WinForms dialog. The exact internal GUI calls of
+later closed builds are not public, so no stronger claim is made.
 
 ## Download
 
@@ -67,14 +76,19 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   is the OS-enforced minimum, so the window can never shrink far enough
   to hide a control; making it larger widens the group boxes and the
   button grid so every border stays flush with the content edges, and
-  past set sizes the whole interface steps up in scale — growing the
-  window taller steps it up just like growing it wider (the wide step
-  also rearranges the middle groups three-across with a single row
-  of action buttons) — and the layout itself stretches to the
-  window's full height, groups flowing from the top with the status
-  and buttons riding at the bottom edge, so a big window is filled
-  at any size or resolution, never just centered in. A Settings toggle turns the adaptation off. The size
-  you choose is remembered across restarts.
+  the whole interface scales continuously (in 1 % increments) to fit
+  the window — wider, taller, snapped or maximized — measured
+  zoom-independently so it can never feed back into itself, applied
+  only once a drag settles, and capped at 280 % total. Panoramic
+  windows rearrange the middle groups three-across with a single row
+  of action buttons, and the layout itself stretches to the window's
+  full height, groups flowing from the top with the status and
+  buttons riding at the bottom edge, so a big window is filled at
+  any size or resolution, never a small dialog marooned in empty
+  space. A first run (no settings file yet) on a display larger than
+  the 1080p reference opens proportionally larger once; every saved
+  size is respected exactly. A Settings toggle turns the adaptation
+  off. The size you choose is remembered across restarts.
   Click interval with the 4.1 Random offset row, side-by-side Click options
   and Click repeat, Cursor position with a real Pick location button
   (click the button, then click anywhere on screen; Esc cancels), and the

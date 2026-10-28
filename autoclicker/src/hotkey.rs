@@ -150,11 +150,11 @@ pub struct AppPrefs {
     /// window only grows if the content would otherwise no longer fit,
     /// so every control stays visible at every scale.
     pub ui_scale_percent: u32,
-    /// Let the window size drive the presentation: as the window grows
-    /// past fixed thresholds the whole UI steps up in scale, and past
-    /// the wide threshold the group boxes rearrange into a three-across
-    /// row with a single row of action buttons. Off restores the fixed
-    /// classic composition at every size.
+    /// Let the window size drive the presentation: the whole UI
+    /// scales uniformly to fit the window as it grows, and in
+    /// panoramic windows the group boxes rearrange into a
+    /// three-across row with a single row of action buttons. Off
+    /// restores the fixed classic composition at every size.
     pub auto_scale: bool,
     /// Ask GitHub once per launch whether a newer release exists (a
     /// single HTTPS GET of the public latest-release metadata; nothing
@@ -164,13 +164,14 @@ pub struct AppPrefs {
     pub check_updates: bool,
     /// Last user-chosen inner window width, sanitized to
     /// [WINDOW_MIN_WIDTH, 4x WINDOW_MIN_WIDTH]. Measured in
-    /// step-independent points: the point width the window has with
-    /// the window-driven scale factor neutralized, so the same physical
-    /// size round-trips no matter which scale step is active. The floor
-    /// defaults mean a fresh install opens at the exact classic size.
+    /// fit-independent points: the point width the window has with
+    /// the window-driven scale factor neutralized, so the same
+    /// physical size round-trips no matter which fit factor is
+    /// active. The floor defaults are upgraded once, on a fresh
+    /// install only, to the display-aware opening size.
     pub window_width: u32,
     /// Last user-chosen inner window height in the same
-    /// step-independent points, sanitized to
+    /// fit-independent points, sanitized to
     /// [WINDOW_MIN_HEIGHT, 4x WINDOW_MIN_HEIGHT].
     pub window_height: u32,
 }

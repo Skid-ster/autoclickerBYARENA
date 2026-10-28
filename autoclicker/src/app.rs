@@ -4,9 +4,9 @@
 //! classic OP Auto Clicker 4.x screen: four bordered group boxes (Click
 //! interval, Click options, Click repeat, Cursor position) above the
 //! authentic 2x2 grid of standard push buttons. The classic 560x456 size
-//! is the enforced minimum; a larger window only widens the group boxes
-//! and the button grid and adds breathing room between the groups, so
-//! every control stays the same size and visible at every reachable
+//! is the enforced minimum; a larger window scales the whole dialog
+//! uniformly to fit (and rearranges it three-abreast when panoramic),
+//! so every control stays proportional and visible at every reachable
 //! window size. There is no diagnostics surface: every
 //! control on screen configures clicking, and the engine's telemetry stays
 //! an internal, test-verified concern.
@@ -238,11 +238,10 @@ pub const MAIN_WINDOW_SIZE: [f32; 2] = [
 const MAIN_CONTENT_MAX_WIDTH: f32 = 736.0_f32;
 
 /// Most extra height each breathing gap absorbs before the remaining
-/// height centers the whole content column instead. Past the gaps'
-/// bounded share the rest splits above and below the column, so a tall
-/// window composes a centered dialog instead of ever-deepening voids
-/// between control clusters that belong together.
-const MAIN_GAP_EXTRA_MAX: f32 = 40.0_f32;
+/// height gathers above the status strip. The cap keeps neighbouring
+/// clusters visually related without letting one spring dominate a
+/// tall window.
+const MAIN_GAP_EXTRA_MAX: f32 = 72.0_f32;
 
 /// Widest content column in the wide layout. Three group boxes across
 /// need more elbow room than the stacked classic column before the
@@ -255,50 +254,70 @@ const MAIN_CONTENT_MAX_WIDTH_WIDE: f32 = 880.0_f32;
 /// floor). The vertical rhythm measures spare height from here.
 const MAIN_WIDE_FILL_HEIGHT: f32 = 372.0_f32;
 
-/// Window-driven UI scale steps: (engage at or above, disengage below,
-/// zoom factor). Widths are *neutral points* — live points times the
-/// total applied zoom, i.e. the width the window has at 100 % zoom —
-/// so a step describes the window's physical size and engages at the
-/// same physical size whatever the user's chosen percentage is.
-/// Growing the window past a step enlarges the whole UI inside the
-/// same physical window; shrinking back below the lower edge of the
-/// band restores the previous step. The gap between the two edges is
-/// the hysteresis that keeps a window parked on a boundary from
-/// flip-flopping scales.
-/// Both window axes feed the same table: the height is converted to
-/// width-equivalent neutral points (scaled by the floor's aspect
-/// ratio), so a tall narrow window earns the same steps a wide one
-/// does. The height's vote is fit-capped (see `auto_zoom_for`) so it
-/// can never force the OS to grow the window past the size the user
-/// chose.
-const AUTO_ZOOM_TIERS: [(f32, f32, f32); 4] = [
-    (800.0_f32, 744.0_f32, 1.10_f32),
-    (1024.0_f32, 968.0_f32, 1.25_f32),
-    (1440.0_f32, 1384.0_f32, 1.40_f32),
-    (1600.0_f32, 1544.0_f32, 1.60_f32),
+/// Design canvas of the wide arrangement, in the same neutral points
+/// as `MAIN_WINDOW_SIZE`: the 880-point content cap plus the two
+/// 12-point side margins, with the main window's 456-point floor
+/// height. The wide column's natural fill is shorter than that floor,
+/// so using the floor here is what stops a fit calculation from ever
+/// asking the OS for a window shorter than the declared minimum.
+const MAIN_WIDE_CANVAS: [f32; 2] = [
+    MAIN_CONTENT_MAX_WIDTH_WIDE + 2.0_f32 * MAIN_SIDE_MARGIN,
+    MAIN_WINDOW_SIZE[1],
 ];
 
+/// Window-driven UI scale is a continuous fit, not a ladder of
+/// steps: the neutral-point window size is divided by the active
+/// design canvas on both axes and the smaller ratio becomes the
+/// total zoom. Neutral points are live points times the total
+/// applied zoom — the size the window has at 100 % zoom — so the
+/// measure is invariant under the zoom changes it drives and
+/// feedback is mathematically impossible. The result is quantized
+/// down to whole percent and applied only after the size settles
+/// (see `adapt_to_window_size`), so a drag never re-zooms mid-flight
+/// and a size parked on a percent boundary cannot flip-flop.
+const AUTO_ZOOM_QUANTUM: f32 = 0.01_f32;
+
 /// Ceiling on the *total* applied zoom (user percentage x window
-/// step). 2.80 is the largest total that was reachable before the
-/// 1.60 tier existed (200 % x 1.40), so the new tier widens the
-/// step ladder without ever pushing a window's physical minimum
-/// size past the envelope every previous build was verified in.
+/// fit). 2.80 is the largest total every shipped build has been
+/// verified in (200 % x the old 1.40 maximum step), so the fit may
+/// use the whole envelope on a large window without ever pushing a
+/// window's physical minimum size past proven territory.
 const AUTO_ZOOM_MAX_TOTAL: f32 = 2.80_f32;
 
 /// Narrowest live width the wide (three-abreast) arrangement is
-/// allowed to be squeezed into by an *automatic* step. The wide row
-/// was verified down to 714 points (150 % user scale case); the
-/// height vote respects 700 so it can never create a wide layout
-/// narrower than the proven floor. A user's own percentage may go
-/// further — that squeeze is their explicit choice, as before.
+/// allowed to occupy under the automatic fit. The wide row was
+/// verified down to 714 points; below 700 the compact stack returns
+/// instead of squeezing three boxes into a width they were never
+/// proven in. A user's own percentage can still make the *compact*
+/// layout narrower in points — that squeeze is their explicit
+/// choice, as before.
 const MAIN_WIDE_MIN_LIVE_WIDTH: f32 = 700.0_f32;
 
-/// Wide-layout band, tracked to the second scale step: at or above the
-/// engage width the middle row becomes Click options | Click repeat |
-/// Cursor position and the action buttons form one row of four; below
-/// the disengage width the classic stack returns.
-const WIDE_LAYOUT_ENGAGE: f32 = 1024.0_f32;
-const WIDE_LAYOUT_DISENGAGE: f32 = 968.0_f32;
+/// Live width at or above which the wide arrangement may engage.
+/// The 60-point gap above the hold floor is the hysteresis that
+/// keeps a window parked near the boundary from rearranging back
+/// and forth.
+const MAIN_WIDE_ENGAGE_LIVE_WIDTH: f32 = 760.0_f32;
+
+/// Wide-layout aspect band. The compact canvas is 560:456 (1.23:1)
+/// and the wide canvas 904:456 (1.98:1); their geometric mean is
+/// 1.56:1, the aspect at which the two canvases fill a window
+/// equally well. The arrangement engages at 1.58:1 and holds down
+/// to 1.46:1, so panoramic windows get the three-abreast row and
+/// squarer windows keep the classic stack, with a dead band between
+/// the two edges instead of a knife-edge switch.
+const WIDE_LAYOUT_ENGAGE_ASPECT: f32 = 1.58_f32;
+const WIDE_LAYOUT_DISENGAGE_ASPECT: f32 = 1.46_f32;
+
+/// Reference display for the one-time display-aware opening size:
+/// on a fresh install the classic dialog opens occupying the same
+/// fraction of the monitor it occupies on a 1920x1080 screen at
+/// 100 % display scaling, so a 1440p or 4K desktop no longer starts
+/// with a comparatively tiny window. The factor is clamped to
+/// [1, 2] and measured in neutral points, so Windows' own DPI
+/// scaling is never double-counted.
+const DISPLAY_DEFAULT_REFERENCE: [f32; 2] = [1920.0_f32, 1080.0_f32];
+const DISPLAY_DEFAULT_MAX_SCALE: f32 = 2.0_f32;
 
 /// Smallest side margin around the content column, kept at the floor
 /// size so the classic layout is pixel-identical there.
@@ -399,6 +418,11 @@ pub struct OpAutoClickerApp {
     update_auto_check_started: bool,
     update_rx: Option<mpsc::Receiver<Result<UpdateOutcome, String>>>,
 
+    // Whether a settings file existed at load. A fresh install (no
+    // file) earns the one-time display-aware opening size; any
+    // existing file's size — including an explicit classic floor —
+    // is respected exactly.
+    window_size_was_persisted: bool,
     // Window-chrome bookkeeping: once the zoom factor for the chosen
     // scale has been applied, re-declare the minimum size and apply the
     // floor-aware size correction for that scale.
@@ -422,17 +446,18 @@ pub struct OpAutoClickerApp {
     // so the units spread tastefully without ever overflowing a cell.
     interval_group_widths: [f32; 4],
     // Currently applied window-driven scale factor (1.0 when the
-    // feature is off or the window is below the first step). The total
-    // egui zoom is the user's percentage times this factor.
+    // feature is off or the window fits the design canvas at the
+    // user's own percentage). The total egui zoom is the user's
+    // percentage times this factor.
     auto_zoom: f32,
     // Wide three-across layout currently in effect.
     wide_layout: bool,
-    // Scale-step debounce: the candidate factor and how many
+    // Fit-zoom debounce: the candidate factor and how many
     // consecutive frames the neutral-point window size has held
-    // still while asking for it. A step is applied only once the size
-    // settles, so scaling never jumps mid-drag or chases OS resize
-    // transients.
-    tier_candidate: f32,
+    // still while asking for it. A factor is applied only once the
+    // size settles, so scaling never jumps mid-drag or chases OS
+    // resize transients.
+    zoom_candidate: f32,
     stable_frames: u32,
     // Last neutral-point window size (live points x total zoom).
     last_base_size: Vec2,
@@ -506,6 +531,7 @@ impl OpAutoClickerApp {
             update_state: UpdateUiState::NotChecked,
             update_auto_check_started: false,
             update_rx: None,
+            window_size_was_persisted: false,
             pending_resize: false,
             restore_window_size: true,
             window_settle_until: Instant::now(),
@@ -513,7 +539,7 @@ impl OpAutoClickerApp {
             interval_group_widths: [0.0_f32; 4],
             auto_zoom: 1.0_f32,
             wide_layout: false,
-            tier_candidate: 1.0_f32,
+            zoom_candidate: 1.0_f32,
             stable_frames: 0,
             last_base_size: Vec2::ZERO,
             settings_path: Self::settings_file_path(),
@@ -571,8 +597,11 @@ impl OpAutoClickerApp {
     /// range, so the OS window can open directly at the right size. The
     /// running app re-applies the same size once its zoom factor settles,
     /// which also resolves the invalid-file case back to the defaults.
-    /// Persisted sizes are step-independent points; the builder wants
-    /// live points, so the opening scale step is divided back out.
+    /// Persisted sizes are fit-independent points; the builder wants
+    /// live points, so the opening fit factor is divided back out.
+    /// A missing file (fresh install) returns the classic floor
+    /// here; the running app upgrades that first size to the
+    /// display-aware default once the monitor size is known.
     pub fn persisted_window_size() -> [f32; 2] {
         let Some(path) = Self::settings_file_path() else {
             return MAIN_WINDOW_SIZE;
@@ -581,8 +610,8 @@ impl OpAutoClickerApp {
             return MAIN_WINDOW_SIZE;
         };
         let (_, prefs) = settings::parse_settings(&text);
-        // Persisted sizes are step-independent points; the step
-        // thresholds are neutral points, one user-factor further.
+        // Persisted sizes are fit-independent points; the fit
+        // speaks neutral points, one user-factor further.
         let user_factor = prefs.ui_scale_percent as f32 / 100.0_f32;
         let neutral = Vec2::new(
             prefs.window_width as f32 * user_factor,
@@ -602,6 +631,9 @@ impl OpAutoClickerApp {
         let Ok(text) = std::fs::read_to_string(&path) else {
             return;
         };
+        // A file existed, so its size (or its defaults) is the
+        // user's to keep: no display-aware first-run upgrade.
+        self.window_size_was_persisted = true;
         let (mut config, mut prefs) = settings::parse_settings(&text);
         // A window handle from a previous process can never be reused: the OS
         // may have recycled it for an unrelated window.
@@ -627,18 +659,19 @@ impl OpAutoClickerApp {
         }
         self.repeat_limited = self.config.max_clicks != 0;
         self.offset_ms = self.config.random_offset_ms;
-        // Open at the scale step (and layout) the persisted size calls
-        // for, so the first frames don't start small and then step up.
-        // Persisted sizes are step-independent points; the thresholds
-        // are neutral points, one user-factor further.
+        // Open at the fit factor (and layout) the persisted size
+        // calls for, so the first frames don't start small and then
+        // scale up. Persisted sizes are fit-independent points; the
+        // fit speaks neutral points, one user-factor further.
         let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
         let neutral = Vec2::new(
             self.prefs.window_width as f32 * user_factor,
             self.prefs.window_height as f32 * user_factor,
         );
         self.auto_zoom = Self::initial_auto_zoom(neutral, user_factor, self.prefs.auto_scale);
-        self.tier_candidate = self.auto_zoom;
-        self.wide_layout = self.prefs.auto_scale && Self::wide_layout_for(neutral.x, false);
+        self.zoom_candidate = self.auto_zoom;
+        self.wide_layout =
+            self.prefs.auto_scale && Self::wide_layout_for(neutral, user_factor, false);
         self.sync_interval_editors();
         self.log(format!("Settings loaded from {}.", path.display()));
     }
@@ -1099,9 +1132,13 @@ impl OpAutoClickerApp {
         self.config = EngineConfig::default();
         self.prefs = AppPrefs::default();
         // Factory defaults include the classic window size: re-apply the
-        // (floor) persisted size once the 100 % zoom has settled.
+        // (floor) persisted size once the 100 % zoom has settled. The
+        // reset itself is a deliberate size choice (and flushes one to
+        // disk below), so the one-time fresh-install display default
+        // must not override it when the restore runs.
+        self.window_size_was_persisted = true;
         self.auto_zoom = 1.0_f32;
-        self.tier_candidate = 1.0_f32;
+        self.zoom_candidate = 1.0_f32;
         self.wide_layout = false;
         self.stable_frames = 0;
         self.restore_window_size = true;
@@ -1191,153 +1228,132 @@ impl OpAutoClickerApp {
             return (0.0_f32, 0.0_f32);
         }
         let extra = (window_height - fill_height).max(0.0_f32);
-        // The spring counts as two shares when the surplus is divided,
-        // so small surpluses mostly loosen the gaps and only large
-        // ones open up real space above the status strip.
-        let gap_extra = (extra / (gaps + 2.0_f32)).min(MAIN_GAP_EXTRA_MAX);
+        // The spring counts as one share alongside the gaps, so the
+        // surplus spreads over every seam in the column instead of
+        // pooling above the status strip; only what the bounded
+        // gaps cannot absorb gathers there.
+        let gap_extra = (extra / (gaps + 1.0_f32)).min(MAIN_GAP_EXTRA_MAX);
         let spring = (extra - gaps * gap_extra).max(0.0_f32);
         (gap_extra, spring)
     }
 
-    /// One axis of the scale-step decision: maps a neutral-point
-    /// extent (already expressed in width-equivalent points) through
-    /// the tier table, with per-step hysteresis against the currently
-    /// applied factor — a step engages at its upper edge and only
-    /// releases below its lower edge, so an extent parked inside the
-    /// band holds whatever step it arrived with.
-    fn tier_for_extent(extent: f32, current: f32) -> f32 {
-        if !extent.is_finite() || extent <= 0.0_f32 {
-            return current;
+    /// Quantizes a raw fit factor down to a whole percent, never
+    /// below 1.0. Rounding *down* keeps the live point size at or
+    /// above the design canvas on the limiting axis, so the fit can
+    /// never push a window under its declared OS minimum and force
+    /// the window to grow against the size the user chose.
+    fn quantize_fit_zoom(raw: f32) -> f32 {
+        if !raw.is_finite() || raw <= 1.0_f32 {
+            return 1.0_f32;
         }
-        let mut target = 1.0_f32;
-        for &(engage, disengage, factor) in &AUTO_ZOOM_TIERS {
-            let threshold = if current >= factor { disengage } else { engage };
-            if extent >= threshold {
-                target = target.max(factor);
-            }
-        }
-        target
+        ((raw / AUTO_ZOOM_QUANTUM).floor() * AUTO_ZOOM_QUANTUM).max(1.0_f32)
     }
 
-    /// The width-equivalent neutral extent of the window height: the
-    /// height scaled by the floor dialog's aspect ratio, so both axes
-    /// speak the same tier-table language — a window grown to twice
-    /// the floor's height votes exactly like one grown to twice its
-    /// width.
-    fn height_equivalent(base_height: f32) -> f32 {
-        base_height * (MAIN_WINDOW_SIZE[0] / MAIN_WINDOW_SIZE[1])
-    }
-
-    /// The largest tier that keeps the live point size at or above the
-    /// floor on BOTH axes under the user's own zoom percentage. A
-    /// larger step would push live points under the declared OS
-    /// minimum on one axis and the window would be grown to compensate
-    /// — acceptable when the user's own percentage dictates it (that
-    /// grow-only correction predates the step system), never as a
-    /// surprise side effect of an automatic height-driven step.
-    fn largest_fittable_step(base: Vec2, user_factor: f32, wide: bool) -> f32 {
-        if !user_factor.is_finite()
-            || user_factor <= 0.0_f32
-            || !base.x.is_finite()
+    /// The window-driven scale factor for a neutral-point window
+    /// size: the uniform fit of the active design canvas into the
+    /// window. The smaller axis ratio wins, so the whole dialog
+    /// scales proportionally — never distorted, never clipped — and
+    /// the limiting axis fills exactly. The user's own percentage
+    /// divides back out (the fit speaks in total zoom; this returns
+    /// only the window-driven share), and the total is capped at
+    /// `AUTO_ZOOM_MAX_TOTAL`, the envelope every shipped build was
+    /// verified in. Every input is a neutral-point extent or a
+    /// persisted preference, so the result cannot feed back into
+    /// itself.
+    fn fit_auto_zoom(base: Vec2, user_factor: f32, wide: bool) -> f32 {
+        if !base.x.is_finite()
             || !base.y.is_finite()
+            || base.x <= 0.0_f32
+            || base.y <= 0.0_f32
+            || !user_factor.is_finite()
+            || user_factor <= 0.0_f32
         {
             return 1.0_f32;
         }
-        // In the wide arrangement the width floor is the proven wide
-        // minimum rather than the compact 560: three groups abreast
-        // must never be squeezed narrower by an automatic step than
-        // the narrowest wide layout already verified.
-        let floor_width = if wide {
-            MAIN_WIDE_MIN_LIVE_WIDTH
+        let canvas = if wide {
+            MAIN_WIDE_CANVAS
         } else {
-            MAIN_WINDOW_SIZE[0]
+            MAIN_WINDOW_SIZE
         };
-        let cap = (base.x / floor_width).min(base.y / MAIN_WINDOW_SIZE[1]) / user_factor;
-        AUTO_ZOOM_TIERS
-            .iter()
-            .map(|&(_, _, factor)| factor)
-            .filter(|&factor| factor <= cap)
-            .fold(1.0_f32, f32::max)
+        let fit_total = (base.x / canvas[0]).min(base.y / canvas[1]);
+        let max_auto = (AUTO_ZOOM_MAX_TOTAL / user_factor).max(1.0_f32);
+        Self::quantize_fit_zoom((fit_total / user_factor).min(max_auto))
     }
 
-    /// Caps a chosen step so the total applied zoom (user percentage
-    /// times step) never exceeds `AUTO_ZOOM_MAX_TOTAL` — the envelope
-    /// every build before the 1.60 tier was verified in. Applies to
-    /// the final step however it was earned; at 200 % it reproduces
-    /// exactly the old 1.40 maximum.
-    fn cap_step_to_total(step: f32, user_factor: f32) -> f32 {
-        if !user_factor.is_finite() || user_factor <= 0.0_f32 {
-            return step;
-        }
-        let max_step = AUTO_ZOOM_MAX_TOTAL / user_factor;
-        AUTO_ZOOM_TIERS
-            .iter()
-            .map(|&(_, _, factor)| factor)
-            .filter(|&factor| factor <= max_step)
-            .fold(1.0_f32, f32::max)
-            .min(step)
-    }
-
-    /// The window-driven scale factor for a neutral-point window size.
-    /// Width votes exactly as it always has; height votes through the
-    /// same table in width-equivalent points, fit-capped so a tall
-    /// window earns real steps (the previous width-only rule left a
-    /// tall narrow window at the smallest scale, floating in empty
-    /// space) without ever outvoting the physical size the user
-    /// chose. Every input is a neutral-point extent or a persisted
-    /// preference, so the result cannot feed back into itself.
-    fn auto_zoom_for(base: Vec2, user_factor: f32, wide: bool, current: f32) -> f32 {
-        if !base.x.is_finite() || !base.y.is_finite() || base.x <= 0.0_f32 || base.y <= 0.0_f32 {
-            return current;
-        }
-        let width_step = Self::tier_for_extent(base.x, current);
-        let height_step = Self::tier_for_extent(Self::height_equivalent(base.y), current)
-            .min(Self::largest_fittable_step(base, user_factor, wide));
-        Self::cap_step_to_total(width_step.max(height_step), user_factor)
-    }
-
-    /// The scale step to open with for a neutral-point window size.
-    /// Rising edges only on both axes: on a cold start there is no
-    /// previous step for hysteresis to protect. The height vote takes
-    /// the same fit cap as the running decision, so the opening frame
-    /// and the settled frame agree about which step a size deserves.
+    /// The fit factor to open with for a neutral-point window size:
+    /// the same decision the running evaluator makes, with the
+    /// wide layout at its engage edge (on a cold start there is no
+    /// previous arrangement for hysteresis to protect), so the
+    /// opening frame and the settled frame always agree.
     fn initial_auto_zoom(base: Vec2, user_factor: f32, enabled: bool) -> f32 {
-        if !enabled || !base.x.is_finite() || !base.y.is_finite() {
+        if !enabled {
             return 1.0_f32;
         }
-        let rising = |extent: f32| {
-            AUTO_ZOOM_TIERS
-                .iter()
-                .filter(|&&(engage, _, _)| extent >= engage)
-                .map(|&(_, _, factor)| factor)
-                .fold(1.0_f32, f32::max)
-        };
-        let width_step = rising(base.x);
-        let height_step = rising(Self::height_equivalent(base.y)).min(Self::largest_fittable_step(
+        Self::fit_auto_zoom(
             base,
             user_factor,
-            Self::wide_layout_for(base.x, false),
-        ));
-        Self::cap_step_to_total(width_step.max(height_step), user_factor)
+            Self::wide_layout_for(base, user_factor, false),
+        )
     }
 
-    /// Wide layout for a neutral-point width, with the same
-    /// arrive-and-hold hysteresis as the scale steps.
-    fn wide_layout_for(base_width: f32, current: bool) -> bool {
-        if !base_width.is_finite() {
+    /// Wide layout for a neutral-point window size. Two tests, both
+    /// with arrive-and-hold hysteresis: the window must be
+    /// panoramic enough that the wide canvas fills it better than
+    /// the compact one (aspect band around the canvases' geometric
+    /// mean), and the live width the wide fit would produce must
+    /// stay inside the proven three-abreast envelope — so a large
+    /// user percentage in a small window gets the compact stack
+    /// instead of a squeezed row.
+    fn wide_layout_for(base: Vec2, user_factor: f32, current: bool) -> bool {
+        if !base.x.is_finite()
+            || !base.y.is_finite()
+            || base.x <= 0.0_f32
+            || base.y <= 0.0_f32
+            || !user_factor.is_finite()
+            || user_factor <= 0.0_f32
+        {
             return current;
         }
+        let wide_fit = Self::fit_auto_zoom(base, user_factor, true);
+        let live_width = base.x / (user_factor * wide_fit);
+        let aspect = base.x / base.y;
         if current {
-            base_width >= WIDE_LAYOUT_DISENGAGE
+            aspect >= WIDE_LAYOUT_DISENGAGE_ASPECT && live_width >= MAIN_WIDE_MIN_LIVE_WIDTH
         } else {
-            base_width >= WIDE_LAYOUT_ENGAGE
+            aspect >= WIDE_LAYOUT_ENGAGE_ASPECT && live_width >= MAIN_WIDE_ENGAGE_LIVE_WIDTH
         }
+    }
+
+    /// The one-time display-aware opening size for a fresh install,
+    /// in fit-independent persisted points: the classic dialog
+    /// scaled to occupy the same fraction of this monitor as it
+    /// occupies of the 1920x1080 reference, clamped to
+    /// [1, `DISPLAY_DEFAULT_MAX_SCALE`]. The monitor extent is in
+    /// neutral points, so a display Windows already scales at
+    /// 125 % or 150 % is credited for that scaling instead of being
+    /// scaled twice. Any unusable input falls back to the exact
+    /// classic size.
+    fn display_default_window_size(monitor_neutral: Vec2, user_factor: f32) -> Vec2 {
+        let fallback = Vec2::new(MAIN_WINDOW_SIZE[0], MAIN_WINDOW_SIZE[1]);
+        if !monitor_neutral.x.is_finite()
+            || !monitor_neutral.y.is_finite()
+            || monitor_neutral.x <= 0.0_f32
+            || monitor_neutral.y <= 0.0_f32
+            || !user_factor.is_finite()
+            || user_factor <= 0.0_f32
+        {
+            return fallback;
+        }
+        let scale = (monitor_neutral.x / DISPLAY_DEFAULT_REFERENCE[0])
+            .min(monitor_neutral.y / DISPLAY_DEFAULT_REFERENCE[1])
+            .clamp(1.0_f32, DISPLAY_DEFAULT_MAX_SCALE);
+        fallback * scale / user_factor
     }
 
     /// Records the live inner size as the size to restore next launch,
-    /// in step-independent points (live points times the applied
+    /// in fit-independent points (live points times the applied
     /// window-driven factor), so the physical size round-trips no
-    /// matter which scale step is active when it is written or read.
+    /// matter which fit factor is active when it is written or read.
     /// Maximized, minimized and fullscreen sizes are never recorded (the
     /// last normal size is what a restore should return to), sub-floor
     /// transients are ignored, and recording stays paused while a zoom
@@ -1384,19 +1400,22 @@ impl OpAutoClickerApp {
     }
 
     /// Window-driven presentation: derives the layout mode and the
-    /// target scale step from the neutral-point window size (live
-    /// points times the total applied zoom — invariant under the very
-    /// zoom changes it drives, which is what makes feedback impossible,
-    /// and under user-scale changes too, so re-picking a percentage
-    /// never by itself engages or releases a step).
-    /// The layout mode follows immediately (hysteresis only); a scale
-    /// step applies only once the size has held still for a few
-    /// consecutive frames, so it lands just after a drag ends rather
-    /// than jumping mid-drag, and never chases OS resize transients.
-    /// Runs only when the zoom machinery is idle (see `update`), so a
-    /// step never compounds with an in-flight zoom or restore.
+    /// target fit factor from the neutral-point window size (live
+    /// points times the total applied zoom — invariant under the
+    /// very zoom changes it drives, which is what makes feedback
+    /// impossible). The layout mode follows immediately (its aspect
+    /// and width bands carry their own hysteresis); a fit factor
+    /// applies only once the size has held still for a few
+    /// consecutive frames, so it lands just after a drag ends
+    /// rather than jumping mid-drag, and never chases OS resize
+    /// transients. A one-percent dead band around the applied
+    /// factor keeps physical-pixel rounding from nudging the zoom
+    /// back and forth across a quantization boundary. Runs only
+    /// when the zoom machinery is idle (see `update`), so a factor
+    /// never compounds with an in-flight zoom or restore.
     fn adapt_to_window_size(&mut self, ctx: &egui::Context) {
         const SETTLE_FRAMES: u32 = 6;
+        const FIT_DEADBAND: f32 = 0.011_f32;
         let (size, minimized) = ctx.input(|i| (i.screen_rect.size(), i.viewport().minimized));
         if minimized == Some(true)
             || !size.x.is_finite()
@@ -1408,36 +1427,33 @@ impl OpAutoClickerApp {
             return;
         }
         // Neutral points via the applied zoom (not the desired one):
-        // this only runs once the applied zoom equals user x step, so
+        // this only runs once the applied zoom equals user x fit, so
         // the measure is the physical window size at 100 % zoom.
         let base = size * ctx.zoom_factor();
-        self.wide_layout = self.prefs.auto_scale && Self::wide_layout_for(base.x, self.wide_layout);
+        let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
+        self.wide_layout =
+            self.prefs.auto_scale && Self::wide_layout_for(base, user_factor, self.wide_layout);
         let target = if self.prefs.auto_scale {
-            Self::auto_zoom_for(
-                base,
-                self.prefs.ui_scale_percent as f32 / 100.0_f32,
-                self.wide_layout,
-                self.auto_zoom,
-            )
+            Self::fit_auto_zoom(base, user_factor, self.wide_layout)
         } else {
             1.0_f32
         };
         let size_held = (base.x - self.last_base_size.x).abs() <= 1.5_f32
             && (base.y - self.last_base_size.y).abs() <= 1.5_f32;
-        if size_held && (target - self.tier_candidate).abs() <= 0.001_f32 {
+        if size_held && (target - self.zoom_candidate).abs() <= 0.001_f32 {
             self.stable_frames = self.stable_frames.saturating_add(1);
         } else {
             self.stable_frames = 0;
-            self.tier_candidate = target;
+            self.zoom_candidate = target;
         }
         self.last_base_size = base;
-        if self.stable_frames >= SETTLE_FRAMES && (target - self.auto_zoom).abs() > 0.001_f32 {
+        if self.stable_frames >= SETTLE_FRAMES && (target - self.auto_zoom).abs() > FIT_DEADBAND {
             self.auto_zoom = target;
             self.stable_frames = 0;
             // The live point size this frame still belongs to the old
             // factor (the new zoom applies next frame), so size
             // observation must pause from this instant — otherwise the
-            // observer in this very frame would multiply pre-step
+            // observer in this very frame would multiply pre-fit
             // points by the new factor and persist a phantom size.
             // The zoom bookkeeping refreshes the same deadline when it
             // runs.
@@ -2253,10 +2269,10 @@ impl OpAutoClickerApp {
                 {
                     if !self.prefs.auto_scale {
                         // Back to the fixed classic composition at once;
-                        // the evaluator would retire the step on its own,
+                        // the evaluator would retire the fit on its own,
                         // just a few frames later.
                         self.auto_zoom = 1.0_f32;
-                        self.tier_candidate = 1.0_f32;
+                        self.zoom_candidate = 1.0_f32;
                         self.wide_layout = false;
                         self.stable_frames = 0;
                     }
@@ -2264,10 +2280,10 @@ impl OpAutoClickerApp {
                 }
                 ui.label(
                     egui::RichText::new(
-                        "As the window grows past set widths the whole interface \
-                         steps up in scale, and the widest step rearranges the \
+                        "The whole interface scales smoothly to fit the window \
+                         as it grows, and panoramic windows rearrange the \
                          middle groups three-abreast with one row of buttons. \
-                         The steps multiply with the percentage above.",
+                         The fit multiplies with the percentage above.",
                     )
                     .color(pal.text_dim)
                     .small(),
@@ -2455,8 +2471,8 @@ impl eframe::App for OpAutoClickerApp {
         self.poll_update_check();
 
         // UI scale and window size: the zoom factor follows the persisted
-        // percentage times the window-driven step (`adapt_to_window_size`
-        // owns the step; it only moves on settled sizes, and because it
+        // percentage times the window-driven fit (`adapt_to_window_size`
+        // owns the fit; it only moves on settled sizes, and because it
         // changes no physical size the point size simply rescales inside
         // the same window). One frame after a zoom change (once egui
         // reports the new factor as applied) the window bookkeeping runs
@@ -2483,6 +2499,35 @@ impl eframe::App for OpAutoClickerApp {
             )));
             if self.restore_window_size {
                 self.restore_window_size = false;
+                // Fresh install (no settings file at load) at the
+                // classic floor: upgrade the first size to the
+                // display-aware default for this monitor, so a
+                // 1440p desktop opens with the dialog at the same
+                // screen fraction it has on the 1080p reference
+                // instead of comparatively tiny. Any existing file
+                // — including one that deliberately stores the
+                // floor — skips this entirely, and the size chosen
+                // here is then observed and remembered like any
+                // other, so it happens exactly once.
+                if !self.window_size_was_persisted
+                    && self.prefs.window_width == hotkey::WINDOW_MIN_WIDTH
+                    && self.prefs.window_height == hotkey::WINDOW_MIN_HEIGHT
+                {
+                    if let Some(monitor_size) = ctx.input(|i| i.viewport().monitor_size) {
+                        let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
+                        let target = Self::display_default_window_size(
+                            monitor_size * ctx.zoom_factor(),
+                            user_factor,
+                        );
+                        let (width, height) =
+                            hotkey::sanitize_window_size(f64::from(target.x), f64::from(target.y));
+                        if width != self.prefs.window_width || height != self.prefs.window_height {
+                            self.prefs.window_width = width;
+                            self.prefs.window_height = height;
+                            self.mark_dirty();
+                        }
+                    }
+                }
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
                     self.prefs.window_width as f32 / self.auto_zoom,
                     self.prefs.window_height as f32 / self.auto_zoom,
