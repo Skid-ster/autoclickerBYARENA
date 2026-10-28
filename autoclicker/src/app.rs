@@ -44,6 +44,13 @@ struct Palette {
     pressed_fill: Color32,
     input_bg: Color32,
     input_disabled: Color32,
+    /// Group-box surface. One step above `face` in the dark themes so
+    /// each group reads as an elevated card; identical to `face` in the
+    /// Classic theme, where a native group box sits flat on the dialog.
+    group_fill: Color32,
+    /// Sunken status-strip surface in the dark themes (the strip reads
+    /// as a recessed readout); identical to `face` in Classic.
+    well_fill: Color32,
     group_border: Color32,
     input_border: Color32,
     text: Color32,
@@ -74,6 +81,8 @@ static LIGHT_PALETTE: Palette = Palette {
     pressed_fill: Color32::from_rgb(204, 228, 247),
     input_bg: Color32::WHITE,
     input_disabled: Color32::from_rgb(250, 250, 250),
+    group_fill: Color32::from_rgb(240, 240, 240),
+    well_fill: Color32::from_rgb(240, 240, 240),
     group_border: Color32::from_rgb(166, 166, 166),
     input_border: Color32::from_rgb(122, 122, 122),
     text: Color32::from_rgb(28, 28, 28),
@@ -97,17 +106,19 @@ static DARK_PALETTE: Palette = Palette {
     face: Color32::from_rgb(32, 32, 32),
     button: Color32::from_rgb(51, 51, 51),
     button_disabled: Color32::from_rgb(40, 40, 40),
-    button_border: Color32::from_rgb(96, 96, 96),
+    button_border: Color32::from_rgb(116, 116, 116),
     hover_fill: Color32::from_rgb(58, 62, 66),
     pressed_fill: Color32::from_rgb(70, 76, 82),
-    input_bg: Color32::from_rgb(44, 44, 44),
-    input_disabled: Color32::from_rgb(37, 37, 37),
-    group_border: Color32::from_rgb(96, 96, 96),
+    input_bg: Color32::from_rgb(30, 30, 30),
+    input_disabled: Color32::from_rgb(35, 35, 35),
+    group_fill: Color32::from_rgb(40, 40, 40),
+    well_fill: Color32::from_rgb(24, 24, 24),
+    group_border: Color32::from_rgb(108, 108, 108),
     input_border: Color32::from_rgb(130, 130, 130),
     text: Color32::from_rgb(235, 235, 235),
     group_title: Color32::from_rgb(96, 165, 250),
     text_dim: Color32::from_rgb(158, 158, 158),
-    text_disabled: Color32::from_rgb(109, 109, 109),
+    text_disabled: Color32::from_rgb(118, 118, 118),
     accent: Color32::from_rgb(96, 165, 250),
     success: Color32::from_rgb(106, 200, 112),
     danger: Color32::from_rgb(248, 106, 106),
@@ -124,17 +135,19 @@ static OLED_PALETTE: Palette = Palette {
     face: Color32::BLACK,
     button: Color32::from_rgb(24, 24, 24),
     button_disabled: Color32::from_rgb(14, 14, 14),
-    button_border: Color32::from_rgb(70, 70, 70),
+    button_border: Color32::from_rgb(100, 100, 100),
     hover_fill: Color32::from_rgb(32, 36, 40),
     pressed_fill: Color32::from_rgb(44, 50, 56),
-    input_bg: Color32::from_rgb(18, 18, 18),
+    input_bg: Color32::from_rgb(8, 8, 8),
     input_disabled: Color32::from_rgb(10, 10, 10),
-    group_border: Color32::from_rgb(74, 74, 74),
+    group_fill: Color32::from_rgb(12, 12, 12),
+    well_fill: Color32::BLACK,
+    group_border: Color32::from_rgb(96, 96, 96),
     input_border: Color32::from_rgb(110, 110, 110),
     text: Color32::from_rgb(230, 230, 230),
     group_title: Color32::from_rgb(76, 194, 255),
     text_dim: Color32::from_rgb(150, 150, 150),
-    text_disabled: Color32::from_rgb(96, 96, 96),
+    text_disabled: Color32::from_rgb(104, 104, 104),
     accent: Color32::from_rgb(76, 194, 255),
     success: Color32::from_rgb(98, 212, 120),
     danger: Color32::from_rgb(255, 99, 99),
@@ -151,17 +164,19 @@ static MATRIX_PALETTE: Palette = Palette {
     face: Color32::from_rgb(8, 14, 8),
     button: Color32::from_rgb(16, 30, 16),
     button_disabled: Color32::from_rgb(10, 20, 10),
-    button_border: Color32::from_rgb(38, 92, 38),
+    button_border: Color32::from_rgb(52, 122, 52),
     hover_fill: Color32::from_rgb(22, 44, 22),
     pressed_fill: Color32::from_rgb(30, 60, 30),
-    input_bg: Color32::from_rgb(12, 24, 12),
+    input_bg: Color32::from_rgb(7, 15, 7),
     input_disabled: Color32::from_rgb(8, 16, 8),
-    group_border: Color32::from_rgb(42, 100, 42),
+    group_fill: Color32::from_rgb(13, 23, 13),
+    well_fill: Color32::from_rgb(4, 8, 4),
+    group_border: Color32::from_rgb(50, 118, 50),
     input_border: Color32::from_rgb(58, 136, 58),
     text: Color32::from_rgb(130, 235, 130),
     group_title: Color32::from_rgb(0, 230, 118),
     text_dim: Color32::from_rgb(74, 150, 74),
-    text_disabled: Color32::from_rgb(46, 92, 46),
+    text_disabled: Color32::from_rgb(54, 104, 54),
     accent: Color32::from_rgb(0, 230, 118),
     success: Color32::from_rgb(0, 230, 118),
     danger: Color32::from_rgb(255, 90, 90),
@@ -351,6 +366,14 @@ pub struct OpAutoClickerApp {
     was_running: bool,
 
     status_kind: StatusKind,
+    /// Paint-clock time of the last status-KIND change; the status dot
+    /// plays one short acknowledgement pulse from it. `NEG_INFINITY`
+    /// means no pulse — the age test then fails on its own.
+    status_flash_at: f64,
+    /// The frame's paint-clock seconds, re-recorded at the top of every
+    /// update pass so status changes (which happen outside the painter)
+    /// can timestamp themselves against the same clock the dot reads.
+    ui_clock_secs: f64,
     status_text: String,
 }
 
@@ -415,6 +438,8 @@ impl OpAutoClickerApp {
             last_saved_prefs: AppPrefs::default(),
             was_running: false,
             status_kind: StatusKind::Ready,
+            status_flash_at: f64::NEG_INFINITY,
+            ui_clock_secs: 0.0_f64,
             status_text: String::new(),
         };
         app.load_persisted();
@@ -570,8 +595,29 @@ impl OpAutoClickerApp {
     }
 
     fn set_status(&mut self, kind: StatusKind, text: impl Into<String>) {
+        // Only a kind CHANGE earns the dot's acknowledgement pulse; a new
+        // message of the same kind just replaces the text, so chatter
+        // inside one state never re-triggers the motion.
+        if kind != self.status_kind {
+            self.status_flash_at = self.ui_clock_secs;
+        }
         self.status_kind = kind;
         self.status_text = text.into();
+    }
+
+    /// Progress (0..1) of the status-dot acknowledgement pulse at paint
+    /// time `now`, given the recorded kind-change time `at`. The pulse
+    /// lives for 280 ms (inside the 150-300 ms motion budget every other
+    /// affordance uses), is paint-only, and ends exactly at the dot's
+    /// resting radius — nothing about it can stick, accumulate or move a
+    /// pixel of layout.
+    fn status_pulse_t(now: f64, at: f64) -> Option<f32> {
+        let age = now - at;
+        if (0.0_f64..0.28_f64).contains(&age) {
+            Some((age / 0.28_f64) as f32)
+        } else {
+            None
+        }
     }
 
     // -------------------------------------------------------------- styling
@@ -1214,6 +1260,16 @@ impl OpAutoClickerApp {
     /// bottom edge; the call returns the contents' natural height
     /// (without `min_height` applied) so the pair can converge on the
     /// taller of the two.
+    ///
+    /// In the dark themes the box is drawn as an elevated card: a fill
+    /// one step above the panel, a reserved drop shadow behind it and a
+    /// hairline of light on its inner top edge, so the dialog reads as
+    /// layered plates rather than flat outlines. The shadow slot is
+    /// reserved before the frame paints and filled once the frame's real
+    /// rect exists — same layer, strictly behind the card. Classic keeps
+    /// `group_fill == face` and no shadow, i.e. byte-identical native
+    /// paint. On the pure-black OLED face a black shadow could never be
+    /// seen, so it is skipped there too.
     fn group_box<R>(
         ui: &mut egui::Ui,
         pal: &Palette,
@@ -1221,8 +1277,13 @@ impl OpAutoClickerApp {
         min_height: f32,
         add: impl FnOnce(&mut egui::Ui) -> R,
     ) -> (R, f32) {
+        let shadow_slot = if pal.dark && pal.face != Color32::BLACK {
+            Some(ui.painter().add(egui::Shape::Noop))
+        } else {
+            None
+        };
         let response = Frame::none()
-            .fill(pal.face)
+            .fill(pal.group_fill)
             .stroke(Stroke::new(1.0_f32, pal.group_border))
             .rounding(Rounding::same(2.0_f32))
             .inner_margin(Margin {
@@ -1259,21 +1320,58 @@ impl OpAutoClickerApp {
                 (value, natural_height)
             });
         let rect = response.response.rect;
+        if let Some(slot) = shadow_slot {
+            // The shadow peeks out below and beside the card only; the
+            // top stays tucked under the card fill.
+            let shadow = rect
+                .expand2(Vec2::new(1.0_f32, 0.0_f32))
+                .translate(Vec2::new(0.0_f32, 2.0_f32));
+            ui.painter().set(
+                slot,
+                egui::Shape::rect_filled(
+                    shadow,
+                    Rounding::same(3.0_f32),
+                    Color32::from_black_alpha(72),
+                ),
+            );
+        }
         // The title rides the top border, half of it above rect.top().
         // `painter_at` clips to the given rect, so painting through a clip
         // region expanded upward is what keeps the glyphs whole; the frame's
         // own stroke was already painted by `Frame::show` above.
         let painter = ui.painter_at(rect.expand2(Vec2::new(12.0_f32, 16.0_f32)));
+        // Card rim light: one pale line along the inner top edge, pairing
+        // with the shadow below to complete the raised-plate read. The
+        // title backdrop painted next covers the segment behind the text,
+        // so an uninterrupted line is correct here.
+        if pal.dark {
+            painter.line_segment(
+                [
+                    egui::pos2(rect.left() + 2.0_f32, rect.top() + 1.5_f32),
+                    egui::pos2(rect.right() - 2.0_f32, rect.top() + 1.5_f32),
+                ],
+                Stroke::new(1.0_f32, Color32::from_white_alpha(16)),
+            );
+        }
         let font = FontId::proportional(13.0_f32);
         let galley = painter.layout_no_wrap(title.to_string(), font.clone(), pal.group_title);
         let text_pos = rect.left_top() + Vec2::new(9.0_f32, -galley.size().y / 2.0_f32);
-        // The face-colored backdrop must cover the 1 px border line entirely
-        // so the title cleanly breaks it like a native BS_GROUPBOX caption.
+        // The backdrop must cover the 1 px border line entirely so the
+        // title cleanly breaks it like a native BS_GROUPBOX caption. It
+        // straddles two surfaces now — panel `face` above the border,
+        // card `group_fill` below it — so it is painted in two halves
+        // split at the border's midline; a single color would leave a
+        // visible patch on one side of the line (in Classic both halves
+        // are the same color, so the native paint is unchanged).
         let backdrop = egui::Rect::from_min_size(
             text_pos - Vec2::new(4.0_f32, 1.0_f32),
             galley.size() + Vec2::new(8.0_f32, 2.0_f32),
         );
-        painter.rect_filled(backdrop, 0.0_f32, pal.face);
+        let seam = rect.top() + 0.5_f32;
+        let upper = egui::Rect::from_min_max(backdrop.min, egui::pos2(backdrop.max.x, seam));
+        let lower = egui::Rect::from_min_max(egui::pos2(backdrop.min.x, seam), backdrop.max);
+        painter.rect_filled(upper, 0.0_f32, pal.face);
+        painter.rect_filled(lower, 0.0_f32, pal.group_fill);
         // Paint the token the galley was laid out with: the palette's
         // accent-toned group title (identical to `text` in the Classic
         // theme, so the native look stays faithful there).
@@ -1335,14 +1433,20 @@ impl OpAutoClickerApp {
         painter.rect(face_rect, rounding, fill, Stroke::new(1.0_f32, border));
         // Classic 3D face cue: a one-pixel inner highlight along the top
         // edge, the same bevel the native BS_PUSHBUTTON control carries.
+        // While pressed the cue inverts to a dark line — a pushed button
+        // catches shadow on its top edge, not light.
         if enabled {
-            let highlight_alpha = if pal.dark { 18 } else { 110 };
+            let bevel = if pressed {
+                Color32::from_black_alpha(if pal.dark { 90 } else { 60 })
+            } else {
+                Color32::from_white_alpha(if pal.dark { 18 } else { 110 })
+            };
             painter.line_segment(
                 [
                     egui::pos2(face_rect.left() + 3.0_f32, face_rect.top() + 1.5_f32),
                     egui::pos2(face_rect.right() - 3.0_f32, face_rect.top() + 1.5_f32),
                 ],
-                Stroke::new(1.0_f32, Color32::from_white_alpha(highlight_alpha)),
+                Stroke::new(1.0_f32, bevel),
             );
         }
         painter.text(
@@ -1490,7 +1594,9 @@ impl OpAutoClickerApp {
         } else {
             "Pick location"
         };
-        if Self::classic_button(ui, pal, pick_label, true, 104.0_f32).clicked() {
+        let pick_response = Self::classic_button(ui, pal, pick_label, true, 104.0_f32)
+            .on_hover_text("Capture the fixed click point by clicking it on screen");
+        if pick_response.clicked() {
             if self.picking_location {
                 self.picking_location = false;
                 self.set_status(StatusKind::Ready, "Location pick cancelled.");
@@ -1656,14 +1762,18 @@ impl OpAutoClickerApp {
     }
 
     fn hotkey_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
-        if Self::classic_button(ui, pal, "Hotkey setting", true, width).clicked() {
+        let response = Self::classic_button(ui, pal, "Hotkey setting", true, width)
+            .on_hover_text("Choose the key that starts and stops the clicker");
+        if response.clicked() {
             self.show_hotkey_dialog = true;
             self.capturing = false;
         }
     }
 
     fn record_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
-        if Self::classic_button(ui, pal, "Record & Playback", true, width).clicked() {
+        let response = Self::classic_button(ui, pal, "Record & Playback", true, width)
+            .on_hover_text("Record your own clicks and play them back as a macro");
+        if response.clicked() {
             self.show_macro_window = true;
         }
     }
@@ -1982,6 +2092,7 @@ impl OpAutoClickerApp {
 
 impl eframe::App for OpAutoClickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ui_clock_secs = ctx.input(|i| i.time);
         self.apply_style(ctx);
         let pal = self.palette();
 
@@ -2152,6 +2263,7 @@ impl eframe::App for OpAutoClickerApp {
             || self.capturing
             || self.picking_location
             || self.macro_recording
+            || Self::status_pulse_t(self.ui_clock_secs, self.status_flash_at).is_some()
         {
             Duration::from_millis(16)
         } else {
@@ -2231,9 +2343,9 @@ impl eframe::App for OpAutoClickerApp {
                     // breathes on the already-running repaint heartbeat so
                     // "working" is visible even from the corner of the eye.
                     let state_color = self.status_kind.color(pal);
+                    let now = ui.input(|i| i.time);
                     let dot_color = if self.status_kind == StatusKind::Running {
-                        let t = ui.input(|i| i.time);
-                        let pulse = 0.5_f32 + 0.5_f32 * ((t * 3.6_f64).sin() as f32);
+                        let pulse = 0.5_f32 + 0.5_f32 * ((now * 3.6_f64).sin() as f32);
                         Color32::from_rgba_unmultiplied(
                             state_color.r(),
                             state_color.g(),
@@ -2244,8 +2356,46 @@ impl eframe::App for OpAutoClickerApp {
                         state_color
                     };
                     let painter = ui.painter_at(rect);
+                    // Sunken well (dark themes only): a recessed readout
+                    // plate one step below the panel, matching the input
+                    // fields' depth level. It lives entirely inside the
+                    // reserved 16 px strip, so the dot, the text and the
+                    // rows below never move; Classic keeps the flat
+                    // native status line.
+                    if pal.dark {
+                        painter.rect(
+                            rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
+                            Rounding::same(3.0_f32),
+                            pal.well_fill,
+                            Stroke::new(1.0_f32, pal.group_border),
+                        );
+                    }
                     let dot_center = egui::pos2(rect.left() + 4.0_f32, rect.center().y);
-                    painter.circle_filled(dot_center, 3.5_f32, dot_color);
+                    // Kind-change acknowledgement: the dot swells once and
+                    // a ring expands off it, easing out over 280 ms, so a
+                    // state transition is noticed even without reading
+                    // the text. It composes with the Running breathing
+                    // (alpha above) instead of fighting it, and finishes
+                    // exactly at the resting 3.5 px radius.
+                    let pulse_t = Self::status_pulse_t(now, self.status_flash_at);
+                    if let Some(t) = pulse_t {
+                        let ease = 1.0_f32 - (1.0_f32 - t) * (1.0_f32 - t);
+                        painter.circle_stroke(
+                            dot_center,
+                            3.5_f32 + 3.0_f32 * ease,
+                            Stroke::new(
+                                1.5_f32,
+                                Color32::from_rgba_unmultiplied(
+                                    state_color.r(),
+                                    state_color.g(),
+                                    state_color.b(),
+                                    (200.0_f32 * (1.0_f32 - t)) as u8,
+                                ),
+                            ),
+                        );
+                    }
+                    let dot_radius = pulse_t.map_or(3.5_f32, |t| 3.5_f32 + 1.3_f32 * (1.0_f32 - t));
+                    painter.circle_filled(dot_center, dot_radius, dot_color);
                     painter.text(
                         egui::pos2(rect.left() + 12.0_f32, rect.center().y),
                         Align2::LEFT_CENTER,
@@ -2279,7 +2429,10 @@ impl eframe::App for OpAutoClickerApp {
                             .fill(pal.button)
                             .stroke(Stroke::new(1.0_f32, pal.button_border))
                             .rounding(Rounding::same(3.0_f32));
-                            if ui.add(button).clicked() {
+                            let settings_response = ui.add(button).on_hover_text(
+                                "Theme, interface scale, clicking behaviour and the session log",
+                            );
+                            if settings_response.clicked() {
                                 self.show_settings = true;
                             }
                         });

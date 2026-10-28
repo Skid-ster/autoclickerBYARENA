@@ -121,8 +121,10 @@ accent color clears a WCAG 4.5:1 contrast ratio against its background:
   hovered, pressed, open and disabled — with dark, readable text and light
   dropdown lists), gray 3D push buttons.
 - **Dark** — the same dialog in Windows 11 dark-dialog colors: `#202020`
-  face, `#2C2C2C` sunken fields with light text, matching dropdowns,
-  buttons and group borders.
+  face, group boxes as `#282828` elevated cards with a soft shadow and a
+  rim-lit top edge, `#1E1E1E` sunken fields with light text, a recessed
+  `#181818` status readout, matching dropdowns, buttons and group
+  borders. The other dark themes share the same layered depth system.
 - **Midnight OLED** — a pure-black variant of Dark for OLED screens.
 - **Terminal green** — green-on-black phosphor-terminal colors.
 
