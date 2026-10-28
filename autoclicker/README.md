@@ -68,7 +68,7 @@ Eight integration test binaries run platform-independent logic (68 tests):
   key/label stability and the window-scale and window-size sanitizers.
 - `settings_tests` — full serialization round trip, tolerance of unknown
   keys, sections and comments, per-field recovery from malformed values,
-  round trips for all four themes, fallback to the default theme for
+  round trips for all five themes, fallback to the default theme for
   retired theme keys, legacy `dark_mode` migration precedence,
   `ui_scale` clamping and window-size round trip, clamping to
   [560x456, 4x that] and per-dimension garbage/non-finite tolerance.
@@ -99,7 +99,11 @@ column, so related controls never drift apart. On top of that, the
 window size drives the presentation itself (Settings → "Scale and
 rearrange with window size", on by default): past 800 points of width
 (measured at 100 % zoom, so the steps land at the same physical size
-whatever percentage you pick) the whole interface steps to 110 %,
+whatever percentage you pick) the whole interface steps to 110 %
+— and height votes too, converted by the floor dialog's aspect ratio,
+so growing the window taller steps the scale up the same way (the
+height vote is capped at the largest step that still fits the width
+you chose, so it can never force the window wider) —
 past 1024 to 125 %
 with Click options / Click repeat / Cursor position rearranged
 three-abreast and one row of four action buttons, and past 1440 to
@@ -113,7 +117,7 @@ is never saved as a raw size: restoring comes back at your last normal
 size). The **Settings…** button in the bottom-right corner opens a
 Settings window with two persisted choices:
 
-**Theme** — four complete themes, each tuned so every text, status and
+**Theme** — five complete themes, each tuned so every text, status and
 accent color clears a WCAG 4.5:1 contrast ratio against its background:
 
 - **Classic light (default)** — the classic native look: `#F0F0F0` face,
@@ -127,6 +131,9 @@ accent color clears a WCAG 4.5:1 contrast ratio against its background:
   borders. The other dark themes share the same layered depth system.
 - **Midnight OLED** — a pure-black variant of Dark for OLED screens.
 - **Terminal green** — green-on-black phosphor-terminal colors.
+- **Aurora modern** — deep indigo-slate surfaces with a violet accent,
+  the contemporary dark look; shares the dark themes' layered depth
+  (elevated cards, sunken fields, status well).
 
 **Window scale** — 75 / 100 / 125 / 150 / 175 / 200 %. The UI zoom factor
 follows the percentage; one frame later, once egui reports the new factor
@@ -140,7 +147,7 @@ Legacy settings files from the dark-mode-only build are still honored:
 `dark_mode=true` loads as the Dark theme, `dark_mode=false` as Classic, and
 a modern `theme=` key always wins over the legacy boolean.
 
-All four themes share every layout metric at every window size, so
+All five themes share every layout metric at every window size, so
 switching never moves a control.
 The bordered group boxes draw their titles on a face-colored gap
 that breaks the top border, exactly like the native `BS_GROUPBOX` control,
@@ -303,7 +310,7 @@ previous session is never reused.
    status strip confirms "Factory defaults restored."
 10. Press F8 mid-run: the session stops within one interval, the status turns
     red and no mouse button remains stuck.
-11. Open Settings…, pick each of the four themes in turn: every window
+11. Open Settings…, pick each of the five themes in turn: every window
     restyles in place and nothing moves; dark themes keep readable text in
     every field, button and dropdown state.
 12. Start a "Repeat until stopped" session, then press Stop: the status

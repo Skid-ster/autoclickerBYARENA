@@ -30,12 +30,12 @@ best-designed and most stable utility of its kind. Two goals, in order:
   560x456 logical points. The window must be **naturally resizable**
   (see the dedicated section below); every control visible, always, at
   every size the user can reach.
-- Four themes (Classic light, Dark, Midnight OLED, Terminal green).
+- Five themes (Classic light, Dark, Midnight OLED, Terminal green, Aurora modern).
   **All themes share every layout metric** — switching may never move,
   hide, or resize a control. Classic must stay faithful to the native
   Win32 4.1 dialog; craft goes into the dark family.
-- 67 module tests across 8 test binaries (config 13, humanize 9,
-  telemetry 8, settings 8, hotkey 7, icon 6, schedule 7, macro 9).
+- 68 module tests across 8 test binaries (config 13, macro 9,
+  humanize 9, settings 9, telemetry 8, hotkey 7, schedule 7, icon 6).
   They must pass **unweakened**. You may replace a test only when the
   feature it covers is removed by explicit user request, and the
   replacement must be equally strict.
