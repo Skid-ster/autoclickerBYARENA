@@ -144,12 +144,22 @@ pub struct AppPrefs {
     /// window only grows if the content would otherwise no longer fit,
     /// so every control stays visible at every scale.
     pub ui_scale_percent: u32,
-    /// Last user-chosen inner window width in logical points, sanitized
-    /// to [WINDOW_MIN_WIDTH, 4x WINDOW_MIN_WIDTH]. The floor defaults mean
-    /// a fresh install opens at the exact classic size.
+    /// Let the window size drive the presentation: as the window grows
+    /// past fixed thresholds the whole UI steps up in scale, and past
+    /// the wide threshold the group boxes rearrange into a three-across
+    /// row with a single row of action buttons. Off restores the fixed
+    /// classic composition at every size.
+    pub auto_scale: bool,
+    /// Last user-chosen inner window width, sanitized to
+    /// [WINDOW_MIN_WIDTH, 4x WINDOW_MIN_WIDTH]. Measured in
+    /// step-independent points: the point width the window has with
+    /// the window-driven scale factor neutralized, so the same physical
+    /// size round-trips no matter which scale step is active. The floor
+    /// defaults mean a fresh install opens at the exact classic size.
     pub window_width: u32,
-    /// Last user-chosen inner window height in logical points, sanitized
-    /// to [WINDOW_MIN_HEIGHT, 4x WINDOW_MIN_HEIGHT].
+    /// Last user-chosen inner window height in the same
+    /// step-independent points, sanitized to
+    /// [WINDOW_MIN_HEIGHT, 4x WINDOW_MIN_HEIGHT].
     pub window_height: u32,
 }
 
@@ -161,6 +171,7 @@ impl Default for AppPrefs {
             random_offset_enabled: false,
             theme: AppTheme::Classic,
             ui_scale_percent: UI_SCALE_DEFAULT,
+            auto_scale: true,
             window_width: WINDOW_MIN_WIDTH,
             window_height: WINDOW_MIN_HEIGHT,
         }

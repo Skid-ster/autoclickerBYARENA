@@ -91,12 +91,23 @@ minimum, so neither a drag nor a snap can take the window below the size
 where every control fits. Growing the window is designed, not stretched:
 group boxes always claim the full content width (their borders stay
 flush at every size), the side-by-side Click options / Click repeat pair
-stays equal in width and height, and the 2x2 button grid shares the
-extra width up to a 736-point content cap (beyond that the content
-column centers instead of producing over-wide buttons). Extra height
-first loosens the three gaps between groups by a bounded amount and then
-centers the whole column, so related controls never drift apart; field
-widths, paddings, fonts and control heights never change. The size you leave the window at is saved
+stays equal in width and height, and the button grid shares the extra
+width up to a content cap (beyond that the content column centers
+instead of producing over-wide buttons). Extra height first loosens the
+gaps between groups by a bounded amount and then centers the whole
+column, so related controls never drift apart. On top of that, the
+window size drives the presentation itself (Settings → "Scale and
+rearrange with window size", on by default): past 800 points of width
+(measured at 100 % zoom, so the steps land at the same physical size
+whatever percentage you pick) the whole interface steps to 110 %,
+past 1024 to 125 %
+with Click options / Click repeat / Cursor position rearranged
+three-abreast and one row of four action buttons, and past 1440 to
+140 % — each step multiplying your chosen Window scale, engaging only
+once the size settles (never mid-drag) and releasing on a lower
+threshold so a window parked on a boundary never flip-flops. Sizes are
+remembered in scale-independent points, so the same physical window
+comes back on every launch whichever step is active. The size you leave the window at is saved
 to the settings file and restored on the next launch (maximized state
 is never saved as a raw size: restoring comes back at your last normal
 size). The **Settings…** button in the bottom-right corner opens a

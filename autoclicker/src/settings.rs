@@ -143,6 +143,7 @@ pub fn serialize_settings(config: &EngineConfig, prefs: &AppPrefs) -> String {
         "[ui]".to_string(),
         format!("theme={}", prefs.theme.key()),
         format!("ui_scale={}", prefs.ui_scale_percent),
+        format!("auto_scale={}", prefs.auto_scale),
         format!("window_width={}", prefs.window_width),
         format!("window_height={}", prefs.window_height),
     ];
@@ -321,6 +322,11 @@ pub fn parse_settings(text: &str) -> (EngineConfig, AppPrefs) {
                 if let Some(parsed) = parse_u64(value) {
                     prefs.ui_scale_percent =
                         hotkey_scale_sanitize(u32::try_from(parsed).unwrap_or(u32::MAX));
+                }
+            }
+            "auto_scale" => {
+                if let Some(parsed) = parse_bool(value) {
+                    prefs.auto_scale = parsed;
                 }
             }
             // Missing or non-finite size values keep the floor default for

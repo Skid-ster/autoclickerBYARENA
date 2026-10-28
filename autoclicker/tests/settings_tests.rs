@@ -43,6 +43,7 @@ fn full_round_trip_preserves_every_field() {
         random_offset_enabled: true,
         theme: AppTheme::Matrix,
         ui_scale_percent: 150,
+        auto_scale: false,
         window_width: 720,
         window_height: 560,
     };

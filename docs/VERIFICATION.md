@@ -5,7 +5,115 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Layout composition correction round (current)
+## Adaptive scale and wide layout round (current)
+
+At large window sizes the corrected composition still presented a
+fixed-size dialog centered in otherwise empty space (visible in the
+user's 1601x972 screenshot: correct alignment, but a modest island).
+This round makes the window size drive the presentation, behind a
+Settings toggle ("Scale and rearrange with window size", default on;
+off restores exactly the composition of the correction round below).
+Engine, win32, timing, config, humanize, telemetry, schedule and macro
+files are untouched; `hotkey.rs`/`settings.rs` gain one persisted
+boolean, and one settings test fixture gains the matching field (the
+round-trip test then covers the new key).
+
+Design (thresholds in *neutral points*: live points times the total
+applied zoom — the width at 100 % total zoom, i.e. physical size at
+native scaling. Invariant under the step changes it drives, which is
+what makes feedback loops impossible, and under user-percentage
+changes, so steps engage at the same physical size for every user
+percentage instead of fighting it. Persisted sizes keep their own
+*step-independent* measure, below):
+
+- **Scale steps** engage at widths 800 / 1024 / 1440 with factors
+  1.10 / 1.25 / 1.40 and release below 744 / 968 / 1384 (hysteresis, so
+  a width parked inside a band holds its step). Total zoom is the
+  user's persisted percentage times the step factor, applied through
+  the existing zoom bookkeeping (min-size redeclaration, grow-only
+  floor correction, settle window). A step never sends an `InnerSize`:
+  the physical window stays where the user put it and the interface
+  rescales inside it.
+- **Debounce**: a step applies only after the scale-independent size
+  has held still (within 1.5 pt) for 6 consecutive frames while asking
+  for that step, and only while the zoom machinery is idle — so steps
+  land just after a drag ends, never mid-drag, and never compound with
+  an in-flight zoom or restore. The layout switch needs no debounce
+  (it cannot feed back into the measured quantity) and follows with
+  hysteresis only.
+- **Wide layout** at the 1024 step: Click options | Click repeat |
+  Cursor position three-abreast (Cursor's pick row folds into stacked
+  radio / button / coordinate rows), action buttons as one row of
+  four, content cap 880. The row's boxes share one bottom edge through
+  the same measured-height feedback as the classic pair. The vertical
+  rhythm generalizes to (fill height, gap count): compact (456, 3) —
+  arithmetically identical to the previous round — wide (372, 2),
+  the fill height calibrated by measurement below.
+- **Persistence in step-independent points**: the observer records
+  live points times the applied step factor; restore and the builder
+  size divide the opening step back out, so the same *physical*
+  window returns on every launch under any step. (This is also the
+  measure the existing [560, 4x560] sanitizer stays exact in for every
+  user percentage, and old files' plain points are already in it.) Files from earlier versions
+  (plain points at factor 1.0) read identically. One real bug was
+  caught by the viewport probe during development: on the frame a step
+  flips, the live points still belong to the old factor (egui applies
+  zoom next frame), so the observer — running later in the same
+  `update` — persisted points x new factor (1500 became 2100). The
+  flip now starts the observation settle window immediately; the
+  probe's drag-persist-relaunch round-trip passes (see below).
+
+Verification (offline harness as before — vendored pristine egui
+0.27.2, real app modules, windows-sys/eframe shims — extended with a
+*physical-window rig*: it feeds points = physical px /
+(native ppp x applied zoom) exactly like egui-winit converts, and
+applies `InnerSize` commands back to physical pixels):
+
+- **Regression (adaptation off)**: the correction round's full matrix
+  re-run with `auto_scale=false` — four themes, floor through
+  1200x900 — geometry, title colors, gaps and zoom-locked-at-1.0 all
+  pass, proving the toggle-off state is byte-for-byte the previous
+  shipped composition.
+- **Steps and wide geometry**: physical 700/900/1280/1800 px settle to
+  zoom 1.00/1.10/1.25/1.40 with compact/compact/wide/wide layouts; in
+  wide, the three boxes measure equal width/height/bottom (289x151 at
+  1280 px), the interval spans the 880 cap, four buttons share one
+  row, the X field sits inside the Cursor box, nothing paints outside
+  the surface, and top/bottom slack balances within tolerance. The
+  user-percentage composes multiplicatively (125 % x 1.25 = 1.5625
+  asserted on the context). At the user's own setup (1600x972 at
+  125 % display scaling, i.e. 1280 neutral points) the layout lands on
+  the 1.25 wide step and the content band fills x72..952 of 1024 fed
+  points instead of an island.
+- **Stability**: hysteresis walk 1280 -> 1000 (holds 1.25 in-band) ->
+  940 (drops 1.10) -> 1000 (holds) -> 1100 (rises); a 25-step
+  frame-by-frame drag 700 -> 1780 px asserts zoom stays 1.00 for every
+  drag frame and lands on 1.40 after the hold; a 1022/1034 px boundary
+  wobble (2 frames each, 24 flips) never changes step.
+- **Persistence**: restore emits `InnerSize(1024x640)` for a persisted
+  1280x800 (base / 1.25) and the physical rig returns to exactly
+  1280x800; drag to 1500x900 physical persists `window_width=1500`
+  (base, not the 1071 live points) and a relaunch restores 1500x900
+  physical; maximized freeze and classic-floor open unchanged.
+- **Interaction**: engine start/stop and the milliseconds drag pass in
+  compact (560x456, 760x668) and in wide mode through the four-across
+  button row; the pick-location arm/cancel flow passes through the
+  stacked Cursor box; the Settings toggle is present and clickable.
+- `cargo fmt --check` clean, lib clippy `-D warnings` clean, 68
+  pre-existing tests pass (harness `cargo test` and standalone
+  `rustc --test` per suite), marker/`thread::sleep`/new-`unwrap`
+  sweeps clean.
+
+Honest limits: the rig models egui-winit's conversion arithmetically
+(points = physical / (native x zoom), deferred zoom application) but
+does not run winit itself; how a step *feels* the moment it lands
+after a drag, behavior while dragging between monitors of different
+DPI, and Segoe UI metric differences (the measured-distribution code
+adapts, but the 372 pt wide fill height is font-sensitive by a few
+points — a small vertical off-center at most) remain for the manual
+Windows run.
+
+## Layout composition correction round (previous; its fixed-size composition is the adaptation-off state above)
 
 The natural-resizing round below shipped with a defect its own probes did
 not catch, and this round fixes it. Stating the failure plainly: the

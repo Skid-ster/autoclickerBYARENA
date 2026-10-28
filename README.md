@@ -54,11 +54,12 @@ The executable is `autoclicker/target/release/macro_clicker.exe`.
   Layouts, exactly like any normal Windows app. The classic 560x456 size
   is the OS-enforced minimum, so the window can never shrink far enough
   to hide a control; making it larger widens the group boxes and the
-  button grid so every border stays flush with the content edges (up to
-  a sensible cap, then the content centers), spreads the interval units
-  evenly, and first loosens the gaps between the groups a little before
-  centering the whole layout — while every control keeps its exact size.
-  The size you choose is remembered across restarts.
+  button grid so every border stays flush with the content edges, and
+  past set widths the whole interface steps up in scale — the widest
+  step also rearranges the middle groups three-across with a single
+  row of action buttons — so a big window is filled, never just
+  centered in. A Settings toggle turns the adaptation off. The size
+  you choose is remembered across restarts.
   Click interval with the 4.1 Random offset row, side-by-side Click options
   and Click repeat, Cursor position with a real Pick location button
   (click the button, then click anywhere on screen; Esc cancels), and the
