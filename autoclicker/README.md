@@ -102,9 +102,12 @@ and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window is a pixel-faithful, non-scrolling recreation of the
-classic OP Auto Clicker 4.x dialog that resizes like any normal Windows
-app: drag any edge to push or pull it, grab any corner, double-click or
+The main window keeps the classic OP Auto Clicker 4.x dialog's exact
+control layout in a modern card surface — the same visual language as
+the Updates window: rounded elevated group cards led by an accent
+tick, an accent-filled **Start** button (the one primary action, like
+**Install** there), flat secondary buttons, and soft shadows — in a
+non-scrolling window that resizes like any normal Windows app: drag any edge to push or pull it, grab any corner, double-click or
 maximize from the title bar, and use Win+arrow keys and Snap Layouts.
 The classic 560x456 logical-point size is declared to the OS as the
 minimum, so neither a drag nor a snap can take the window below the size
@@ -134,7 +137,12 @@ result (divided by your own Window scale percentage and capped so
 the total never exceeds 280 %) is rounded down to a whole percent
 and applied only after the size has held still for a few frames —
 never mid-drag — with a small dead band so pixel rounding cannot
-nudge it back and forth. The wide three-across layout engages in
+nudge it back and forth. When a new factor is adopted the applied
+zoom **eases** to it over ~180 ms (cubic ease-out) instead of
+snapping in one frame; the easing is presentation-only — the fit's
+neutral-point measure uses the *applied* zoom, so it stays exact at
+every intermediate value, and the landing always sets the exact fit
+factor. The wide three-across layout engages in
 panoramic windows (aspect and predicted live width both qualify,
 with arrive-and-hold hysteresis). A fresh install on a monitor
 larger than the 1920x1080 reference opens once at a proportionally
@@ -151,10 +159,11 @@ Settings window with two persisted choices:
 **Theme** — five complete themes, each tuned so every text, status and
 accent color clears a WCAG 4.5:1 contrast ratio against its background:
 
-- **Classic light (default)** — the classic native look: `#F0F0F0` face,
-  white sunken numeric fields and combo boxes (white in every state — idle,
-  hovered, pressed, open and disabled — with dark, readable text and light
-  dropdown lists), gray 3D push buttons.
+- **Classic light (default)** — `#F0F0F0` face with the groups as white
+  elevated cards and a white status plate (exactly the Updates window's
+  surfaces), white numeric fields and combo boxes (white in every state —
+  idle, hovered, pressed, open and disabled — with dark, readable text and
+  light dropdown lists), flat light push buttons with the accent Start.
 - **Dark** — the same dialog in Windows 11 dark-dialog colors: `#202020`
   face, group boxes as `#282828` elevated cards with a soft shadow and a
   rim-lit top edge, `#1E1E1E` sunken fields with light text, a recessed
@@ -180,8 +189,8 @@ a modern `theme=` key always wins over the legacy boolean.
 
 All five themes share every layout metric at every window size, so
 switching never moves a control.
-The bordered group boxes draw their titles on a face-colored gap
-that breaks the top border, exactly like the native `BS_GROUPBOX` control,
+Each group card's caption rides its top border on a two-surface gap
+(panel color above, card color below), led by a short accent tick,
 and at the classic size the window hugs the content exactly as before.
 
 One honest platform note: the native OS title bar belongs to Windows, not
@@ -244,9 +253,10 @@ bar agree.
 Every push button is painted with full interaction feedback: the fill,
 border and elevation all track the pointer (an eased ~180 ms hover lift
 with a soft drop shadow — depth encodes interactivity — and a pressed
-state that visibly sits down) plus a one-pixel top bevel highlight like
-the native BS_PUSHBUTTON face, and floating surfaces (Settings, Hotkey
-dialog, dropdowns) carry a soft shadow so layering reads as hierarchy.
+state that visibly sits down). **Start** is the accent-filled primary
+action; **Stop** carries a danger-colored outline while a session runs;
+the rest stay neutral. Floating surfaces (Settings, Hotkey dialog,
+dropdowns) carry a soft shadow so layering reads as hierarchy.
 The status strip leads with a semantic state dot (shape and position
 carry the state, not color alone) that breathes gently on the existing
 repaint heartbeat while a session runs, focused fields draw an accent
@@ -395,10 +405,12 @@ previous session is never reused.
     stops dead at the classic 560x456 size — it must not go smaller, and
     every control stays whole at the limit. Grow the window in any
     direction and let go: just after the drag ends, the whole
-    interface rescales once to fit the new size (text, fields and
-    buttons all physically larger, proportions unchanged); it must
-    never rescale repeatedly while you are still dragging, and the
-    physical window size itself must not jump. Pull it panoramic:
+    interface rescales once to fit the new size, **easing** smoothly
+    onto the new scale in a fraction of a second rather than
+    snapping (text, fields and buttons all physically larger,
+    proportions unchanged); it must never rescale repeatedly while
+    you are still dragging, and the physical window size itself
+    must not jump. Pull it panoramic:
     the three middle groups sit three-across with one row of four
     action buttons. Pull it tall: the gaps between groups loosen and
     the status, buttons and footer stay pinned at the bottom. Snap
@@ -418,10 +430,11 @@ previous session is never reused.
     missing result refreshes on open, and the status card must show
     **Installed**, **Latest on GitHub** and **Last checked: just now**
     with the verdict naming the version GitHub reported. The real
-    end-to-end rehearsal is the v1.2.0 → v1.3.0 hop: v1.2.0's footer
-    must turn into **Update v1.3.0** without opening anything (its
-    button still browser-downloads, as v1.2.0 was built to). In a
-    v1.3.0+ window, **Install vX.Y.Z** must be greyed out unless a
+    end-to-end rehearsal is the v1.3.0 → v1.4.0 hop — the first
+    physical self-update: v1.3.0's footer must turn into **Update
+    v1.4.0** without opening anything, and pressing **Install
+    v1.4.0** in its window must download, verify, and reopen as
+    v1.4.0. In any v1.3.0+ window, **Install vX.Y.Z** must be greyed out unless a
     newer release is proven; when clicked it shows live download
     progress, then "Verifying…", and the app closes and reopens by
     itself as the new version with the status strip confirming
