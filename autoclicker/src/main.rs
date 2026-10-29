@@ -46,6 +46,10 @@ fn main() -> eframe::Result<()> {
         height: icon_height,
     });
     let options = eframe::NativeOptions {
+        // The application stores its own fit-independent window size in
+        // settings.conf. Never let eframe persist a second, zoom-dependent
+        // copy, even if its optional persistence feature is enabled later.
+        persist_window: false,
         viewport: egui::ViewportBuilder::default()
             // Naturally resizable classic window: a resizable native frame
             // (WS_THICKFRAME | WS_MAXIMIZEBOX) is what gives edge/corner

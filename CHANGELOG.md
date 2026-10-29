@@ -7,6 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-29
+
+### Changed
+
+- Removed the manual Window scale percentage picker; automatic window
+  adaptation remains available, and existing saved scale values are retained.
+- Updated CI checkout and artifact actions to versions using the supported
+  Node.js 24 runtime.
+
+### Fixed
+
+- Reflowed very narrow, tall windows into additional layouts so controls
+  grow instead of leaving large gaps between cards and above the footer.
+- Fit secondary windows temporarily when necessary without changing the
+  saved or physical window size, and restore the dashboard zoom on close.
+- Keep lengthy dialog messages and their controls reachable with scrolling;
+  prevent unusually long update versions and status messages from clipping
+  other controls, while retaining their full text on hover.
+- Refresh the native minimum size after a monitor DPI change without
+  requesting a window resize, and keep application settings authoritative
+  instead of allowing a second eframe window-size store.
+
 ## [1.5.1] - 2026-10-29
 
 ### Changed
@@ -122,7 +144,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   precision QPC click engine, Record & Playback, global hotkeys, themes,
   resizable/scaling window, persistent settings, and Windows CI releases.
 
-[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.4.0...v1.4.1

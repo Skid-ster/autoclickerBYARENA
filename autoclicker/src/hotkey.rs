@@ -94,9 +94,9 @@ impl AppTheme {
     }
 }
 
-/// Window-scale percentages offered in the Settings window.
+/// Scale values offered by older releases, retained for settings compatibility.
 pub const UI_SCALE_OPTIONS: [u32; 6] = [75, 100, 125, 150, 175, 200];
-/// Default window scale.
+/// Default scale for new and reset settings.
 pub const UI_SCALE_DEFAULT: u32 = 100;
 const UI_SCALE_MIN: u32 = 75;
 const UI_SCALE_MAX: u32 = 200;
@@ -184,9 +184,8 @@ pub struct AppPrefs {
     /// Color/label theme for every window. Classic light by default so a
     /// fresh install shows the dialog the 4.x look is modeled on.
     pub theme: AppTheme,
-    /// Window scale percentage (75–200). The whole UI zooms and the
-    /// window only grows if the content would otherwise no longer fit,
-    /// so every control stays visible at every scale.
+    /// Legacy saved window scale (75–200), retained so upgrades preserve
+    /// the user's existing appearance and fit-independent window size.
     pub ui_scale_percent: u32,
     /// Let the window size drive the presentation: the whole UI
     /// scales uniformly to fit the window as it grows, and in

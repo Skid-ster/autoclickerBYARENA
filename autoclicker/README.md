@@ -4,7 +4,7 @@
 egui interface that reproduces the authentic classic OP Auto Clicker 4.x
 Win32 dialog — a naturally resizable light-gray window (the classic size
 is the enforced minimum) with native-style group boxes and push
-buttons, every control visible without scrolling at any window size. It is backed by a
+buttons, with dashboard controls visible without scrolling at supported window sizes. It is backed by a
 dedicated QPC spin-scheduled worker thread, uniform/Gaussian timing jitter,
 global `SendInput` injection and background HWND message delivery.
 
@@ -40,7 +40,7 @@ cargo run --release
 cargo test --release
 ```
 
-Eleven integration test binaries run platform-independent logic (128 test
+Eleven integration test binaries run platform-independent logic (133 test
 cases, including the self-update module's fault-injection cases). Windows
 also runs the dashboard and click-worker unit tests:
 
@@ -100,8 +100,9 @@ also runs the dashboard and click-worker unit tests:
   development-build (`target/`) detection, recognized source-checkout
   layout and origin checks, source-change reporting, and manifest-version
   extraction.
-- `window_layout_tests` — classic/portrait/wide selection and hysteresis,
-  tall-window zoom, shrink fitting, user scales and zoom limits.
+- `window_layout_tests` — classic, portrait, narrow, slender and wide
+  selection and hysteresis; tall-window zoom, shrink fitting, legacy scales,
+  dialog zoom and zoom limits.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
@@ -116,22 +117,24 @@ tick, an accent-filled **Start** button (the one primary action, like
 non-scrolling window that resizes like any normal Windows app: drag any edge to push or pull it, grab any corner, double-click or
 maximize from the title bar, and use Win+arrow keys and Snap Layouts.
 The classic 560x456 size is the fit-independent minimum. The app
-declares it to the OS divided by the currently displayed window fit,
-because egui-winit multiplies the declared live-point minimum by the
-total zoom; the resulting physical floor therefore follows your own
-Window scale percentage but never the transient fit, so neither a drag
+declares it to the OS divided by the currently applied window fit,
+including a temporary dialog fit, because egui-winit multiplies the
+live-point minimum by the
+total zoom; the resulting physical floor follows Windows DPI and any
+legacy saved scale, but never the transient fit. When the window moves
+between displays with different DPI scaling, the native minimum is
+re-declared without requesting a resize. Neither a drag
 nor a snap can take the window below the size where every control fits
 and a large window can always be pulled back down. Growing the window is designed, not stretched:
 group boxes always claim the full content width (their borders stay
 flush at every size), the classic side-by-side Click options / Click
 repeat pair stays equal in width and height, and the button grid shares the extra
 width up to a content cap (beyond that the content column centers
-instead of producing over-wide buttons). Extra height loosens the
-gaps between groups by a bounded amount and gathers the rest above
-the status strip, so the groups flow from the top and the status,
-buttons and footer ride at the window's bottom edge at any height —
-the window is filled top-to-bottom, never a fixed island centered
-in empty space. On top of that, the
+instead of producing over-wide buttons). In portrait compositions,
+extra height is balanced inside the four cards after the gaps and the
+space above the status strip reach a small limit, rather than becoming
+a large empty band. The status, buttons and footer stay near the bottom.
+On top of that, the
 window size drives the presentation itself (Settings → "Scale and
 rearrange with window size", on by default): the interface fits
 itself to the window **continuously**. The decision is made in
@@ -139,13 +142,11 @@ neutral points — the live point size times the total zoom already
 applied, i.e. the physical size at 100 % zoom — which is invariant
 under the very zoom changes it drives, so feedback is mathematically
 impossible. That neutral size is fitted uniformly against the
-active design canvas (560x456 for the classic stack, 400x600 for
-the tall/portrait stack, and 904x456 for the wide layout): the
-smaller of the width and height ratios is the fit factor, so the
-dialog scales proportionally without stretching or clipping. The
-limiting axis fills approximately unless the maximum zoom has been reached.
-The result (divided by your own Window scale percentage and capped so
-the total never exceeds 280 %) is rounded down to a whole percent.
+active design canvas (560x456 for classic, 400x600 for portrait,
+280x700 for narrow portrait, 220x740 for slender portrait, and
+904x456 for wide): the smaller of the width and height ratios is the
+fit factor. The result accounts for any legacy saved scale, is capped
+at 280 % total zoom, and is rounded down to a whole percent.
 A growing fit is adopted after the size has held still for a few
 frames and the applied zoom **eases** to it over ~180 ms (cubic
 ease-out); a shrinking fit is requested without growth easing and takes
@@ -153,11 +154,16 @@ effect at egui's next frame boundary, so it does not require a restart. A small 
 the fit back and forth. The easing is presentation-only — the fit's
 neutral-point measure uses the *applied* zoom, so it stays exact at
 every intermediate value, and the landing always sets the exact fit
-factor. Tall windows reflow the interval fields into two rows, stack
-options and repeat, and give the footer reminder its own row; this
-lets the controls grow when only the height is extended. Panoramic
-windows use the wide three-across layout. Both compositions use
-arrive-and-hold hysteresis so they do not flicker at a boundary.
+factor. Tall windows reflow the interval fields, stack the middle
+cards and give the footer reminder its own row; narrower compositions
+rearrange controls further so they can grow as height is added.
+Panoramic windows use the wide three-across layout. Shape changes use
+arrive-and-hold hysteresis to avoid flicker. Settings, Hotkey, Record &
+Playback and Updates temporarily use a fitting zoom if the dashboard's
+zoom would make them too wide, then restore it when closed without
+changing the physical window size. These secondary windows scroll vertically
+when unusually long notices need extra space. Long status and update labels
+are ellipsized as needed, with full text available on hover.
 A fresh install on a monitor
 larger than the 1920x1080 reference opens once at a proportionally
 larger size (so 1440p first runs are not comparatively tiny); an
@@ -189,16 +195,11 @@ accent color clears a WCAG 4.5:1 contrast ratio against its background:
   the contemporary dark look; shares the dark themes' layered depth
   (elevated cards, sunken fields, status well).
 
-**Window scale** — 75 / 100 / 125 / 150 / 175 / 200 %. Changing the
-percentage first re-derives the window fit from the unchanged neutral
-window size, so the new percentage never multiplies a stale fit. One
-frame later, once egui reports the new total zoom as applied, the app
-re-declares the fit-compensated minimum (560x456 divided by the
-displayed auto-fit; egui-winit converts points to physical pixels with
-the total zoom, leaving a physical floor of 560x456 at the chosen
-percentage) and enlarges the window only if the new zoom left it below
-that floor. A window you dragged larger is never forced back down by
-a scale change, and no control is ever cut off.
+**Automatic adaptation** — on by default; turn it off to keep the
+classic layout without window-driven scaling. The manual Window scale
+percentage picker has been removed. Existing `ui_scale` values are still
+read and preserved so upgrading does not unexpectedly change an older
+installation's size or appearance.
 
 Legacy settings files from the dark-mode-only build are still honored:
 `dark_mode=true` loads as the Dark theme, `dark_mode=false` as Classic, and
@@ -304,8 +305,8 @@ unfocused. A generated crosshair icon is set on the window (title bar,
 taskbar and Alt-Tab) without shipping any binary asset.
 
 There is no diagnostics surface: every clicking control lives on the one
-main screen, and the Settings window carries only the theme picker, the
-window-scale picker and **Reset all settings to factory defaults**; it
+main screen, and the Settings window carries the theme picker, automatic
+adaptation toggle and **Reset all settings to factory defaults**; it
 also reports a settings-save failure if one occurs.
 
 Settings persist automatically to
@@ -406,8 +407,8 @@ a previous session is never reused.
    "Session complete — 25 clicks delivered." or "Factory defaults
    restored." are visibly painted.
 8. Close and reopen the app: every setting (interval, offset, button, type,
-   repeat, position, hotkey, theme, window scale and the window size from
-   step 17) is restored from
+   repeat, position, hotkey, theme, automatic adaptation and the window size
+   from step 17) is restored from
    `%APPDATA%`.
 9. Open Settings… and press **Reset all settings to factory defaults**:
    every control returns to its default (100 ms, Left, Single, repeat
@@ -424,11 +425,9 @@ a previous session is never reused.
     "Stopping…". While running, the status dot pulses gently; hovering
     any enabled button lifts it slightly with a soft shadow; pressing it
     sits it back down.
-13. Still in Settings…, set Window scale to 150 % with the window at its
-    smallest size: the window grows and every control stays fully
-    visible. Drag the window generously larger, then switch the scale
-    between 100 % and 150 %: the scale change must never shrink the
-    window back down; both scale choices survive a restart.
+13. In Settings…, confirm there is no Window scale percentage picker.
+    Turn automatic adaptation off and resize: the classic layout remains.
+    Turn it back on and resize again: the controls reflow and scale.
 14. Close the window: the worker is signaled, joined and its event handle
     closed cleanly.
 15. The title bar and taskbar read "MacroClicker" in every theme.
@@ -441,8 +440,8 @@ a previous session is never reused.
     delivered."); "Play until stopped" loops until stopped.
 17. Resizing: drag each edge in and out, then a corner toward the middle
     and back out: the window follows with the OS resize cursors and
-    stops at the classic 560x456 footprint scaled by your own UI
-    percentage — it must not go smaller, and every control stays whole
+    stops at the classic 560x456 footprint (adjusted for Windows DPI and
+    any legacy saved scale) — it must not go smaller, and every control stays whole
     at the limit. Grow the window in any direction and let go: just
     after the drag ends, the whole interface rescales once to fit the
     new size, **easing** smoothly onto the new scale in a fraction of
@@ -450,17 +449,19 @@ a previous session is never reused.
     physically larger, proportions unchanged); growth must not rescale
     repeatedly while you are still dragging, and the physical window
     size itself must not jump. Then, without reopening the app, drag
-    the large window straight back down — including from a maximized or
-    200 %-scale window: the edge must keep following the pointer, the
+    the large window straight back down — including from a maximized
+    window: the edge must keep following the pointer, the
     interface must fit down during the inward drag, and it must stop
     only at the same classic footprint, never stranded at the large
     size. Pull it panoramic:
     the three middle groups sit three-across with one row of four
-    action buttons. Pull it tall without making it wider: interval fields
-    rearrange into two rows, options and repeat stack, and the controls
-    grow rather than remaining a small dialog in empty space. Drag back
-    down and across both shape boundaries: the controls should settle into
-    a fitting layout without flicker or trapping the window at a large minimum. Snap
+    action buttons. Pull it tall without making it wider, including roughly
+    556x1388 pixels if the display allows: the controls should become
+    noticeably larger, with no huge gaps between cards or above the footer.
+    At that tall size, open Settings, Hotkey, Record & Playback and Updates:
+    each must fit and work, and closing it must restore the dashboard zoom
+    without resizing the window. Drag back down across the shape boundaries:
+    controls should fit without flicker or trapping the window at a large minimum. Snap
     it to half of a 1440p screen and maximize it: in both cases the
     interface fills the window at a large, readable scale — never a
     small dialog marooned in empty space. Double-click the title
@@ -472,14 +473,19 @@ a previous session is never reused.
     unmaximized at the last normal dragged size. Finally delete the
     settings file and relaunch on the large monitor: the first-run
     window opens proportionally larger than the classic dialog; put
-    the settings file back and confirm the saved size wins again.
+    the settings file back and confirm the saved size wins again. If two
+    monitors have different Windows DPI settings, move the window between
+    them, then drag, snap and maximize on each; the minimum should follow
+    the current display and moving should not trigger an app-requested resize.
+    Check that an unusually long error can be scrolled to its bottom controls
+    and that an ellipsized status shows its full text on hover.
 18. Updates: with the machine online, open **Updates…** — a stale or
     missing result refreshes on open, and the status card must show
     **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**,
     and **Channel**, with the verdict naming the version GitHub reported.
-    After v1.5.1 is published, use a portable v1.5.0 EXE: its footer must
-    become **Update v1.5.1** without opening anything. To test the updater
-    included in v1.5.1 itself, a later release must first exist.
+    After v1.5.2 is published, use a portable v1.5.1 EXE: its footer must
+    become **Update v1.5.2** without opening anything. To test the updater
+    included in v1.5.2 itself, a later release must first exist.
     With no session running, press the footer update button: the Updates
     window must open on live progress, move through **Download → Verify →
     Install → Restart**, then close and reopen into the selected newer
@@ -492,9 +498,9 @@ a previous session is never reused.
     the running version was not changed, and keep the current build
     working. **Release notes** opens that version's GitHub page and
     **Copy download link** puts the exact asset URL on the clipboard.
-    For the source path, launch the v1.5.0
+    For the source path, launch the v1.5.1
     `target\release\macro_clicker.exe` from a clean `main` checkout
-    after v1.5.1 is published: **Installation** must say
+    after v1.5.2 is published: **Installation** must say
     **Source checkout build**, the stages must begin with **Source**,
     the checkout must land exactly on that release tag, and the app
     must reopen as the new version. Make a tracked local edit and
