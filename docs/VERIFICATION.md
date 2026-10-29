@@ -5,6 +5,85 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
+## Classic and Modern appearances: v1.6.0
+
+The source now offers Classic and Modern styles, each in Light and Dark,
+under **Settings → Appearance**. Existing `classic`, `dark`, `oled`,
+`matrix` and `aurora` keys retain their meanings; the three older extra
+looks remain selectable. Modern uses graphite/teal or light palettes,
+uppercase vector-icon captions, rounded inset inputs, a gradient Start
+button, state-specific Stop styling, ghost actions and the bundled static
+regular Outfit font. A non-modal backdrop dims the dashboard behind its
+Modern dialogs, which use unblurred drop shadows. Classic retains its
+existing presentation except for the new update indicator. The responsive
+compositions and window-sizing rules remain in use. The Updates facts grid
+measures its other columns in the active font before truncating exceptionally
+long version labels. A red, white-rimmed **1** appears inside the footer update
+button only for a confirmed available update while no installation is in
+progress; it returns after cancellation or failure if the update is still
+confirmed. It does not initiate an installation by itself.
+
+Executed locally with Rust/Cargo 1.88.0:
+
+- Formatting and `git diff --check` passed. All **135 tests** in the 11
+  standalone integration suites passed when individually compiled with
+  `rustc --edition=2021 --test -D warnings`. They include appearance-key
+  mapping, legacy migration and settings round trips.
+- **68 integrated tests** passed using the actual application, click engine
+  and egui 0.27.2 with an eframe trait stub and Linux Win32/input/timing
+  shims. They comprise 59 app tests, four engine tests and five updater
+  fault tests (the latter are also counted in the standalone suites). The
+  dashboard geometry matrix covers 12 compositions, seven appearances,
+  four pixel densities and two hotkeys. Additional tests exercise all four
+  current appearances at compact, tall and wide sizes; settings selection,
+  save/reload and older themes; focus and egui accessibility events;
+  status, errors and long-version hover text; and controls in all four
+  secondary dialogs. New actual-egui regressions check vector headings and
+  card hover, both gradient ends and pointer states, active/disabled Stop,
+  ghost hover, centered numeric editing and its focus outline, the bundled
+  license's offline entry/scroll/close controls, and dialog backdrop/shadow
+  paint order and interactive controls. A 384-case
+  Updates-dialog sweep checked horizontal bounds across four current
+  appearances, four pixel densities, four installation kinds, two versions
+  and three asset-size states. Long content may scroll vertically. Badge
+  tests cover verdicts, checking, installation, cancellation and failure;
+  five layouts, all seven appearances and four pixel densities; overlap,
+  badge clicks, long-version hover and egui accessibility labels. A focused
+  button also responds to Enter, and the direct-update path is tested with a
+  deliberately missing destination so it cannot download or replace files.
+- A pre-existing egui disabled-widget focus trap was reproduced against the
+  v1.5.2 dashboard and fixed. Actual-egui tests now traverse the dashboard
+  with Tab and Shift+Tab in four appearances and two layouts, including Enter
+  on Updates. They also traverse the Record & Playback and Updates dialogs in
+  all seven appearances and Settings in each legacy appearance. Enabled
+  Record, Clear, Play and Stop playback actions are exercised with a long
+  first-click delay so the test sends no input. Disabled fields ignore input;
+  enabled offset, repeat and coordinate fields remain editable. Exact egui
+  paint-shape comparisons cover 448 disabled numeric-field cases and 84
+  disabled secondary-control cases across themes and pixel densities.
+- The Windows-GNU all-target source check and project Clippy with warnings
+  denied passed, including the binary's unit-test target and all 11 standalone
+  test targets. The check uses the real entry point, timing and Win32 code,
+  egui 0.27.2 and `windows-sys` 0.52.0; the Linux harness Clippy also passed.
+  Both use a stub eframe; the Windows target was type-checked, not linked or
+  run. Existing test initializers were rewritten without changing assertions
+  or input values to satisfy all-target Clippy. Local path dependencies
+  emitted their own warnings and were excluded with `--no-deps`.
+- Software-rasterized egui output was inspected for Modern Light and Dark,
+  tall and wide Modern dashboards, the Modern Settings and Updates windows,
+  and the Classic dashboard. The badge was additionally inspected in Modern
+  Light/Dark, Classic Light and a slender layout, and a no-update Modern
+  dashboard was checked. These are not native Windows or GPU screenshots.
+  Contrast tests check configured text, status and selection colors, samples
+  along the Start gradient, the Stop states and white badge text on red
+  (approximately 6.33:1); they do not establish application-wide conformance.
+
+These local tests do not establish native Windows interaction, platform
+screen-reader integration, mixed-DPI/Snap feel, actual input injection, or
+update/relaunch behavior. Those still need hands-on checking on Windows; the
+shims and egui accessibility events cannot establish them. The older v1.5.2
+executable does not contain the appearance, notification or focus changes.
+
 ## Very tall window correction and scale-picker removal: v1.5.2
 
 A 556x1388 screenshot from the published v1.5.1 showed that the 400x600

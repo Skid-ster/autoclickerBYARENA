@@ -1,12 +1,11 @@
 # MacroClicker (Rust / eframe egui / windows-sys)
 
-**MacroClicker** — a Windows x64 auto-clicker written in stable Rust with an
-egui interface that reproduces the authentic classic OP Auto Clicker 4.x
-Win32 dialog — a naturally resizable light-gray window (the classic size
-is the enforced minimum) with native-style group boxes and push
-buttons, with dashboard controls visible without scrolling at supported window sizes. It is backed by a
-dedicated QPC spin-scheduled worker thread, uniform/Gaussian timing jitter,
-global `SendInput` injection and background HWND message delivery.
+**MacroClicker** is a Windows x64 auto-clicker written in stable Rust and
+egui. The familiar clicker controls are available in **Classic** and
+**Modern** styles, each with **Light** and **Dark** modes. The dashboard
+remains resizable and non-scrolling at supported sizes. It is backed by a
+dedicated QPC spin-scheduled worker, uniform/Gaussian timing jitter, global
+`SendInput` injection and background HWND message delivery.
 
 ## Requirements
 
@@ -40,7 +39,7 @@ cargo run --release
 cargo test --release
 ```
 
-Eleven integration test binaries run platform-independent logic (133 test
+Eleven integration test binaries run platform-independent logic (135 test
 cases, including the self-update module's fault-injection cases). Windows
 also runs the dashboard and click-worker unit tests:
 
@@ -66,12 +65,12 @@ also runs the dashboard and click-worker unit tests:
   firing a burst of instant make-up clicks, strictly monotonic deadlines,
   saturating arithmetic at the extremes and the slack-boundary behavior.
 - `hotkey_tests` — supported virtual-key ranges, F8/Esc reservation, display
-  names, the default F6/Classic-theme/100 %/classic-size preferences, theme
-  key/label stability and the window-scale and window-size sanitizers.
+  names, the default F6/Classic-theme/100 %/classic-size preferences,
+  style/mode mapping, theme key stability and window-size sanitizers.
 - `settings_tests` — full serialization round trip, tolerance of unknown
   keys, sections and comments, per-field recovery from malformed values,
-  round trips for all five themes, fallback to the default theme for
-  retired theme keys, legacy `dark_mode` migration precedence,
+  round trips for all current and previous themes, fallback to the default
+  theme for retired keys, legacy `dark_mode` migration precedence,
   `ui_scale` clamping and window-size round trip, clamping to
   [560x456, 4x that], per-dimension garbage/non-finite tolerance, and
   complete-file replacement and failed-write recovery.
@@ -173,27 +172,29 @@ in fit-independent points, so the same physical window comes back
 on every launch whatever fit factor is active. The size you leave the window at is saved
 to the settings file and restored on the next launch (maximized state
 is never saved as a raw size: restoring comes back at your last normal
-size). The **Settings…** button in the bottom-right corner opens a
-Settings window with two persisted choices:
+size). The bottom-right **Settings…** button opens the appearance and
+automatic adaptation controls.
 
-**Theme** — five complete themes, each tuned so every text, status and
-accent color clears a WCAG 4.5:1 contrast ratio against its background:
+**Appearance** — choose a **Style** and a **Mode** independently:
 
-- **Classic light (default)** — `#F0F0F0` face with the groups as white
-  elevated cards and a white status plate (exactly the Updates window's
-  surfaces), white numeric fields and combo boxes (white in every state —
-  idle, hovered, pressed, open and disabled — with dark, readable text and
-  light dropdown lists), flat light push buttons with the accent Start.
-- **Dark** — the same dialog in Windows 11 dark-dialog colors: `#202020`
-  face, group boxes as `#282828` elevated cards with a soft shadow and a
-  rim-lit top edge, `#1E1E1E` sunken fields with light text, a recessed
-  `#181818` status readout, matching dropdowns, buttons and group
-  borders. The other dark themes share the same layered depth system.
-- **Midnight OLED** — a pure-black variant of Dark for OLED screens.
-- **Terminal green** — green-on-black phosphor-terminal colors.
-- **Aurora modern** — deep indigo-slate surfaces with a violet accent,
-  the contemporary dark look; shares the dark themes' layered depth
-  (elevated cards, sunken fields, status well).
+- **Classic + Light** (default) keeps the light-gray dialog, white cards,
+  familiar border-breaking captions and original controls.
+- **Classic + Dark** keeps the existing Windows-style dark appearance.
+- **Modern + Light** uses cool light surfaces, teal-accented vector card
+  headings, inset rounded inputs and the bundled Outfit typeface.
+- **Modern + Dark** uses the same design with graphite surfaces and a
+  brighter teal accent. Both include a cyan-to-blue Start action, distinct
+  active and disabled Stop states, ghost secondary actions and dimmed
+  backgrounds behind dialogs.
+
+The choice applies to the dashboard and dialogs and is saved across restarts.
+It retains all click settings and the current responsive composition.
+The previous **Midnight OLED**, **Terminal green** and **Aurora modern**
+looks remain under **Previous themes**. An existing saved theme stays in
+place on upgrade; while a previous theme is selected, choose Classic or
+Modern before changing its mode. The bundled font and its SIL Open Font
+License are documented in [`assets/fonts`](assets/fonts/README.md); the full
+license is also readable offline from Modern Settings.
 
 **Automatic adaptation** — on by default; turn it off to keep the
 classic layout without window-driven scaling. The manual Window scale
@@ -202,14 +203,14 @@ read and preserved so upgrading does not unexpectedly change an older
 installation's size or appearance.
 
 Legacy settings files from the dark-mode-only build are still honored:
-`dark_mode=true` loads as the Dark theme, `dark_mode=false` as Classic, and
-a modern `theme=` key always wins over the legacy boolean.
+`dark_mode=true` loads Classic Dark, `dark_mode=false` loads Classic Light,
+and a recognized `theme=` key always wins over the legacy boolean. The
+new keys are `modern_light` and `modern_dark`; `classic`, `dark`, `oled`,
+`matrix` and `aurora` retain their existing meanings.
 
-All five themes share every layout metric at every window size, so
-switching never moves a control.
-Each group card's caption rides its top border on a two-surface gap
-(panel color above, card color below), led by a short accent tick,
-and at the classic size the window hugs the content exactly as before.
+Styles share the same responsive compositions and controls, though font
+metrics and card padding differ. Switching appearance can move controls
+slightly; it does not change the saved window dimensions or click settings.
 
 One honest platform note: the native OS title bar belongs to Windows, not
 to the app — it follows the system app mode (black when Windows 11 is in
@@ -252,8 +253,12 @@ bar agree.
   assigned hotkey, e.g. "F6 start/stop · F8 emergency stop") and the
   **Updates…** and **Settings…** buttons on the right. The footer
   button mirrors the checker in place (**Checking…**, **Update
-  vX.Y.Z**, or **Updating…**). When a verified update is ready and
-  no click or macro session is active, pressing the footer button
+  vX.Y.Z**, or **Updating…**). A small red **1** marks a confirmed
+  available update, and is absent during checks and installation or
+  when no update is available. Cancelling or failing an installation
+  restores the indicator if the update is still confirmed. When a
+  verified update is ready and no click or macro session is active,
+  pressing the footer button
   starts the complete update directly and opens the Updates window
   for progress and cancellation. The Updates window is a centered
   status card with a state glyph, a shape-coded stage path, and the
@@ -305,8 +310,8 @@ unfocused. A generated crosshair icon is set on the window (title bar,
 taskbar and Alt-Tab) without shipping any binary asset.
 
 There is no diagnostics surface: every clicking control lives on the one
-main screen, and the Settings window carries the theme picker, automatic
-adaptation toggle and **Reset all settings to factory defaults**; it
+main screen, and the Settings window carries the appearance selectors,
+automatic adaptation toggle and **Reset all settings to factory defaults**; it
 also reports a settings-save failure if one occurs.
 
 Settings persist automatically to
@@ -416,9 +421,11 @@ a previous session is never reused.
    status strip confirms "Factory defaults restored."
 10. Press F8 mid-run: the session stops within one interval, the status turns
     red and no mouse button remains stuck.
-11. Open Settings…, pick each of the five themes in turn: every window
-    restyles in place and nothing moves; dark themes keep readable text in
-    every field, button and dropdown state.
+11. Open Settings… → Appearance. Try Classic Light, Classic Dark, Modern
+    Light and Modern Dark, including each dialog and a restart. Confirm the
+    selected appearance persists, controls stay usable at compact, tall and
+    wide sizes, and saved OLED/Terminal/Aurora choices remain available under
+    Previous themes without being changed automatically.
 12. Start a "Repeat until stopped" session, then press Stop: the status
     shows "Stopping…" for at most a moment and then settles on
     "Stopped — N clicks delivered." — it must never remain stuck on
@@ -478,14 +485,24 @@ a previous session is never reused.
     them, then drag, snap and maximize on each; the minimum should follow
     the current display and moving should not trigger an app-requested resize.
     Check that an unusually long error can be scrolled to its bottom controls
-    and that an ellipsized status shows its full text on hover.
+    and that an ellipsized status shows its full text on hover. With Random
+    offset, finite repeat and fixed coordinates disabled, Tab through the
+    dashboard to Updates and Settings, then Shift+Tab back; disabled fields
+    must not trap focus. Repeat through the disabled controls in Record &
+    Playback, the Updates window and the previous-theme Settings view, and
+    confirm Enter activates the focused enabled control.
 18. Updates: with the machine online, open **Updates…** — a stale or
     missing result refreshes on open, and the status card must show
     **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**,
     and **Channel**, with the verdict naming the version GitHub reported.
-    After v1.5.2 is published, use a portable v1.5.1 EXE: its footer must
-    become **Update v1.5.2** without opening anything. To test the updater
-    included in v1.5.2 itself, a later release must first exist.
+    With v1.6.0 published, a portable v1.5.2 EXE should show **Update
+    v1.6.0** without opening anything. After updating, the v1.6.0 footer
+    should show no red notification while up to date. To check the new red
+    **1**, use a controlled newer-release fixture or wait for a later
+    release: it should appear only for a confirmed available update, and
+    clicking it must behave like clicking the rest of the button.
+    It disappears during installation and returns after cancellation or
+    failure if the newer version remains confirmed.
     With no session running, press the footer update button: the Updates
     window must open on live progress, move through **Download → Verify →
     Install → Restart**, then close and reopen into the selected newer
@@ -498,9 +515,9 @@ a previous session is never reused.
     the running version was not changed, and keep the current build
     working. **Release notes** opens that version's GitHub page and
     **Copy download link** puts the exact asset URL on the clipboard.
-    For the source path, launch the v1.5.1
+    For the source path, launch a v1.5.2
     `target\release\macro_clicker.exe` from a clean `main` checkout
-    after v1.5.2 is published: **Installation** must say
+    after v1.6.0 is published: **Installation** must say
     **Source checkout build**, the stages must begin with **Source**,
     the checkout must land exactly on that release tag, and the app
     must reopen as the new version. Make a tracked local edit and

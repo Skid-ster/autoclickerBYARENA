@@ -28,33 +28,86 @@ const VK_A: i32 = 0x41;
 const VK_Z: i32 = 0x5A;
 const VK_SPACE: i32 = 0x20;
 
-/// Visual theme applied to every window. Themes change colors only —
-/// never layout metrics or label strings — so switching can never move
-/// or hide a control.
+/// The two current visual styles. Each can be used in light or dark mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppearanceStyle {
+    Classic,
+    Modern,
+}
+
+/// Color mode is independent of the selected visual style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppearanceMode {
+    Light,
+    Dark,
+}
+
+/// Persisted appearance applied to every window. The first two keys retain
+/// their historic meaning; older extra themes remain available and loadable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AppTheme {
-    /// The classic light OP Auto Clicker 4.x dialog (default).
+    /// The familiar light dialog (also the default for existing settings).
     #[default]
     Classic,
-    /// Windows 11 dark-dialog colors with surface-elevation tiers.
+    /// The familiar dark dialog, persisted as `dark` by older versions.
     Dark,
-    /// Pure-black dark theme for OLED screens.
+    /// Modern light cards and controls.
+    ModernLight,
+    /// Modern dark cards and controls.
+    ModernDark,
+    /// Previous pure-black theme.
     Oled,
-    /// Green-on-black terminal look.
+    /// Previous green-on-black theme.
     Matrix,
-    /// Deep indigo modern look with a violet accent.
+    /// Previous indigo theme.
     Aurora,
 }
 
 impl AppTheme {
-    pub fn all() -> [AppTheme; 5] {
+    pub fn all() -> [AppTheme; 7] {
         [
             AppTheme::Classic,
             AppTheme::Dark,
+            AppTheme::ModernLight,
+            AppTheme::ModernDark,
             AppTheme::Oled,
             AppTheme::Matrix,
             AppTheme::Aurora,
         ]
+    }
+
+    pub fn previous() -> [AppTheme; 3] {
+        [AppTheme::Oled, AppTheme::Matrix, AppTheme::Aurora]
+    }
+
+    /// Previous themes have no current style, so selecting a new style is
+    /// an explicit choice rather than an implicit migration on load.
+    pub fn style(self) -> Option<AppearanceStyle> {
+        match self {
+            AppTheme::Classic | AppTheme::Dark => Some(AppearanceStyle::Classic),
+            AppTheme::ModernLight | AppTheme::ModernDark => Some(AppearanceStyle::Modern),
+            AppTheme::Oled | AppTheme::Matrix | AppTheme::Aurora => None,
+        }
+    }
+
+    pub fn mode(self) -> AppearanceMode {
+        match self {
+            AppTheme::Classic | AppTheme::ModernLight => AppearanceMode::Light,
+            AppTheme::Dark
+            | AppTheme::ModernDark
+            | AppTheme::Oled
+            | AppTheme::Matrix
+            | AppTheme::Aurora => AppearanceMode::Dark,
+        }
+    }
+
+    pub fn from_appearance(style: AppearanceStyle, mode: AppearanceMode) -> AppTheme {
+        match (style, mode) {
+            (AppearanceStyle::Classic, AppearanceMode::Light) => AppTheme::Classic,
+            (AppearanceStyle::Classic, AppearanceMode::Dark) => AppTheme::Dark,
+            (AppearanceStyle::Modern, AppearanceMode::Light) => AppTheme::ModernLight,
+            (AppearanceStyle::Modern, AppearanceMode::Dark) => AppTheme::ModernDark,
+        }
     }
 
     /// Stable key used in the settings file.
@@ -62,6 +115,8 @@ impl AppTheme {
         match self {
             AppTheme::Classic => "classic",
             AppTheme::Dark => "dark",
+            AppTheme::ModernLight => "modern_light",
+            AppTheme::ModernDark => "modern_dark",
             AppTheme::Oled => "oled",
             AppTheme::Matrix => "matrix",
             AppTheme::Aurora => "aurora",
@@ -75,6 +130,8 @@ impl AppTheme {
         match value.trim() {
             "classic" => Some(AppTheme::Classic),
             "dark" => Some(AppTheme::Dark),
+            "modern_light" => Some(AppTheme::ModernLight),
+            "modern_dark" => Some(AppTheme::ModernDark),
             "oled" => Some(AppTheme::Oled),
             "matrix" => Some(AppTheme::Matrix),
             "aurora" => Some(AppTheme::Aurora),
@@ -86,7 +143,9 @@ impl AppTheme {
     pub fn label(self) -> &'static str {
         match self {
             AppTheme::Classic => "Classic light",
-            AppTheme::Dark => "Dark",
+            AppTheme::Dark => "Classic dark",
+            AppTheme::ModernLight => "Modern light",
+            AppTheme::ModernDark => "Modern dark",
             AppTheme::Oled => "Midnight OLED",
             AppTheme::Matrix => "Terminal green",
             AppTheme::Aurora => "Aurora modern",

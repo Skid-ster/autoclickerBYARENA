@@ -7,6 +7,35 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-29
+
+### Added
+
+- Independent Classic / Modern style and Light / Dark mode controls in
+  Settings. Modern includes graphite and light surfaces, custom vector
+  section icons, rounded inset inputs and bundled Outfit typography.
+- A cyan-to-blue Start action, state-specific Stop styling, ghost secondary
+  actions, and dimmed dialog backgrounds with clean drop shadows in Modern.
+  The bundled Outfit license is viewable offline in Modern Settings.
+- Keyboard-focus indicators and accessible labels for the custom dashboard
+  action buttons.
+- A small red **1** on the footer Updates button when an update is confirmed;
+  it is hidden when no update is known or installation is already in progress.
+
+### Changed
+
+- Preserve existing Classic/Dark and OLED/Terminal/Aurora preferences; the
+  previous extra themes remain selectable without silently migrating them.
+- Size the update facts grid using the active font so long version labels
+  stay inside narrow dialogs in both styles.
+
+### Fixed
+
+- Keep the full repeat count and fixed coordinates inside slender and wide
+  Modern cards, and show the disabled Start action's explanation on hover.
+- Let Tab and Shift+Tab move past disabled controls in the dashboard and
+  affected secondary windows without changing their appearance.
+
 ## [1.5.2] - 2026-10-29
 
 ### Changed
@@ -144,7 +173,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   precision QPC click engine, Record & Playback, global hotkeys, themes,
   resizable/scaling window, persistent settings, and Windows CI releases.
 
-[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.4.1...v1.5.0

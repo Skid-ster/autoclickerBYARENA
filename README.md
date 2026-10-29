@@ -6,20 +6,13 @@
 [![Rust](https://img.shields.io/badge/Rust-stable%20%7C%20edition%202021-orange)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-**MacroClicker** is a Windows x64 auto-clicker written in stable Rust with an
-egui interface that keeps the authentic classic OP Auto Clicker 4.x
-dialog layout in a modern card surface (the visual language of its
-Updates window: rounded elevated cards, an accent primary **Start**,
-soft shadows) — a naturally resizable window whose classic
-560x456 size is the enforced minimum (with five
-persisted themes, automatic scaling and a remembered window size)
-with group cards, numeric fields and push buttons, nothing
-scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
-row, mouse button and click-type pickers, repeat rules, cursor position
-with on-screen point picking, and the 4.1 bottom-row **Record & Playback** —
-here a real click-sequence recorder that replays through the precision
-engine. A dedicated worker thread drives a QPC spin schedule while the UI
-stays fully responsive.
+**MacroClicker** is a Windows x64 auto-clicker written in stable Rust and
+egui. Choose the familiar **Classic** interface or the redesigned **Modern**
+interface, each in **Light** or **Dark**. The resizable dashboard keeps the
+OP Auto Clicker 4.x controls visible: click interval and random offset,
+mouse and repeat options, cursor picking, and real **Record & Playback**.
+A dedicated worker drives a precision QPC schedule while the UI stays
+responsive; appearance and window size are remembered.
 
 ## MacroClicker vs OP Auto Clicker 4.1
 
@@ -36,7 +29,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
 | Dedicated panic key (F8) always reserved | No | Yes |
 | Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
-| Five themes + automatic window scaling | No | Yes |
+| Classic and Modern, each Light or Dark + automatic scaling | No | Yes |
 | Built-in updates against GitHub releases | No | Yes — one click downloads, SHA-256-verifies, installs and restarts |
 | Open source with Windows CI and automated tests | No | Yes |
 
@@ -58,10 +51,12 @@ tests, release build, and embedded version/GUI-subsystem verification).
 Releases also include `SHA256SUMS.txt` for offline verification. CI refuses a version tag
 unless the tag, Cargo package version, and EXE FileVersion agree.
 
-MacroClicker updates itself after one explicit action. The footer
-**Update vX.Y.Z** button starts the complete sequence when no click or
-macro session is active: download, exact size and SHA-256 verification,
-rollback-safe replacement, and restart. The Updates window shows the
+MacroClicker updates itself after one explicit action. When an update is
+confirmed, the footer **Update vX.Y.Z** button shows a small red **1**;
+it is absent when no update is confirmed or an installation is in progress.
+The button starts the complete sequence when no click or macro session is
+active: download, exact size and SHA-256 verification, rollback-safe
+replacement, and restart. The Updates window shows the
 installed and latest versions, installation type, download size,
 progress, and release notes. A recognized source checkout is handled
 explicitly: its clean `main` branch is fast-forwarded to the exact
@@ -95,10 +90,8 @@ the update before the program file is replaced.
 
 ## Features
 
-- **Authentic classic OP Auto Clicker 4.x screen, modern surface** — the
-  classic dialog's exact layout as rounded elevated cards with an
-  accent-filled Start button (white numeric fields, flat buttons), in a
-  naturally resizable window with every control visible and no scrolling:
+- **Familiar controls, responsive layouts** — a naturally resizable window
+  with the classic clicker controls visible and no dashboard scrolling:
   drag any edge or corner, maximize, or snap with Win+arrow / Snap
   Layouts, exactly like any normal Windows app. The classic 560x456 size
   is the OS-enforced minimum, so the window can never shrink far enough
@@ -128,12 +121,10 @@ the update before the program file is replaced.
   Click interval with the 4.1 Random offset row, side-by-side Click options
   and Click repeat, Cursor position with a real Pick location button
   (click the button, then click anywhere on screen; Esc cancels), and the
-  4.1 button rows — Start/Stop, then Hotkey setting/Record & Playback.
-  Start refuses invalid configurations
-  and Stop stays greyed until a session is running. The group-box titles
-  sit on the face color and break
-  the top border like the native control, and every numeric field and
-  dropdown keeps readable contrast in all states.
+  4.1 button rows — Start/Stop, then hotkey settings and Record & Playback.
+  Start refuses invalid configurations and Stop stays disabled until a
+  session is running. Classic group titles break the border like the familiar
+  dialog; Modern uses inset headings and its own typeface and controls.
 - **Record & Playback that actually replays** — press Record and use the
   mouse anywhere on screen: every left/right/middle click is captured with
   its exact position and the measured gap since the previous click (clicks
@@ -143,23 +134,18 @@ the update before the program file is replaced.
   exact buttons, positions and delays, drift-free, loop N times or until
   stopped, and F8 panic-stops instantly mid-playback. Up to 2048 steps
   per macro.
-- **Five themes + automatic scaling** — **Settings…** offers Classic
-  light, Dark, Midnight OLED, Terminal green and Aurora, each tuned to a
-  WCAG 4.5:1 contrast floor for text, status and accent colors. The
-  window adapts automatically when resized; the former manual percentage
-  picker is gone. Automatic adaptation can still be switched off, and old
-  saved scale values remain compatible. Themes and preferences are
-  remembered across restarts, and all themes share the same layout,
-  so switching never moves a control. Every theme renders the groups as
-  elevated cards (Classic's are white on the light-gray dialog, like the
-  Updates window's plate) over their sunken fields and status plate, and
-  the status dot gives one short pulse
-  whenever the app changes state, so Start/Stop/pick transitions are
-  visible without reading the text.
-  (The native OS title bar follows the Windows app mode — black when
-  Windows is in dark app mode; eframe/egui 0.27 cannot recolor native
-  window chrome, so picking a dark-family theme is the way to make the
-  window match a black title bar.)
+- **Appearance + automatic scaling** — open **Settings… → Appearance**
+  and choose **Classic** or **Modern**, then **Light** or **Dark**. Modern
+  has graphite or light surfaces, teal-accented vector headings, rounded
+  cards and controls, and Outfit typography. The Start action uses a
+  cyan-to-blue gradient; secondary actions remain visually quiet.
+  Classic retains the familiar light and dark looks. An existing theme is
+  never changed on upgrade: Midnight OLED, Terminal green and Aurora remain
+  available under **Previous themes**. Classic Light is the fresh default.
+  The choice is saved with your settings. Automatic adaptation can still be
+  switched off, and saved scale values from older releases are preserved.
+  The native Windows title bar follows Windows' app mode, independently of
+  the in-app appearance.
 - Left, right and middle mouse buttons; single, double and triple click
   types (multi-clicks use QPC-spun gaps, never sleeps).
 - Hours/Mins/Secs/Milliseconds interval fields plus 4.1's uniform
@@ -217,4 +203,7 @@ for the full manual checklist and
 
 ## License
 
-MacroClicker is open source under the [MIT License](LICENSE).
+MacroClicker is open source under the [MIT License](LICENSE). The bundled
+Outfit font is separately licensed under the SIL Open Font License;
+see [font attribution and license](autoclicker/assets/fonts/README.md), or
+open its full license offline from Modern Settings.
