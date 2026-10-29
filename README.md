@@ -139,11 +139,13 @@ the update before the program file is replaced.
   clicking a different position if a recorded point is no longer on a display.
 - **Appearance + automatic scaling** — open **Settings… → Appearance**
   and choose **Classic** or **Modern**, then **Light** or **Dark**. Modern
-  has blue-ink or porcelain surfaces, teal-accented vector headings,
-  rounded cards and controls, and Outfit typography. A mint-to-blue Start
-  action and original vector action icons clarify the main controls; icons
-  give way to their labels when space is tight. Classic retains the familiar
-  light and dark looks. An existing theme is never changed on upgrade:
+  has midnight-slate or cool porcelain surfaces, softly layered cards,
+  teal-accented vector headings and Outfit typography with a distinct
+  medium-weight emphasis. Checkboxes and radio choices have different shapes
+  and clear selected and keyboard-focus states. A mint-to-blue Start action
+  and original vector action icons clarify the main controls; icons give way
+  to their labels when space is tight. Classic retains the familiar light and
+  dark looks. An existing theme is never changed on upgrade:
   Midnight OLED, Terminal green and Aurora remain
   available under **Previous themes**. Classic Light is the fresh default.
   The choice is saved with your settings. Automatic adaptation can still be

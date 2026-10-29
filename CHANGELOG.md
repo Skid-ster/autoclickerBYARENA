@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- Polished Modern Light and Dark with midnight-slate/cool-porcelain surfaces,
+  layered card headers, clearer type hierarchy using the bundled Outfit Medium
+  face, and a refined Start mark. Checkbox and radio choices now have distinct
+  silhouettes, selected states and visible keyboard focus. Modern also shows
+  `0.0 s` rather than negative zero for an empty recording. The approved
+  responsive layouts and Classic/previous appearances remain unchanged.
+
 ## [1.7.0] - 2026-10-29
 
 ### Changed

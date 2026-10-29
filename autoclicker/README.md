@@ -184,13 +184,15 @@ automatic adaptation controls.
 - **Classic + Light** (default) keeps the light-gray dialog, white cards,
   familiar border-breaking captions and original controls.
 - **Classic + Dark** keeps the existing Windows-style dark appearance.
-- **Modern + Light** uses porcelain surfaces, teal-accented vector card
-  headings, inset rounded inputs and the bundled Outfit typeface.
-- **Modern + Dark** uses the same design with layered blue-ink surfaces and
-  a brighter teal accent. Both include a mint-to-blue Start action, a neutral
-  disabled Stop, softly surfaced secondary actions and dimmed backgrounds
-  behind dialogs. Original vector action marks make the controls recognizable
-  at a glance and give way to their labels when space is limited.
+- **Modern + Light** uses cool porcelain surfaces, teal-accented vector
+  headings, inset rounded inputs and bundled Outfit typography.
+- **Modern + Dark** uses the same design with layered midnight-slate surfaces
+  and a brighter teal accent. Both have softly shaded header bands, fine
+  heading rules, regular and medium-weight type, a mint-to-blue Start action,
+  neutral disabled Stop, softly surfaced secondary actions and dimmed dialog
+  backgrounds. Radio choices and checkboxes use distinct shapes with clear
+  selected and focus states. Original vector action marks make controls
+  recognizable at a glance and give way to their labels when space is limited.
 
 The choice applies to the dashboard and dialogs and is saved across restarts.
 It retains all click settings and the current responsive composition.
@@ -442,8 +444,10 @@ a previous session is never reused.
     wide sizes, and saved OLED/Terminal/Aurora choices remain available under
     Previous themes without being changed automatically. In Modern, check
     the action icons and full labels, the neutral disabled Stop and the active
-    Stop state. Icons may disappear in a narrow layout, but labels must remain
-    readable; Classic retains its existing presentation.
+    Stop state. Check the square checkbox and circular radio selection marks,
+    their hover/press feedback and their Tab/Space focus behavior. Icons may
+    disappear in a narrow layout, but labels must remain readable; Classic
+    retains its existing presentation.
 12. Start a "Repeat until stopped" session, then press Stop: the status
     shows "Stopping…" for at most a moment and then settles on
     "Stopped — N clicks delivered." — it must never remain stuck on

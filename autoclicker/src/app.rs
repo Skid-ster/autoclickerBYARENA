@@ -138,52 +138,52 @@ static DARK_PALETTE: Palette = Palette {
     selection_bg: Color32::from_rgba_premultiplied(24, 48, 78, 150),
 };
 
-// Modern light: porcelain surfaces, ink text and a restrained teal accent.
+// Modern light: cool porcelain, deep ink and a restrained teal accent.
 static MODERN_LIGHT_PALETTE: Palette = Palette {
     dark: false,
     modern: true,
-    face: Color32::from_rgb(238, 243, 245),
-    button: Color32::from_rgb(247, 250, 251),
-    button_disabled: Color32::from_rgb(231, 239, 241),
-    button_border: Color32::from_rgb(111, 135, 144),
-    hover_fill: Color32::from_rgb(223, 238, 240),
-    pressed_fill: Color32::from_rgb(209, 233, 234),
-    input_bg: Color32::from_rgb(236, 243, 244),
-    input_disabled: Color32::from_rgb(231, 239, 241),
-    group_fill: Color32::WHITE,
-    well_fill: Color32::from_rgb(233, 241, 242),
-    group_border: Color32::from_rgb(193, 209, 214),
-    input_border: Color32::from_rgb(111, 135, 144),
-    text: Color32::from_rgb(19, 43, 54),
-    group_title: Color32::from_rgb(0, 105, 111),
-    text_dim: Color32::from_rgb(67, 94, 105),
-    text_disabled: Color32::from_rgb(80, 101, 111),
-    accent: Color32::from_rgb(0, 108, 112),
+    face: Color32::from_rgb(239, 242, 247),
+    button: Color32::from_rgb(247, 249, 252),
+    button_disabled: Color32::from_rgb(230, 237, 242),
+    button_border: Color32::from_rgb(96, 122, 138),
+    hover_fill: Color32::from_rgb(224, 237, 242),
+    pressed_fill: Color32::from_rgb(210, 229, 235),
+    input_bg: Color32::from_rgb(239, 244, 248),
+    input_disabled: Color32::from_rgb(230, 237, 242),
+    group_fill: Color32::from_rgb(255, 255, 255),
+    well_fill: Color32::from_rgb(234, 239, 245),
+    group_border: Color32::from_rgb(198, 211, 222),
+    input_border: Color32::from_rgb(96, 122, 138),
+    text: Color32::from_rgb(23, 41, 56),
+    group_title: Color32::from_rgb(0, 94, 105),
+    text_dim: Color32::from_rgb(58, 85, 100),
+    text_disabled: Color32::from_rgb(72, 97, 109),
+    accent: Color32::from_rgb(0, 100, 110),
     success: Color32::from_rgb(15, 105, 73),
     danger: Color32::from_rgb(175, 37, 55),
     warning: Color32::from_rgb(121, 75, 5),
-    chart_bg: Color32::from_rgb(236, 243, 244),
-    chart_grid: Color32::from_rgb(200, 215, 219),
+    chart_bg: Color32::from_rgb(239, 244, 248),
+    chart_grid: Color32::from_rgb(203, 216, 226),
     chart_bar_alt: Color32::from_rgba_premultiplied(12, 65, 78, 120),
     selection_bg: Color32::from_rgba_premultiplied(0, 18, 22, 40),
 };
 
-// Modern dark: layered blue-ink neutrals with a luminous teal accent.
+// Modern dark: layered midnight-slate surfaces with a luminous teal accent.
 static MODERN_DARK_PALETTE: Palette = Palette {
     dark: true,
     modern: true,
-    face: Color32::from_rgb(11, 18, 26),
-    button: Color32::from_rgb(25, 40, 50),
-    button_disabled: Color32::from_rgb(24, 35, 43),
-    button_border: Color32::from_rgb(97, 120, 135),
-    hover_fill: Color32::from_rgb(39, 60, 72),
-    pressed_fill: Color32::from_rgb(48, 78, 90),
-    input_bg: Color32::from_rgb(15, 27, 36),
-    input_disabled: Color32::from_rgb(24, 35, 43),
-    group_fill: Color32::from_rgb(21, 35, 43),
-    well_fill: Color32::from_rgb(13, 28, 34),
-    group_border: Color32::from_rgb(64, 84, 98),
-    input_border: Color32::from_rgb(112, 133, 149),
+    face: Color32::from_rgb(11, 16, 27),
+    button: Color32::from_rgb(27, 40, 55),
+    button_disabled: Color32::from_rgb(25, 37, 51),
+    button_border: Color32::from_rgb(106, 131, 148),
+    hover_fill: Color32::from_rgb(40, 58, 75),
+    pressed_fill: Color32::from_rgb(49, 73, 89),
+    input_bg: Color32::from_rgb(14, 24, 37),
+    input_disabled: Color32::from_rgb(25, 37, 51),
+    group_fill: Color32::from_rgb(21, 30, 44),
+    well_fill: Color32::from_rgb(13, 23, 34),
+    group_border: Color32::from_rgb(65, 82, 100),
+    input_border: Color32::from_rgb(106, 131, 148),
     text: Color32::from_rgb(237, 245, 246),
     group_title: Color32::from_rgb(168, 217, 213),
     text_dim: Color32::from_rgb(175, 192, 199),
@@ -192,8 +192,8 @@ static MODERN_DARK_PALETTE: Palette = Palette {
     success: Color32::from_rgb(128, 223, 179),
     danger: Color32::from_rgb(255, 148, 160),
     warning: Color32::from_rgb(243, 206, 121),
-    chart_bg: Color32::from_rgb(15, 27, 36),
-    chart_grid: Color32::from_rgb(48, 78, 90),
+    chart_bg: Color32::from_rgb(14, 24, 37),
+    chart_grid: Color32::from_rgb(49, 73, 89),
     chart_bar_alt: Color32::from_rgba_premultiplied(32, 98, 100, 170),
     selection_bg: Color32::from_rgba_premultiplied(12, 43, 48, 100),
 };
@@ -1094,9 +1094,23 @@ impl OpAutoClickerApp {
                         "../assets/fonts/Outfit-Regular.ttf"
                     )),
                 );
+                fonts.font_data.insert(
+                    "Outfit Medium".to_owned(),
+                    egui::FontData::from_static(include_bytes!(
+                        "../assets/fonts/Outfit-Medium.ttf"
+                    )),
+                );
                 if let Some(proportional) = fonts.families.get_mut(&egui::FontFamily::Proportional)
                 {
+                    // Both families keep egui's fallbacks for symbols that
+                    // Outfit does not contain. Only deliberate headings and
+                    // actions use Medium; body and numeric text stay Regular.
+                    let mut medium = proportional.clone();
+                    medium.insert(0, "Outfit Medium".to_owned());
                     proportional.insert(0, "Outfit".to_owned());
+                    fonts
+                        .families
+                        .insert(egui::FontFamily::Name("Outfit Medium".into()), medium);
                 }
             }
             ctx.set_fonts(fonts);
@@ -1199,6 +1213,18 @@ impl OpAutoClickerApp {
         };
         style.visuals.window_rounding = Rounding::same(if pal.modern { 12.0_f32 } else { 8.0_f32 });
         ctx.set_style(style);
+    }
+
+    /// Font changes take effect at the next egui frame. During the first
+    /// Modern frame, fall back to the regular family rather than asking
+    /// egui for a family that has not been installed yet.
+    fn modern_emphasis_font(ctx: &egui::Context, size: f32) -> FontId {
+        let family = egui::FontFamily::Name("Outfit Medium".into());
+        if ctx.fonts(|fonts| fonts.families().contains(&family)) {
+            FontId::new(size, family)
+        } else {
+            FontId::proportional(size)
+        }
     }
 
     // ----------------------------------------------------------- hotkey input
@@ -2030,11 +2056,29 @@ impl OpAutoClickerApp {
 
     // --------------------------------------------------------- classic widgets
 
+    /// Recede unit and field labels in Modern, so editable values and
+    /// choices lead the eye. Classic keeps its original text color.
+    fn supporting_text(pal: &Palette) -> Color32 {
+        if pal.modern {
+            pal.text_dim
+        } else {
+            pal.text
+        }
+    }
+
     fn modern_section_tile_color(pal: &Palette) -> Color32 {
         if pal.dark {
-            Color32::from_rgb(30, 61, 65)
+            Color32::from_rgb(30, 61, 69)
         } else {
-            Color32::from_rgb(222, 242, 240)
+            Color32::from_rgb(219, 239, 238)
+        }
+    }
+
+    fn modern_header_color(pal: &Palette) -> Color32 {
+        if pal.dark {
+            Color32::from_rgb(25, 39, 54)
+        } else {
+            Color32::from_rgb(246, 250, 252)
         }
     }
 
@@ -2120,6 +2164,10 @@ impl OpAutoClickerApp {
             None
         };
         let card_rounding = Rounding::same(if pal.modern { 11.0_f32 } else { 8.0_f32 });
+        // This placeholder is inside the frame but before its contents, so
+        // the Modern header wash sits under all controls and never changes
+        // layout, clipping or interaction order.
+        let mut header_slot = None;
         let response = Frame::none()
             .fill(pal.group_fill)
             .stroke(Stroke::new(1.0_f32, pal.group_border))
@@ -2131,6 +2179,9 @@ impl OpAutoClickerApp {
                 bottom: (if pal.modern { 4.0_f32 } else { 12.0_f32 }) + extra_vertical / 2.0_f32,
             })
             .show(ui, |ui| {
+                if pal.modern {
+                    header_slot = Some(ui.painter().add(egui::Shape::Noop));
+                }
                 let claim_width = ui.available_width();
                 ui.set_min_width(claim_width);
                 let value = add(ui);
@@ -2158,31 +2209,60 @@ impl OpAutoClickerApp {
                 (value, natural_height)
             });
         let rect = response.response.rect;
+        if let Some(slot) = header_slot {
+            let header = egui::Rect::from_min_max(
+                rect.min + Vec2::splat(1.0_f32),
+                egui::pos2(
+                    rect.right() - 1.0_f32,
+                    (rect.top() + 23.0_f32).min(rect.bottom()),
+                ),
+            );
+            let wash = Self::modern_header_color(pal);
+            ui.painter().set(
+                slot,
+                egui::Shape::rect_filled(
+                    header,
+                    Rounding {
+                        nw: 10.0_f32,
+                        ne: 10.0_f32,
+                        sw: 0.0_f32,
+                        se: 0.0_f32,
+                    },
+                    wash,
+                ),
+            );
+        }
         if let Some(slot) = shadow_slot {
             // The shadow peeks out below and beside the card only; the
             // top stays tucked under the card fill.
             let shadow = rect
                 .expand2(Vec2::new(1.0_f32, 0.0_f32))
                 .translate(Vec2::new(0.0_f32, 2.0_f32));
-            let shadow_alpha: u8 = if pal.modern {
-                if pal.dark {
-                    54
-                } else {
-                    24
-                }
-            } else if pal.dark {
-                72
+            let shadow_alpha: u8 = if pal.dark { 72 } else { 36 };
+            let shadow_shape = if pal.modern {
+                // Two quiet, unblurred layers create a more natural lift
+                // than one dark rim. They never sample or blur the backdrop.
+                let (far, near) = if pal.dark { (22, 34) } else { (9, 16) };
+                egui::Shape::Vec(vec![
+                    egui::Shape::rect_filled(
+                        shadow.translate(Vec2::new(0.0_f32, 1.0_f32)),
+                        card_rounding,
+                        Color32::from_black_alpha(far),
+                    ),
+                    egui::Shape::rect_filled(
+                        rect.translate(Vec2::new(0.0_f32, 1.0_f32)),
+                        card_rounding,
+                        Color32::from_black_alpha(near),
+                    ),
+                ])
             } else {
-                36
-            };
-            ui.painter().set(
-                slot,
                 egui::Shape::rect_filled(
                     shadow,
                     card_rounding,
                     Color32::from_black_alpha(shadow_alpha),
-                ),
-            );
+                )
+            };
+            ui.painter().set(slot, shadow_shape);
         }
         if pal.modern {
             // Keep the existing in-place hover rim without changing the card's
@@ -2223,7 +2303,7 @@ impl OpAutoClickerApp {
             );
             Self::paint_section_icon(&painter, title, tile.center(), pal.accent);
             let text = egui::RichText::new(title.to_ascii_uppercase())
-                .size(11.0_f32)
+                .font(Self::modern_emphasis_font(ui.ctx(), 11.0_f32))
                 .extra_letter_spacing(0.45_f32)
                 .color(pal.group_title);
             let job = egui::WidgetText::from(text).into_layout_job(
@@ -2232,6 +2312,7 @@ impl OpAutoClickerApp {
                 egui::Align::Center,
             );
             let galley = ui.fonts(|fonts| fonts.layout_job(job));
+            let title_right = rect.left() + 32.0_f32 + galley.size().x;
             painter.galley(
                 egui::pos2(
                     rect.left() + 32.0_f32,
@@ -2240,6 +2321,24 @@ impl OpAutoClickerApp {
                 galley,
                 pal.group_title,
             );
+            // A fine rule completes the heading without reserving another
+            // row or crowding narrow cards. It is artwork, not a widget.
+            let rule_start = title_right + 12.0_f32;
+            let rule_end = rect.right() - 12.0_f32;
+            if rule_end - rule_start >= 20.0_f32 {
+                let rule = if pal.dark {
+                    Color32::from_rgb(52, 72, 85)
+                } else {
+                    Color32::from_rgb(216, 227, 232)
+                };
+                painter.line_segment(
+                    [
+                        egui::pos2(rule_start, rect.top() + 12.0_f32),
+                        egui::pos2(rule_end, rect.top() + 12.0_f32),
+                    ],
+                    Stroke::new(1.0_f32, rule),
+                );
+            }
             return response.inner;
         }
         // The title rides the top border, half of it above rect.top().
@@ -2641,21 +2740,26 @@ impl OpAutoClickerApp {
         } else {
             None
         };
+        let action_font = if pal.modern {
+            Self::modern_emphasis_font(ui.ctx(), 13.5_f32)
+        } else {
+            FontId::proportional(13.5_f32)
+        };
         if let Some(icon) = icon {
-            let galley =
-                painter.layout_no_wrap(text.to_owned(), FontId::proportional(13.5_f32), text_color);
+            let galley = painter.layout_no_wrap(text.to_owned(), action_font.clone(), text_color);
             const ICON_WIDTH: f32 = 14.0;
             const ICON_GAP: f32 = 6.0;
             const SIDE_PADDING: f32 = 8.0;
             let content_width = ICON_WIDTH + ICON_GAP + galley.size().x;
             if content_width + 2.0 * SIDE_PADDING <= face_rect.width() {
                 let left = face_rect.center().x - content_width / 2.0;
-                Self::paint_modern_action_icon(
-                    painter,
-                    icon,
-                    egui::pos2(left + ICON_WIDTH / 2.0, face_rect.center().y),
-                    text_color,
-                );
+                let icon_center = egui::pos2(left + ICON_WIDTH / 2.0, face_rect.center().y);
+                if primary && enabled {
+                    // A subtle matte medallion makes the primary mark feel
+                    // intentional without adding a second hit target.
+                    painter.circle_filled(icon_center, 9.0_f32, Color32::from_white_alpha(36));
+                }
+                Self::paint_modern_action_icon(painter, icon, icon_center, text_color);
                 painter.galley(
                     egui::pos2(
                         left + ICON_WIDTH + ICON_GAP,
@@ -2670,7 +2774,7 @@ impl OpAutoClickerApp {
                     face_rect.center(),
                     Align2::CENTER_CENTER,
                     text,
-                    FontId::proportional(13.5_f32),
+                    action_font,
                     text_color,
                 );
             }
@@ -2679,10 +2783,140 @@ impl OpAutoClickerApp {
                 face_rect.center(),
                 Align2::CENTER_CENTER,
                 text,
-                FontId::proportional(13.5_f32),
+                action_font,
                 text_color,
             );
         }
+        response
+    }
+
+    /// Retain egui's real widgets, hit areas, keyboard behavior and
+    /// accessibility events; only repaint the Modern choice marks. Radio
+    /// options and checkboxes deliberately have different silhouettes.
+    fn choice_mark(
+        ui: &egui::Ui,
+        pal: &Palette,
+        response: &egui::Response,
+        selected: bool,
+        checkbox: bool,
+    ) {
+        if !pal.modern || !ui.is_visible() || !ui.is_rect_visible(response.rect) {
+            return;
+        }
+        let (small, outer) = ui.spacing().icon_rectangles(response.rect);
+        let visuals = ui.style().interact(response);
+        let enabled = ui.is_enabled();
+        let fill = if !enabled {
+            pal.input_disabled
+        } else if selected {
+            let factor = if response.is_pointer_button_down_on() {
+                0.9_f32
+            } else if response.hovered() {
+                1.08_f32
+            } else {
+                1.0_f32
+            };
+            Self::accent_variant(pal.accent, factor)
+        } else {
+            visuals.bg_fill
+        };
+        let border = if !enabled {
+            pal.input_border
+        } else if selected {
+            pal.accent
+        } else {
+            visuals.bg_stroke.color
+        };
+        let mark = if !enabled {
+            pal.text_disabled
+        } else if pal.dark {
+            Color32::from_rgb(7, 25, 35)
+        } else {
+            Color32::WHITE
+        };
+        // Egui fades an entire disabled Ui toward the background. Paint just
+        // the mark with explicit disabled colors instead, so a checked or
+        // selected value remains legible while the widget stays inert. Keep
+        // the same layer and clipping as the original control.
+        let painter = if enabled {
+            ui.painter().clone()
+        } else {
+            ui.ctx()
+                .layer_painter(ui.layer_id())
+                .with_clip_rect(ui.clip_rect())
+        };
+        if checkbox {
+            painter.rect(
+                outer,
+                Rounding::same(4.0_f32),
+                fill,
+                Stroke::new(1.0_f32, border),
+            );
+            if selected {
+                painter.add(egui::Shape::line(
+                    vec![
+                        egui::pos2(small.left(), small.center().y),
+                        egui::pos2(small.center().x - 0.5_f32, small.bottom()),
+                        egui::pos2(small.right(), small.top()),
+                    ],
+                    Stroke::new(1.5_f32, mark),
+                ));
+            }
+        } else {
+            painter.circle(
+                outer.center(),
+                outer.width() / 2.0_f32,
+                fill,
+                Stroke::new(1.0_f32, border),
+            );
+            if selected {
+                painter.circle_filled(small.center(), small.width() / 3.0_f32, mark);
+            }
+        }
+        if enabled && response.has_focus() {
+            if checkbox {
+                painter.rect_stroke(
+                    outer.expand(2.0_f32),
+                    Rounding::same(6.0_f32),
+                    Stroke::new(1.2_f32, pal.accent),
+                );
+            } else {
+                painter.circle_stroke(
+                    outer.center(),
+                    outer.width() / 2.0_f32 + 2.0_f32,
+                    Stroke::new(1.2_f32, pal.accent),
+                );
+            }
+        }
+    }
+
+    fn choice_radio<T: PartialEq>(
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        current: &mut T,
+        alternative: T,
+        label: &str,
+    ) -> egui::Response {
+        let was_selected = *current == alternative;
+        let response = ui.radio_value(current, alternative, label);
+        Self::choice_mark(
+            ui,
+            pal,
+            &response,
+            was_selected || response.changed(),
+            false,
+        );
+        response
+    }
+
+    fn choice_checkbox(
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        checked: &mut bool,
+        label: &str,
+    ) -> egui::Response {
+        let response = ui.checkbox(checked, label);
+        Self::choice_mark(ui, pal, &response, *checked, true);
         response
     }
 
@@ -2803,7 +3037,9 @@ impl OpAutoClickerApp {
                         .enumerate()
                         {
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(label).color(pal.text));
+                                ui.label(
+                                    egui::RichText::new(label).color(Self::supporting_text(pal)),
+                                );
                                 Self::numeric_field(ui, value, max, 56.0_f32);
                             });
                             if index % 2 == 1 {
@@ -2819,14 +3055,16 @@ impl OpAutoClickerApp {
                     .spacing(Vec2::new(7.0_f32, 6.0_f32))
                     .show(ui, |ui| {
                         Self::numeric_field(ui, &mut self.hours, 99, 56.0_f32);
-                        ui.label(egui::RichText::new("hours").color(pal.text));
+                        ui.label(egui::RichText::new("hours").color(Self::supporting_text(pal)));
                         Self::numeric_field(ui, &mut self.minutes, 59, 56.0_f32);
-                        ui.label(egui::RichText::new("mins").color(pal.text));
+                        ui.label(egui::RichText::new("mins").color(Self::supporting_text(pal)));
                         ui.end_row();
                         Self::numeric_field(ui, &mut self.seconds, 59, 56.0_f32);
-                        ui.label(egui::RichText::new("secs").color(pal.text));
+                        ui.label(egui::RichText::new("secs").color(Self::supporting_text(pal)));
                         Self::numeric_field(ui, &mut self.millis, 999, 56.0_f32);
-                        ui.label(egui::RichText::new("milliseconds").color(pal.text));
+                        ui.label(
+                            egui::RichText::new("milliseconds").color(Self::supporting_text(pal)),
+                        );
                         ui.end_row();
                     });
             } else {
@@ -2859,7 +3097,7 @@ impl OpAutoClickerApp {
                     for (index, (label, value, max)) in fields.into_iter().enumerate() {
                         let before = ui.cursor().left();
                         Self::numeric_field(ui, value, max, 56.0_f32);
-                        ui.label(egui::RichText::new(label).color(pal.text));
+                        ui.label(egui::RichText::new(label).color(Self::supporting_text(pal)));
                         measured[index] = (ui.cursor().left() - before - spacing).max(0.0_f32);
                         if index < 3 {
                             ui.add_space(share - spacing);
@@ -2883,7 +3121,7 @@ impl OpAutoClickerApp {
 
     fn random_offset_checkbox(&mut self, ui: &mut egui::Ui) -> bool {
         let mut enabled = self.prefs.random_offset_enabled;
-        if ui.checkbox(&mut enabled, "Random offset ±").changed() {
+        if Self::choice_checkbox(ui, self.palette(), &mut enabled, "Random offset ±").changed() {
             self.prefs.random_offset_enabled = enabled;
             if enabled && self.offset_ms <= 0.0 {
                 self.offset_ms = 40.0;
@@ -2913,7 +3151,7 @@ impl OpAutoClickerApp {
                 Self::disabled_numeric_field(ui, text, self.offset_ms, [72.0_f32, 22.0_f32]);
             }
         });
-        ui.label(egui::RichText::new("milliseconds").color(pal.text));
+        ui.label(egui::RichText::new("milliseconds").color(Self::supporting_text(pal)));
     }
 
     fn options_group_contents(&mut self, ui: &mut egui::Ui, pal: &Palette) {
@@ -2921,11 +3159,11 @@ impl OpAutoClickerApp {
             .num_columns(2)
             .spacing(Vec2::new(8.0_f32, 9.0_f32))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new("Mouse button:").color(pal.text));
+                ui.label(egui::RichText::new("Mouse button:").color(Self::supporting_text(pal)));
                 self.mouse_button_selector(ui);
                 ui.end_row();
 
-                ui.label(egui::RichText::new("Click type:").color(pal.text));
+                ui.label(egui::RichText::new("Click type:").color(Self::supporting_text(pal)));
                 self.click_type_selector(ui);
                 ui.end_row();
             });
@@ -2979,11 +3217,17 @@ impl OpAutoClickerApp {
                     }
                 }
             }
-            ui.radio_value(&mut self.repeat_limited, true, "Repeat");
+            Self::choice_radio(ui, pal, &mut self.repeat_limited, true, "Repeat");
             self.repeat_count_editor(ui, pal);
         });
         ui.add_space(4.0_f32);
-        ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
+        Self::choice_radio(
+            ui,
+            pal,
+            &mut self.repeat_limited,
+            false,
+            "Repeat until stopped",
+        );
         if !self.repeat_limited {
             self.config.max_clicks = 0;
         }
@@ -3016,7 +3260,7 @@ impl OpAutoClickerApp {
                 );
             }
         });
-        ui.label(egui::RichText::new("times").color(pal.text));
+        ui.label(egui::RichText::new("times").color(Self::supporting_text(pal)));
     }
 
     fn pick_location_button(&mut self, ui: &mut egui::Ui, pal: &Palette) {
@@ -3090,7 +3334,9 @@ impl OpAutoClickerApp {
     /// all on one line.
     fn position_group_contents(&mut self, ui: &mut egui::Ui, pal: &Palette, stacked: bool) {
         ui.horizontal(|ui| {
-            ui.radio_value(
+            Self::choice_radio(
+                ui,
+                pal,
                 &mut self.config.coordinate_mode,
                 CoordinateMode::CurrentCursor,
                 "Current location",
@@ -3099,7 +3345,9 @@ impl OpAutoClickerApp {
         ui.add_space(4.0_f32);
         if stacked {
             ui.horizontal(|ui| {
-                ui.radio_value(
+                Self::choice_radio(
+                    ui,
+                    pal,
                     &mut self.config.coordinate_mode,
                     CoordinateMode::FixedScreen,
                     "Pick location",
@@ -3111,7 +3359,9 @@ impl OpAutoClickerApp {
             ui.horizontal(|ui| self.fixed_xy_fields(ui));
         } else {
             ui.horizontal(|ui| {
-                ui.radio_value(
+                Self::choice_radio(
+                    ui,
+                    pal,
                     &mut self.config.coordinate_mode,
                     CoordinateMode::FixedScreen,
                     "Pick location",
@@ -3224,24 +3474,32 @@ impl OpAutoClickerApp {
         let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, extra_vertical, |ui| {
             if self.main_layout.is_portrait() {
                 if self.main_layout == MainLayout::Slender {
-                    ui.radio_value(
+                    Self::choice_radio(
+                        ui,
+                        pal,
                         &mut self.config.coordinate_mode,
                         CoordinateMode::CurrentCursor,
                         "Current location",
                     );
-                    ui.radio_value(
+                    Self::choice_radio(
+                        ui,
+                        pal,
                         &mut self.config.coordinate_mode,
                         CoordinateMode::FixedScreen,
                         "Pick location",
                     );
                 } else {
                     ui.horizontal(|ui| {
-                        ui.radio_value(
+                        Self::choice_radio(
+                            ui,
+                            pal,
                             &mut self.config.coordinate_mode,
                             CoordinateMode::CurrentCursor,
                             "Current location",
                         );
-                        ui.radio_value(
+                        Self::choice_radio(
+                            ui,
+                            pal,
                             &mut self.config.coordinate_mode,
                             CoordinateMode::FixedScreen,
                             "Pick location",
@@ -3395,6 +3653,28 @@ impl OpAutoClickerApp {
         );
         job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0_f32));
         ui.fonts(|fonts| fonts.layout_job(job))
+    }
+
+    /// Keep the same readable reminder and accessibility text, with the key
+    /// names emphasized only in Modern. No extra widgets or hit areas.
+    fn hotkey_reminder(ui: &mut egui::Ui, pal: &Palette, hotkey: &str) {
+        let reminder = format!("{hotkey} start/stop  ·  F8 emergency stop");
+        if !pal.modern {
+            ui.label(egui::RichText::new(reminder).color(pal.text_dim).small());
+            return;
+        }
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        let format = |color| egui::TextFormat {
+            font_id: font.clone(),
+            color,
+            ..Default::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        job.append(hotkey, 0.0_f32, format(pal.accent));
+        job.append(" start/stop  ·  ", 0.0_f32, format(pal.text_dim));
+        job.append("F8", 0.0_f32, format(pal.text));
+        job.append(" emergency stop", 0.0_f32, format(pal.text_dim));
+        ui.label(job);
     }
 
     fn draw_footer_actions(&mut self, ui: &mut egui::Ui, pal: &Palette) {
@@ -3628,7 +3908,7 @@ impl OpAutoClickerApp {
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .default_width(340.0_f32)
             .show(ctx, |ui| {
-                ui.checkbox(&mut self.prefs.hotkeys_enabled, "Enable global hotkey");
+                Self::choice_checkbox(ui, pal, &mut self.prefs.hotkeys_enabled, "Enable global hotkey");
                 ui.add_space(6.0_f32);
                 ui.label(
                     egui::RichText::new(format!(
@@ -3690,7 +3970,14 @@ impl OpAutoClickerApp {
             .default_width(360.0_f32)
             .show(ctx, |ui| {
                 let steps = self.macro_recorder.len();
-                let duration_s = self.macro_recorder.total_duration_ms() / 1000.0;
+                // An empty floating-point iterator sum can be negative zero.
+                // Keep Classic's existing presentation, but show a clean
+                // zero in Modern before the first recording.
+                let duration_s = if pal.modern && steps == 0 {
+                    0.0
+                } else {
+                    self.macro_recorder.total_duration_ms() / 1000.0
+                };
                 ui.label(
                     egui::RichText::new(format!(
                         "Recorded steps: {steps}   ·   one loop: {duration_s:.1} s"
@@ -3742,8 +4029,14 @@ impl OpAutoClickerApp {
                 ui.add_space(6.0_f32);
 
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.macro_until_stopped, true, "Play until stopped");
-                    ui.radio_value(&mut self.macro_until_stopped, false, "Play");
+                    Self::choice_radio(
+                        ui,
+                        pal,
+                        &mut self.macro_until_stopped,
+                        true,
+                        "Play until stopped",
+                    );
+                    Self::choice_radio(ui, pal, &mut self.macro_until_stopped, false, "Play");
                     let mut loops = self.macro_loops.max(1);
                     ui.add_enabled_ui(!self.macro_until_stopped, |ui| {
                         if ui.is_enabled() {
@@ -3885,12 +4178,13 @@ impl OpAutoClickerApp {
                         }
                     });
                 ui.add_space(8.0_f32);
-                if ui
-                    .checkbox(
-                        &mut self.prefs.auto_scale,
-                        "Scale and rearrange with window size",
-                    )
-                    .changed()
+                if Self::choice_checkbox(
+                    ui,
+                    pal,
+                    &mut self.prefs.auto_scale,
+                    "Scale and rearrange with window size",
+                )
+                .changed()
                 {
                     if !self.prefs.auto_scale {
                         // Back to the fixed classic composition at once;
@@ -5146,7 +5440,12 @@ impl OpAutoClickerApp {
             ui.add_space(8.0_f32);
             ui.separator();
             ui.add_space(6.0_f32);
-            ui.checkbox(&mut check_on_startup, "Check for updates on startup");
+            Self::choice_checkbox(
+                ui,
+                pal,
+                &mut check_on_startup,
+                "Check for updates on startup",
+            );
             ui.label(
                 egui::RichText::new("One check per launch; reopening refreshes stale results.")
                     .color(pal.text_dim)
@@ -5311,17 +5610,22 @@ impl OpAutoClickerApp {
                     // breathes on the already-running repaint heartbeat so
                     // "working" is visible even from the corner of the eye.
                     let state_color = self.status_kind.color(pal);
+                    let indicator_color = if pal.modern && self.status_kind == StatusKind::Ready {
+                        pal.accent
+                    } else {
+                        state_color
+                    };
                     let now = ui.input(|i| i.time);
                     let dot_color = if self.status_kind == StatusKind::Running {
                         let pulse = 0.5_f32 + 0.5_f32 * ((now * 3.6_f64).sin() as f32);
                         Color32::from_rgba_unmultiplied(
-                            state_color.r(),
-                            state_color.g(),
-                            state_color.b(),
+                            indicator_color.r(),
+                            indicator_color.g(),
+                            indicator_color.b(),
                             140 + (pulse * 115.0_f32) as u8,
                         )
                     } else {
-                        state_color
+                        indicator_color
                     };
                     let painter = ui.painter_at(rect);
                     // Status plate in every theme — the Updates window's
@@ -5394,13 +5698,12 @@ impl OpAutoClickerApp {
                     // Portrait puts the reminder on its own line so the
                     // update and settings buttons never collide with it.
                     let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
-                    let reminder = format!("{hotkey_name} start/stop  ·  F8 emergency stop");
                     if portrait {
-                        ui.label(egui::RichText::new(&reminder).color(pal.text_dim).small());
+                        Self::hotkey_reminder(ui, pal, &hotkey_name);
                         ui.horizontal(|ui| self.draw_footer_actions(ui, pal));
                     } else {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(&reminder).color(pal.text_dim).small());
+                            Self::hotkey_reminder(ui, pal, &hotkey_name);
                             self.draw_footer_actions(ui, pal);
                         });
                     }
@@ -6138,6 +6441,54 @@ mod dashboard_layout_tests {
                 _ => unreachable!(),
             }
         })
+    }
+
+    #[test]
+    fn modern_macro_duration_displays_clean_zero_without_changing_legacy_themes() {
+        for theme in AppTheme::all() {
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Classic);
+            app.prefs.theme = theme;
+            app.show_macro_window = true;
+            let size = Vec2::new(420.0, 420.0);
+            let legacy_zero = format!("{:.1}", app.macro_recorder.total_duration_ms() / 1000.0);
+            let empty = if app.palette().modern {
+                "0.0"
+            } else {
+                &legacy_zero
+            };
+            let expected = format!("Recorded steps: 0   ·   one loop: {empty} s");
+            for _ in 0..5 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "macro", vec![]);
+            }
+            let output = render_dialog(&mut app, &ctx, size, 1.0, "macro", vec![]);
+            assert!(
+                text_bounds(&output)
+                    .iter()
+                    .any(|(text, _, _)| text == &expected),
+                "{theme:?}"
+            );
+
+            assert!(app
+                .macro_recorder
+                .record_click(1_200.0, 10, 20, MouseButton::Left));
+            let output = render_dialog(&mut app, &ctx, size, 1.0, "macro", vec![]);
+            assert!(
+                text_bounds(&output)
+                    .iter()
+                    .any(|(text, _, _)| text == "Recorded steps: 1   ·   one loop: 1.2 s"),
+                "{theme:?}"
+            );
+
+            app.macro_recorder.clear();
+            let output = render_dialog(&mut app, &ctx, size, 1.0, "macro", vec![]);
+            assert!(
+                text_bounds(&output)
+                    .iter()
+                    .any(|(text, _, _)| text == &expected),
+                "{theme:?}"
+            );
+        }
     }
 
     #[test]
@@ -7180,6 +7531,27 @@ mod dashboard_layout_tests {
                 ) >= 4.5,
                 "section icon must be distinct from its tile"
             );
+            assert!(
+                contrast(
+                    palette.group_title,
+                    OpAutoClickerApp::modern_header_color(palette)
+                ) >= 4.5,
+                "heading must be readable on the header wash"
+            );
+            let choice_mark = if palette.dark {
+                Color32::from_rgb(7, 25, 35)
+            } else {
+                Color32::WHITE
+            };
+            for factor in [0.9_f32, 1.0_f32, 1.08_f32] {
+                assert!(
+                    contrast(
+                        choice_mark,
+                        OpAutoClickerApp::accent_variant(palette.accent, factor)
+                    ) >= 4.5,
+                    "selected radio dot and checkmark must remain visible in every state"
+                );
+            }
             // Resting input and button outlines must remain identifiable on
             // their actual adjacent surfaces, not just on the panel face.
             for (outline, surface) in [
@@ -7248,6 +7620,18 @@ mod dashboard_layout_tests {
                         contrast(start_text, color) >= 4.5,
                         "gradient text on {color:?}"
                     );
+                    // The primary icon also sits on a translucent white
+                    // medallion; check the actual composited gradient too.
+                    let over_white = |channel: u8| {
+                        (36.0_f32 + f32::from(channel) * (1.0_f32 - 36.0_f32 / 255.0_f32)).round()
+                            as u8
+                    };
+                    let medallion = Color32::from_rgb(
+                        over_white(color.r()),
+                        over_white(color.g()),
+                        over_white(color.b()),
+                    );
+                    assert!(contrast(start_text, medallion) >= 4.5);
                 }
                 let (fill, _, text) =
                     OpAutoClickerApp::modern_stop_tone(palette.dark, true, hovered, pressed);
@@ -8879,6 +9263,271 @@ mod dashboard_layout_tests {
     }
 
     #[test]
+    fn modern_choice_marks_keep_real_widget_behavior_and_focus() {
+        fn frame(
+            app: &OpAutoClickerApp,
+            ctx: &egui::Context,
+            ppp: f32,
+            enabled: bool,
+            checked: &mut bool,
+            selected: &mut bool,
+            events: Vec<Event>,
+        ) -> (FullOutput, [(Rect, Rect, egui::Id); 2]) {
+            let mut input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(300.0, 160.0))),
+                events,
+                ..Default::default()
+            };
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .native_pixels_per_point = Some(ppp);
+            let mut widgets = [(Rect::NOTHING, Rect::NOTHING, egui::Id::NULL); 2];
+            let output = ctx.run(input, |ctx| {
+                app.apply_style(ctx);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add_enabled_ui(enabled, |ui| {
+                        let checkbox = OpAutoClickerApp::choice_checkbox(
+                            ui,
+                            app.palette(),
+                            checked,
+                            "Enable offset",
+                        );
+                        let radio = OpAutoClickerApp::choice_radio(
+                            ui,
+                            app.palette(),
+                            selected,
+                            true,
+                            "Fixed position",
+                        );
+                        for (index, response) in [checkbox, radio].into_iter().enumerate() {
+                            let (_, icon) = ui.spacing().icon_rectangles(response.rect);
+                            widgets[index] = (response.rect, icon, response.id);
+                        }
+                    });
+                });
+            });
+            (output, widgets)
+        }
+        fn any_shape(output: &FullOutput, predicate: &impl Fn(&Shape) -> bool) -> bool {
+            fn visit(shape: &Shape, predicate: &impl Fn(&Shape) -> bool) -> bool {
+                predicate(shape)
+                    || matches!(shape, Shape::Vec(children) if children.iter().any(|child| visit(child, predicate)))
+            }
+            output
+                .shapes
+                .iter()
+                .any(|shape| visit(&shape.shape, predicate))
+        }
+        fn click(point: Pos2, pressed: bool) -> Event {
+            Event::PointerButton {
+                pos: point,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::default(),
+            }
+        }
+        for theme in [AppTheme::ModernLight, AppTheme::ModernDark] {
+            for ppp in [1.0, 1.25, 1.5, 2.0] {
+                let ctx = egui::Context::default();
+                let mut app = test_app(MainLayout::Classic);
+                app.prefs.theme = theme;
+                let (mut checked, mut selected) = (false, false);
+                let mut last = frame(&app, &ctx, ppp, true, &mut checked, &mut selected, vec![]);
+                for _ in 0..4 {
+                    last = frame(&app, &ctx, ppp, true, &mut checked, &mut selected, vec![]);
+                }
+                let checkbox_icon = last.1[0].1;
+                assert!(any_shape(&last.0, &|shape| matches!(shape,
+                    Shape::Rect(rect) if rect.rect == checkbox_icon && rect.rounding == Rounding::same(4.0))));
+                let radio_icon = last.1[1].1;
+                assert!(any_shape(&last.0, &|shape| matches!(shape,
+                    Shape::Circle(circle) if circle.center == radio_icon.center() && (circle.radius - radio_icon.width() / 2.0).abs() < 0.01)));
+
+                let point = checkbox_icon.center();
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![Event::PointerMoved(point), click(point, true)],
+                );
+                let (clicked, _) = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![click(point, false)],
+                );
+                assert!(checked, "the entire checkbox remains operable");
+                assert!(clicked.platform_output.events.iter().any(|event| matches!(event,
+                    egui::output::OutputEvent::Clicked(info) if info.label.as_deref() == Some("Enable offset") && info.enabled)));
+                let point = radio_icon.center();
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![Event::PointerMoved(point), click(point, true)],
+                );
+                let (clicked, widgets) = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![click(point, false)],
+                );
+                assert!(selected, "the radio remains operable");
+                assert!(clicked.platform_output.events.iter().any(|event| matches!(event,
+                    egui::output::OutputEvent::Clicked(info) if info.label.as_deref() == Some("Fixed position") && info.enabled)));
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![Event::PointerGone],
+                );
+                let (selected_output, _) =
+                    frame(&app, &ctx, ppp, true, &mut checked, &mut selected, vec![]);
+                let accent = app.palette().accent;
+                let mark = if app.palette().dark {
+                    Color32::from_rgb(7, 25, 35)
+                } else {
+                    Color32::WHITE
+                };
+                assert!(any_shape(&selected_output, &|shape| matches!(shape,
+                    Shape::Rect(rect) if rect.rect == checkbox_icon && rect.fill == accent)));
+                assert!(any_shape(&selected_output, &|shape| matches!(shape,
+                    Shape::Path(path) if path.stroke.color == mark && path.points.len() == 3)));
+                assert!(any_shape(&selected_output, &|shape| matches!(shape,
+                    Shape::Circle(circle) if circle.center == radio_icon.center() && circle.fill == accent)));
+                let point = checkbox_icon.center();
+                let (hovered, _) = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![Event::PointerMoved(point)],
+                );
+                assert!(any_shape(&hovered, &|shape| matches!(shape,
+                    Shape::Rect(rect) if rect.rect == checkbox_icon && rect.fill == OpAutoClickerApp::accent_variant(accent, 1.08))));
+                let (pressed, _) = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![click(point, true)],
+                );
+                assert!(any_shape(&pressed, &|shape| matches!(shape,
+                    Shape::Rect(rect) if rect.rect == checkbox_icon && rect.fill == OpAutoClickerApp::accent_variant(accent, 0.9))));
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![click(point, false)],
+                );
+                assert!(!checked);
+                checked = true;
+
+                ctx.memory_mut(|memory| memory.request_focus(widgets[0].2));
+                let (focused, _) = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![Event::PointerGone],
+                );
+                assert!(
+                    any_shape(&focused, &|shape| matches!(shape,
+                    Shape::Rect(rect) if rect.rect == checkbox_icon.expand(2.0) && rect.stroke.color == app.palette().accent)),
+                    "keyboard focus needs a separate visible ring"
+                );
+                let key = |pressed| Event::Key {
+                    key: egui::Key::Space,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                };
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![key(true)],
+                );
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    true,
+                    &mut checked,
+                    &mut selected,
+                    vec![key(false)],
+                );
+                assert!(!checked, "Space toggles the focused checkbox");
+
+                checked = true;
+                let (disabled, widgets) =
+                    frame(&app, &ctx, ppp, false, &mut checked, &mut selected, vec![]);
+                let disabled_mark = app.palette().text_disabled;
+                assert!(
+                    any_shape(&disabled, &|shape| matches!(shape,
+                    Shape::Path(path) if path.stroke.color == disabled_mark && path.points.len() == 3)),
+                    "a disabled checked box still shows its state"
+                );
+                assert!(
+                    any_shape(&disabled, &|shape| matches!(shape,
+                    Shape::Circle(circle) if circle.center == widgets[1].1.center() && circle.fill == disabled_mark)),
+                    "a disabled selected radio still shows its state"
+                );
+                let point = widgets[0].1.center();
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    false,
+                    &mut checked,
+                    &mut selected,
+                    vec![Event::PointerMoved(point), click(point, true)],
+                );
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    false,
+                    &mut checked,
+                    &mut selected,
+                    vec![click(point, false)],
+                );
+                assert!(checked && selected, "disabled choices must remain inert");
+            }
+        }
+    }
+
+    #[test]
     fn modern_footer_ghosts_highlight_on_hover() {
         fn hover_fill(shape: &Shape, point: Pos2, color: Color32) -> bool {
             match shape {
@@ -9163,9 +9812,10 @@ mod dashboard_layout_tests {
                         } else {
                             app.palette().text
                         };
+                        let action_font = OpAutoClickerApp::modern_emphasis_font(&ctx, 13.5);
                         let text_width = ctx.fonts(|fonts| {
                             fonts
-                                .layout_no_wrap(label.to_owned(), FontId::proportional(13.5), color)
+                                .layout_no_wrap(label.to_owned(), action_font, color)
                                 .size()
                                 .x
                         });
@@ -9240,9 +9890,10 @@ mod dashboard_layout_tests {
                 }
                 let (_, _, color) =
                     OpAutoClickerApp::modern_stop_tone(app.palette().dark, false, false, false);
+                let action_font = OpAutoClickerApp::modern_emphasis_font(&ctx, 13.5);
                 let text_width = ctx.fonts(|fonts| {
                     fonts
-                        .layout_no_wrap("Stop (F6)".to_owned(), FontId::proportional(13.5), color)
+                        .layout_no_wrap("Stop (F6)".to_owned(), action_font, color)
                         .size()
                         .x
                 });
@@ -9444,6 +10095,77 @@ mod dashboard_layout_tests {
                     if info.label.as_deref() == Some("Start (F6)") && info.enabled)
             }));
         }
+    }
+
+    #[test]
+    fn modern_emphasis_font_is_safe_during_theme_transitions() {
+        fn contains_medium(shape: &Shape, label: &str) -> bool {
+            match shape {
+                Shape::Vec(children) => children.iter().any(|child| contains_medium(child, label)),
+                Shape::Text(text) if text.galley.job.text == label => {
+                    text.galley.job.sections.iter().any(|section| {
+                        section.format.font_id.family
+                            == egui::FontFamily::Name("Outfit Medium".into())
+                    })
+                }
+                _ => false,
+            }
+        }
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Classic);
+        let size = Vec2::new(560.0, 456.0);
+        let draw = |app: &mut OpAutoClickerApp| {
+            let mut family = egui::FontFamily::Proportional;
+            let output = ctx.run(
+                RawInput {
+                    screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ctx| {
+                    app.apply_style(ctx);
+                    family = OpAutoClickerApp::modern_emphasis_font(ctx, 11.0).family;
+                    app.draw_dashboard(ctx);
+                },
+            );
+            (output, family)
+        };
+        app.prefs.theme = AppTheme::ModernDark;
+        let (_, family) = draw(&mut app);
+        assert_eq!(
+            family,
+            egui::FontFamily::Proportional,
+            "first frame falls back safely"
+        );
+        let (output, family) = draw(&mut app);
+        assert_eq!(family, egui::FontFamily::Name("Outfit Medium".into()));
+        for label in ["CLICK INTERVAL", "Start (F6)"] {
+            assert!(
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| contains_medium(&shape.shape, label)),
+                "{label} should use the bundled emphasis face"
+            );
+        }
+        let emphasis_font = OpAutoClickerApp::modern_emphasis_font(&ctx, 11.0);
+        ctx.fonts(|fonts| {
+            for glyph in ['✓', '→', '±', '…', '×'] {
+                assert!(fonts.has_glyph(&emphasis_font, glyph));
+            }
+        });
+        app.prefs.theme = AppTheme::Classic;
+        let _ = draw(&mut app);
+        let (_, family) = draw(&mut app);
+        assert_eq!(family, egui::FontFamily::Proportional);
+        app.prefs.theme = AppTheme::ModernLight;
+        let (_, family) = draw(&mut app);
+        assert_eq!(
+            family,
+            egui::FontFamily::Proportional,
+            "returning to Modern is safe too"
+        );
+        let (_, family) = draw(&mut app);
+        assert_eq!(family, egui::FontFamily::Name("Outfit Medium".into()));
     }
 
     #[test]
