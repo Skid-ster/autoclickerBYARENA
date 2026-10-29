@@ -138,63 +138,63 @@ static DARK_PALETTE: Palette = Palette {
     selection_bg: Color32::from_rgba_premultiplied(24, 48, 78, 150),
 };
 
-// Modern light: cool neutral surfaces with a restrained teal accent.
+// Modern light: porcelain surfaces, ink text and a restrained teal accent.
 static MODERN_LIGHT_PALETTE: Palette = Palette {
     dark: false,
     modern: true,
-    face: Color32::from_rgb(243, 245, 248),
-    button: Color32::from_rgb(248, 250, 252),
-    button_disabled: Color32::from_rgb(231, 238, 244),
-    button_border: Color32::from_rgb(145, 160, 173),
-    hover_fill: Color32::from_rgb(224, 234, 240),
-    pressed_fill: Color32::from_rgb(215, 229, 236),
-    input_bg: Color32::from_rgb(237, 242, 246),
-    input_disabled: Color32::from_rgb(231, 238, 244),
+    face: Color32::from_rgb(238, 243, 245),
+    button: Color32::from_rgb(247, 250, 251),
+    button_disabled: Color32::from_rgb(231, 239, 241),
+    button_border: Color32::from_rgb(111, 135, 144),
+    hover_fill: Color32::from_rgb(223, 238, 240),
+    pressed_fill: Color32::from_rgb(209, 233, 234),
+    input_bg: Color32::from_rgb(236, 243, 244),
+    input_disabled: Color32::from_rgb(231, 239, 241),
     group_fill: Color32::WHITE,
-    well_fill: Color32::from_rgb(237, 242, 246),
-    group_border: Color32::from_rgb(195, 204, 214),
-    input_border: Color32::from_rgb(129, 145, 158),
-    text: Color32::from_rgb(21, 31, 48),
-    group_title: Color32::from_rgb(0, 105, 120),
-    text_dim: Color32::from_rgb(72, 88, 103),
-    text_disabled: Color32::from_rgb(90, 100, 118),
-    accent: Color32::from_rgb(0, 107, 127),
+    well_fill: Color32::from_rgb(233, 241, 242),
+    group_border: Color32::from_rgb(193, 209, 214),
+    input_border: Color32::from_rgb(111, 135, 144),
+    text: Color32::from_rgb(19, 43, 54),
+    group_title: Color32::from_rgb(0, 105, 111),
+    text_dim: Color32::from_rgb(67, 94, 105),
+    text_disabled: Color32::from_rgb(80, 101, 111),
+    accent: Color32::from_rgb(0, 108, 112),
     success: Color32::from_rgb(15, 105, 73),
     danger: Color32::from_rgb(175, 37, 55),
     warning: Color32::from_rgb(121, 75, 5),
-    chart_bg: Color32::from_rgb(237, 242, 246),
-    chart_grid: Color32::from_rgb(202, 213, 222),
+    chart_bg: Color32::from_rgb(236, 243, 244),
+    chart_grid: Color32::from_rgb(200, 215, 219),
     chart_bar_alt: Color32::from_rgba_premultiplied(12, 65, 78, 120),
     selection_bg: Color32::from_rgba_premultiplied(0, 18, 22, 40),
 };
 
-// Modern dark: graphite layers and a bright, cool cyan accent.
+// Modern dark: layered blue-ink neutrals with a luminous teal accent.
 static MODERN_DARK_PALETTE: Palette = Palette {
     dark: true,
     modern: true,
-    face: Color32::from_rgb(16, 17, 23),
-    button: Color32::from_rgb(31, 33, 40),
-    button_disabled: Color32::from_rgb(24, 26, 32),
-    button_border: Color32::from_rgb(94, 105, 119),
-    hover_fill: Color32::from_rgb(40, 43, 53),
-    pressed_fill: Color32::from_rgb(47, 50, 61),
-    input_bg: Color32::from_rgb(17, 20, 27),
-    input_disabled: Color32::from_rgb(24, 26, 32),
-    group_fill: Color32::from_rgb(30, 30, 36),
-    well_fill: Color32::from_rgb(17, 20, 27),
-    group_border: Color32::from_rgb(65, 70, 80),
-    input_border: Color32::from_rgb(95, 111, 128),
-    text: Color32::from_rgb(238, 242, 249),
-    group_title: Color32::from_rgb(129, 192, 203),
-    text_dim: Color32::from_rgb(165, 176, 190),
-    text_disabled: Color32::from_rgb(156, 165, 178),
-    accent: Color32::from_rgb(92, 211, 229),
-    success: Color32::from_rgb(103, 225, 174),
-    danger: Color32::from_rgb(255, 134, 144),
-    warning: Color32::from_rgb(247, 204, 112),
-    chart_bg: Color32::from_rgb(17, 20, 27),
-    chart_grid: Color32::from_rgb(47, 50, 61),
-    chart_bar_alt: Color32::from_rgba_premultiplied(32, 98, 112, 170),
+    face: Color32::from_rgb(11, 18, 26),
+    button: Color32::from_rgb(25, 40, 50),
+    button_disabled: Color32::from_rgb(24, 35, 43),
+    button_border: Color32::from_rgb(97, 120, 135),
+    hover_fill: Color32::from_rgb(39, 60, 72),
+    pressed_fill: Color32::from_rgb(48, 78, 90),
+    input_bg: Color32::from_rgb(15, 27, 36),
+    input_disabled: Color32::from_rgb(24, 35, 43),
+    group_fill: Color32::from_rgb(21, 35, 43),
+    well_fill: Color32::from_rgb(13, 28, 34),
+    group_border: Color32::from_rgb(64, 84, 98),
+    input_border: Color32::from_rgb(112, 133, 149),
+    text: Color32::from_rgb(237, 245, 246),
+    group_title: Color32::from_rgb(168, 217, 213),
+    text_dim: Color32::from_rgb(175, 192, 199),
+    text_disabled: Color32::from_rgb(161, 176, 187),
+    accent: Color32::from_rgb(112, 216, 207),
+    success: Color32::from_rgb(128, 223, 179),
+    danger: Color32::from_rgb(255, 148, 160),
+    warning: Color32::from_rgb(243, 206, 121),
+    chart_bg: Color32::from_rgb(15, 27, 36),
+    chart_grid: Color32::from_rgb(48, 78, 90),
+    chart_bar_alt: Color32::from_rgba_premultiplied(32, 98, 100, 170),
     selection_bg: Color32::from_rgba_premultiplied(12, 43, 48, 100),
 };
 
@@ -433,6 +433,15 @@ enum UpdateInstallMessage {
     Verified(ReadyUpdate),
     Cancelled { source_advanced: bool },
     Failed(String),
+}
+
+/// Original vector marks used beside the dashboard's four main actions.
+#[derive(Clone, Copy)]
+enum ModernActionIcon {
+    Start,
+    Stop,
+    Hotkeys,
+    Playback,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2021,6 +2030,14 @@ impl OpAutoClickerApp {
 
     // --------------------------------------------------------- classic widgets
 
+    fn modern_section_tile_color(pal: &Palette) -> Color32 {
+        if pal.dark {
+            Color32::from_rgb(30, 61, 65)
+        } else {
+            Color32::from_rgb(222, 242, 240)
+        }
+    }
+
     /// Small original vector glyphs; no icon font or external library is used.
     fn paint_section_icon(
         painter: &egui::Painter,
@@ -2147,7 +2164,17 @@ impl OpAutoClickerApp {
             let shadow = rect
                 .expand2(Vec2::new(1.0_f32, 0.0_f32))
                 .translate(Vec2::new(0.0_f32, 2.0_f32));
-            let shadow_alpha: u8 = if pal.dark { 72 } else { 36 };
+            let shadow_alpha: u8 = if pal.modern {
+                if pal.dark {
+                    54
+                } else {
+                    24
+                }
+            } else if pal.dark {
+                72
+            } else {
+                36
+            };
             ui.painter().set(
                 slot,
                 egui::Shape::rect_filled(
@@ -2158,7 +2185,8 @@ impl OpAutoClickerApp {
             );
         }
         if pal.modern {
-            // Draw the hover rim after the card without changing its bounds.
+            // Keep the existing in-place hover rim without changing the card's
+            // geometry or registering a separate interactive widget.
             if ui.rect_contains_pointer(rect) {
                 let rim = if pal.dark {
                     Color32::from_rgb(91, 126, 137)
@@ -2169,15 +2197,34 @@ impl OpAutoClickerApp {
                     .rect_stroke(rect, card_rounding, Stroke::new(1.0_f32, rim));
             }
             let painter = ui.painter_at(rect);
-            Self::paint_section_icon(
-                &painter,
-                title,
-                egui::pos2(rect.left() + 17.0_f32, rect.top() + 12.0_f32),
-                pal.accent,
+            // A quiet top edge and a compact icon tile organize the card.
+            painter.line_segment(
+                [
+                    egui::pos2(rect.left() + 12.0_f32, rect.top() + 1.5_f32),
+                    egui::pos2(rect.right() - 12.0_f32, rect.top() + 1.5_f32),
+                ],
+                Stroke::new(
+                    1.0_f32,
+                    if pal.dark {
+                        Color32::from_rgb(42, 61, 69)
+                    } else {
+                        Color32::from_rgb(244, 249, 250)
+                    },
+                ),
             );
+            let tile = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 8.0_f32, rect.top() + 3.0_f32),
+                Vec2::splat(18.0_f32),
+            );
+            painter.rect_filled(
+                tile,
+                Rounding::same(5.0_f32),
+                Self::modern_section_tile_color(pal),
+            );
+            Self::paint_section_icon(&painter, title, tile.center(), pal.accent);
             let text = egui::RichText::new(title.to_ascii_uppercase())
-                .size(10.5_f32)
-                .extra_letter_spacing(0.5_f32)
+                .size(11.0_f32)
+                .extra_letter_spacing(0.45_f32)
                 .color(pal.group_title);
             let job = egui::WidgetText::from(text).into_layout_job(
                 ui.style(),
@@ -2186,7 +2233,10 @@ impl OpAutoClickerApp {
             );
             let galley = ui.fonts(|fonts| fonts.layout_job(job));
             painter.galley(
-                egui::pos2(rect.left() + 29.0_f32, rect.top() + 5.0_f32),
+                egui::pos2(
+                    rect.left() + 32.0_f32,
+                    rect.top() + 12.0_f32 - galley.size().y / 2.0_f32,
+                ),
                 galley,
                 pal.group_title,
             );
@@ -2296,8 +2346,8 @@ impl OpAutoClickerApp {
             1.0
         };
         (
-            Self::accent_variant(Color32::from_rgb(39, 204, 228), factor),
-            Self::accent_variant(Color32::from_rgb(74, 154, 247), factor),
+            Self::accent_variant(Color32::from_rgb(69, 213, 194), factor),
+            Self::accent_variant(Color32::from_rgb(112, 166, 250), factor),
         )
     }
 
@@ -2310,15 +2360,15 @@ impl OpAutoClickerApp {
         if !enabled {
             return if dark {
                 (
-                    Color32::from_rgb(48, 37, 44),
-                    Color32::from_rgb(104, 81, 91),
-                    Color32::from_rgb(180, 158, 168),
+                    Color32::from_rgb(27, 37, 45),
+                    Color32::from_rgb(76, 94, 105),
+                    Color32::from_rgb(160, 176, 188),
                 )
             } else {
                 (
-                    Color32::from_rgb(239, 229, 231),
-                    Color32::from_rgb(198, 172, 178),
-                    Color32::from_rgb(118, 76, 84),
+                    Color32::from_rgb(230, 237, 239),
+                    Color32::from_rgb(162, 178, 184),
+                    Color32::from_rgb(82, 105, 116),
                 )
             };
         }
@@ -2388,6 +2438,67 @@ impl OpAutoClickerApp {
         painter.add(egui::Shape::mesh(mesh));
     }
 
+    fn modern_action_icon(text: &str, primary: bool, danger: bool) -> Option<ModernActionIcon> {
+        if primary {
+            Some(ModernActionIcon::Start)
+        } else if danger {
+            Some(ModernActionIcon::Stop)
+        } else {
+            match text {
+                "Hotkeys" => Some(ModernActionIcon::Hotkeys),
+                "Record & Playback" | "Record / Play" => Some(ModernActionIcon::Playback),
+                _ => None,
+            }
+        }
+    }
+
+    /// Familiar, single-color vector marks. The visible label remains the
+    /// accessible button name, and icons are omitted when space is tight.
+    fn paint_modern_action_icon(
+        painter: &egui::Painter,
+        icon: ModernActionIcon,
+        center: egui::Pos2,
+        color: Color32,
+    ) {
+        let at = |x, y| center + Vec2::new(x, y);
+        let stroke = Stroke::new(1.2_f32, color);
+        match icon {
+            ModernActionIcon::Start => {
+                painter.add(egui::Shape::convex_polygon(
+                    vec![at(-4.0, -5.0), at(5.0, 0.0), at(-4.0, 5.0)],
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+            ModernActionIcon::Stop => {
+                painter.rect_filled(
+                    egui::Rect::from_center_size(center, Vec2::splat(9.0)),
+                    Rounding::same(1.5),
+                    color,
+                );
+            }
+            ModernActionIcon::Hotkeys => {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(center, Vec2::new(14.0, 10.0)),
+                    Rounding::same(2.0),
+                    stroke,
+                );
+                for x in [-4.0, 0.0, 4.0] {
+                    painter.circle_filled(at(x, -1.5), 0.8, color);
+                }
+                painter.line_segment([at(-3.0, 2.0), at(3.0, 2.0)], stroke);
+            }
+            ModernActionIcon::Playback => {
+                painter.circle_stroke(center, 5.5, stroke);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![at(-1.5, -2.5), at(2.5, 0.0), at(-1.5, 2.5)],
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+        }
+    }
+
     fn toned_button(
         ui: &mut egui::Ui,
         pal: &Palette,
@@ -2454,11 +2565,7 @@ impl OpAutoClickerApp {
             )
         } else {
             (
-                if pal.modern {
-                    Color32::TRANSPARENT
-                } else {
-                    pal.button
-                },
+                pal.button,
                 if danger {
                     pal.danger
                 } else {
@@ -2477,7 +2584,7 @@ impl OpAutoClickerApp {
         let rounding = Rounding::same(if pal.modern { 9.0_f32 } else { 6.0_f32 });
         let painter = ui.painter();
         // A restrained, unblurred drop shadow lifts Modern's primary and
-        // active Stop buttons; ghost actions stay visually quiet.
+        // active Stop buttons; secondary actions stay visually quiet.
         if enabled && !pressed && (!pal.modern || primary || danger) {
             let shadow_alpha = if pal.dark { 110 } else { 26 };
             painter.rect_filled(
@@ -2529,13 +2636,53 @@ impl OpAutoClickerApp {
                 Stroke::new(2.0_f32, focus_color),
             );
         }
-        painter.text(
-            face_rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::proportional(13.5_f32),
-            text_color,
-        );
+        let icon = if pal.modern {
+            Self::modern_action_icon(text, primary, danger)
+        } else {
+            None
+        };
+        if let Some(icon) = icon {
+            let galley =
+                painter.layout_no_wrap(text.to_owned(), FontId::proportional(13.5_f32), text_color);
+            const ICON_WIDTH: f32 = 14.0;
+            const ICON_GAP: f32 = 6.0;
+            const SIDE_PADDING: f32 = 8.0;
+            let content_width = ICON_WIDTH + ICON_GAP + galley.size().x;
+            if content_width + 2.0 * SIDE_PADDING <= face_rect.width() {
+                let left = face_rect.center().x - content_width / 2.0;
+                Self::paint_modern_action_icon(
+                    painter,
+                    icon,
+                    egui::pos2(left + ICON_WIDTH / 2.0, face_rect.center().y),
+                    text_color,
+                );
+                painter.galley(
+                    egui::pos2(
+                        left + ICON_WIDTH + ICON_GAP,
+                        face_rect.center().y - galley.size().y / 2.0,
+                    ),
+                    galley,
+                    text_color,
+                );
+            } else {
+                // Never crowd the label just to fit an ornament.
+                painter.text(
+                    face_rect.center(),
+                    Align2::CENTER_CENTER,
+                    text,
+                    FontId::proportional(13.5_f32),
+                    text_color,
+                );
+            }
+        } else {
+            painter.text(
+                face_rect.center(),
+                Align2::CENTER_CENTER,
+                text,
+                FontId::proportional(13.5_f32),
+                text_color,
+            );
+        }
         response
     }
 
@@ -6993,6 +7140,39 @@ mod dashboard_layout_tests {
             assert!(contrast(palette.text_disabled, palette.button_disabled) >= 4.5);
             assert!(contrast(palette.text_disabled, palette.input_disabled) >= 4.5);
             assert!(contrast(palette.text, palette.pressed_fill) >= 4.5);
+            assert!(
+                contrast(
+                    palette.accent,
+                    OpAutoClickerApp::modern_section_tile_color(palette)
+                ) >= 4.5,
+                "section icon must be distinct from its tile"
+            );
+            // Resting input and button outlines must remain identifiable on
+            // their actual adjacent surfaces, not just on the panel face.
+            for (outline, surface) in [
+                (palette.button_border, palette.face),
+                (palette.button_border, palette.button),
+                (palette.input_border, palette.input_bg),
+                (palette.input_border, palette.group_fill),
+            ] {
+                assert!(
+                    contrast(outline, surface) >= 3.0,
+                    "control outline {outline:?} on {surface:?}"
+                );
+            }
+            for surface in [
+                palette.face,
+                palette.group_fill,
+                palette.input_bg,
+                palette.button,
+                palette.hover_fill,
+                palette.pressed_fill,
+            ] {
+                assert!(
+                    contrast(palette.accent, surface) >= 3.0,
+                    "focus accent must be visible on {surface:?}"
+                );
+            }
             let on_accent = if palette.dark {
                 Color32::BLACK
             } else {
@@ -7641,6 +7821,19 @@ mod dashboard_layout_tests {
                     egui::pos2(text.left() - 20.0, text.center().y - 9.0),
                     egui::pos2(text.left() - 2.0, text.center().y + 9.0),
                 );
+                let tile = all.iter().find_map(|shape| match shape {
+                    Shape::Rect(rect)
+                        if rect.fill
+                            == OpAutoClickerApp::modern_section_tile_color(app.palette())
+                            && icon_area.contains(rect.rect.center()) =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                });
+                let tile = tile.unwrap_or_else(|| panic!("{title} needs its icon tile"));
+                assert_eq!(tile.size(), Vec2::splat(18.0));
+                assert!(tile.right() < text.left(), "tile must not crowd {title}");
                 let count = all
                     .iter()
                     .filter(|shape| {
@@ -8699,7 +8892,7 @@ mod dashboard_layout_tests {
     }
 
     #[test]
-    fn modern_actions_paint_distinct_gradient_stop_and_ghost_states() {
+    fn modern_actions_paint_distinct_gradient_stop_and_secondary_states() {
         fn frame(
             app: &OpAutoClickerApp,
             ctx: &egui::Context,
@@ -8801,7 +8994,7 @@ mod dashboard_layout_tests {
             assert!(has_fill(
                 &normal,
                 rects[3],
-                Color32::TRANSPARENT,
+                app.palette().button,
                 app.palette().button_border
             ));
             let (hovered, _) = frame(&app, &ctx, vec![Event::PointerMoved(rects[0].center())]);
@@ -8839,6 +9032,229 @@ mod dashboard_layout_tests {
                 app.palette().hover_fill,
                 app.palette().accent
             ));
+        }
+    }
+
+    #[test]
+    fn modern_action_icons_fit_or_yield_to_the_label_and_keep_accessible_clicks() {
+        fn frame(
+            app: &OpAutoClickerApp,
+            ctx: &egui::Context,
+            ppp: f32,
+            label: &str,
+            width: f32,
+            role: (bool, bool, bool),
+            events: Vec<Event>,
+        ) -> (FullOutput, Rect, bool) {
+            let mut input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 120.0))),
+                events,
+                ..Default::default()
+            };
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .native_pixels_per_point = Some(ppp);
+            let mut rect = Rect::NOTHING;
+            let mut clicked = false;
+            let output = ctx.run(input, |ctx| {
+                app.apply_style(ctx);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let response = OpAutoClickerApp::toned_button(
+                        ui,
+                        app.palette(),
+                        label,
+                        role.0,
+                        width,
+                        role.1,
+                        role.2,
+                    );
+                    rect = response.rect;
+                    clicked = response.clicked();
+                });
+            });
+            (output, rect, clicked)
+        }
+        fn has_glyph(
+            shape: &Shape,
+            icon: ModernActionIcon,
+            expected_area: Rect,
+            color: Color32,
+        ) -> bool {
+            if let Shape::Vec(children) = shape {
+                return children
+                    .iter()
+                    .any(|child| has_glyph(child, icon, expected_area, color));
+            }
+            if !shape.visual_bounding_rect().intersects(expected_area) {
+                return false;
+            }
+            match (icon, shape) {
+                (ModernActionIcon::Start, Shape::Path(path)) => {
+                    path.fill == color && path.points.len() == 3
+                }
+                (ModernActionIcon::Stop, Shape::Rect(rect)) => {
+                    rect.fill == color && rect.rect.size() == Vec2::splat(9.0)
+                }
+                (ModernActionIcon::Hotkeys, Shape::Rect(rect)) => {
+                    rect.stroke.color == color && rect.rect.size() == Vec2::new(14.0, 10.0)
+                }
+                (ModernActionIcon::Playback, Shape::Circle(circle)) => {
+                    circle.stroke.color == color && (circle.radius - 5.5).abs() < 0.01
+                }
+                _ => false,
+            }
+        }
+        for theme in [AppTheme::ModernLight, AppTheme::ModernDark] {
+            for ppp in [1.0, 1.25, 1.5, 2.0] {
+                for (label, primary, danger) in [
+                    ("Start (F24)", true, false),
+                    ("Stop (Space)", false, true),
+                    ("Hotkeys", false, false),
+                    ("Record & Playback", false, false),
+                    ("Record / Play", false, false),
+                ] {
+                    for roomy in [false, true] {
+                        let ctx = egui::Context::default();
+                        let mut app = test_app(MainLayout::Classic);
+                        app.prefs.theme = theme;
+                        let role = (true, primary, danger);
+                        for _ in 0..5 {
+                            let _ = frame(&app, &ctx, ppp, label, 220.0, role, vec![]);
+                        }
+                        let color = if primary {
+                            Color32::from_rgb(7, 25, 35)
+                        } else if danger {
+                            Color32::WHITE
+                        } else {
+                            app.palette().text
+                        };
+                        let text_width = ctx.fonts(|fonts| {
+                            fonts
+                                .layout_no_wrap(label.to_owned(), FontId::proportional(13.5), color)
+                                .size()
+                                .x
+                        });
+                        // Both widths fit the label. Only the second can also
+                        // accommodate the mark, gap, and 8-point side insets.
+                        let width = text_width + if roomy { 38.0 } else { 12.0 };
+                        let (output, rect, _) = frame(&app, &ctx, ppp, label, width, role, vec![]);
+                        assert!((rect.width() - width).abs() < 0.01);
+                        assert!((rect.height() - 31.0).abs() < 0.01);
+                        let bounds = text_bounds(&output)
+                            .into_iter()
+                            .find(|(text, _, _)| text == label)
+                            .expect("complete visible button label")
+                            .1;
+                        assert!(
+                            rect.expand(0.5).contains_rect(bounds),
+                            "{theme:?}/{ppp}/{label}: label must fit its hit target"
+                        );
+                        let icon = OpAutoClickerApp::modern_action_icon(label, primary, danger)
+                            .expect("dashboard action has a vector mark");
+                        let icon_center = egui::pos2(
+                            rect.center().x - (14.0 + 6.0 + text_width) / 2.0 + 7.0,
+                            rect.center().y,
+                        );
+                        let expected_area = Rect::from_center_size(icon_center, Vec2::splat(16.0));
+                        assert_eq!(
+                            output.shapes.iter().any(|clipped| {
+                                has_glyph(&clipped.shape, icon, expected_area, color)
+                            }),
+                            roomy,
+                            "{theme:?}/{ppp}/{label}: mark must yield when space is tight"
+                        );
+                        if !roomy {
+                            assert!((bounds.center().x - rect.center().x).abs() < 1.0);
+                        }
+                        let position = if roomy { icon_center } else { rect.center() };
+                        let pointer = |pressed| Event::PointerButton {
+                            pos: position,
+                            button: PointerButton::Primary,
+                            pressed,
+                            modifiers: Modifiers::default(),
+                        };
+                        let _ = frame(
+                            &app,
+                            &ctx,
+                            ppp,
+                            label,
+                            width,
+                            role,
+                            vec![Event::PointerMoved(position), pointer(true)],
+                        );
+                        let (output, _, clicked) =
+                            frame(&app, &ctx, ppp, label, width, role, vec![pointer(false)]);
+                        assert!(clicked, "the entire action remains clickable");
+                        assert!(
+                            output.platform_output.events.iter().any(|event| {
+                                matches!(event, egui::output::OutputEvent::Clicked(info)
+                                if info.label.as_deref() == Some(label) && info.enabled)
+                            }),
+                            "{label}: accessible name and enabled state must be unchanged"
+                        );
+                    }
+                }
+                // Disabled Stop still has a recognizable mark, but neither
+                // that mark nor the rest of its hit area can activate it.
+                let ctx = egui::Context::default();
+                let mut app = test_app(MainLayout::Classic);
+                app.prefs.theme = theme;
+                let role = (false, false, true);
+                for _ in 0..5 {
+                    let _ = frame(&app, &ctx, ppp, "Stop (F6)", 160.0, role, vec![]);
+                }
+                let (_, _, color) =
+                    OpAutoClickerApp::modern_stop_tone(app.palette().dark, false, false, false);
+                let text_width = ctx.fonts(|fonts| {
+                    fonts
+                        .layout_no_wrap("Stop (F6)".to_owned(), FontId::proportional(13.5), color)
+                        .size()
+                        .x
+                });
+                let (output, rect, _) = frame(&app, &ctx, ppp, "Stop (F6)", 160.0, role, vec![]);
+                let icon_center = egui::pos2(
+                    rect.center().x - (14.0 + 6.0 + text_width) / 2.0 + 7.0,
+                    rect.center().y,
+                );
+                let expected_area = Rect::from_center_size(icon_center, Vec2::splat(16.0));
+                assert!(output.shapes.iter().any(|clipped| has_glyph(
+                    &clipped.shape,
+                    ModernActionIcon::Stop,
+                    expected_area,
+                    color
+                )));
+                let pointer = |pressed| Event::PointerButton {
+                    pos: icon_center,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::default(),
+                };
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    "Stop (F6)",
+                    160.0,
+                    role,
+                    vec![Event::PointerMoved(icon_center), pointer(true)],
+                );
+                let (output, _, clicked) = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    "Stop (F6)",
+                    160.0,
+                    role,
+                    vec![pointer(false)],
+                );
+                assert!(!clicked, "disabled Stop must remain inert");
+                assert!(!output.platform_output.events.iter().any(|event| {
+                    matches!(event, egui::output::OutputEvent::Clicked(info)
+                        if info.label.as_deref() == Some("Stop (F6)"))
+                }));
+            }
         }
     }
 

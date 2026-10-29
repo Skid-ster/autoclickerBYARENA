@@ -184,12 +184,13 @@ automatic adaptation controls.
 - **Classic + Light** (default) keeps the light-gray dialog, white cards,
   familiar border-breaking captions and original controls.
 - **Classic + Dark** keeps the existing Windows-style dark appearance.
-- **Modern + Light** uses cool light surfaces, teal-accented vector card
+- **Modern + Light** uses porcelain surfaces, teal-accented vector card
   headings, inset rounded inputs and the bundled Outfit typeface.
-- **Modern + Dark** uses the same design with graphite surfaces and a
-  brighter teal accent. Both include a cyan-to-blue Start action, distinct
-  active and disabled Stop states, ghost secondary actions and dimmed
-  backgrounds behind dialogs.
+- **Modern + Dark** uses the same design with layered blue-ink surfaces and
+  a brighter teal accent. Both include a mint-to-blue Start action, a neutral
+  disabled Stop, softly surfaced secondary actions and dimmed backgrounds
+  behind dialogs. Original vector action marks make the controls recognizable
+  at a glance and give way to their labels when space is limited.
 
 The choice applies to the dashboard and dialogs and is saved across restarts.
 It retains all click settings and the current responsive composition.

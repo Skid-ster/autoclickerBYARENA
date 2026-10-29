@@ -5,6 +5,50 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
+## Unreleased Modern visual refinement (source only)
+
+Modern Light and Dark use a cohesive porcelain/blue-ink palette, compact
+vector-icon caption tiles, a mint-to-blue Start action, neutral disabled Stop
+and softly surfaced secondary actions. Original vector marks accompany the
+four main actions only when there is enough room for their complete labels;
+they do not add widgets or change the controls' accessible names. Classic,
+the older themes, dashboard compositions and window-scaling rules are not
+redesigned. Updating remains explicit and user-initiated.
+
+Local verification with Rust 1.88.0:
+
+- **82 actual-egui app/worker tests** and **140 standalone tests** passed.
+  The former use an eframe stub and simulated Win32/input/timing; five updater
+  fault tests overlap the latter count. New checks exercise each action icon
+  at four pixel densities, both with room for the mark and with the mark
+  omitted, including click events and accessible names. Disabled Stop remains
+  inert. Existing tests still cover keyboard traversal, dashboard geometry,
+  update notifications and lifecycle, macro controls, worker outcomes and
+  updater failure handling.
+- Tested Modern body, muted, caption, accent and status colors are at least
+  5.21:1 across the six configured panel/control surfaces. Accent text on the
+  tested selection fill is at least 4.96:1. The minimum of 21 samples along
+  each Start gradient state is 5.92:1; disabled Stop text is at least 4.88:1,
+  and icon tile contrast is at least 5.34:1. Tested resting input/button
+  outlines are at least 3.26:1 on their adjacent surfaces. These checks do not
+  establish application-wide accessibility conformance.
+- An actual-egui before/after comparison covered **140 cases** (seven themes,
+  five compositions and four pixel densities): painted card and rectangular
+  control shapes and non-action labels stayed in place. Modern header and
+  action-label positions within their existing surfaces were intentionally
+  refined. Software rasters of Classic Light/Dark and all three legacy themes
+  at compact, tall and wide sizes matched the previous source byte for byte
+  in **15 cases**. Modern
+  Light/Dark, wide, narrow, slender, Settings and Updates rasters were also
+  inspected. These are software simulations, not Windows screenshots.
+- Formatting, `git diff --check`, Linux harness Clippy, Windows-GNU all-target
+  source checking and Clippy with project warnings denied passed. The local
+  Windows checks use an eframe stub and do not link or run a Windows binary.
+
+Native Windows interaction, real input injection, screen-reader integration,
+multimonitor/mixed-DPI behavior and a real update/relaunch still need hands-on
+verification. No release is implied by these source-only changes.
+
 ## Unreleased stability hardening (source only)
 
 Fixed-position and recorded macro moves now use the virtual-desktop flag,
@@ -41,9 +85,10 @@ Local verification with Rust 1.88.0:
   linked or run in this local check; dependency-wrapper warnings were not
   project warnings.
 
-The appearance, controls, explicit updater, QPC spin schedule and batched
-`SendInput` design are unchanged. Native Windows CI and hands-on Windows tests
-are separate from these local checks. In particular, real multi-monitor and
+The stability changes themselves did not redesign the appearance or controls;
+the explicit updater, QPC spin schedule and batched `SendInput` design remain
+in use. Native Windows CI and hands-on Windows tests are separate from these
+local checks. In particular, real multi-monitor and
 mixed-DPI input placement, display disconnects, focus behavior and actual
 update/relaunch still require interactive verification. No new release is
 implied by this source-only work.

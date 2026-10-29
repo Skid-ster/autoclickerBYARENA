@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+
+- Refined Modern Light and Dark with cohesive ink/porcelain surfaces,
+  clearer card captions, a mint-to-blue Start action, neutral disabled Stop,
+  and original vector marks for the main actions. Icons yield to their text
+  when space is limited. Classic and the responsive compositions are unchanged.
+
 ### Fixed
 
 - Map fixed-position clicks and macro playback to the whole virtual desktop,
