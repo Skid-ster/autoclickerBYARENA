@@ -44,9 +44,21 @@ Executed locally with Rust 1.88:
   sources, egui 0.27.2 and `windows-sys` 0.52.0, with eframe stubbed.
   No executable was linked or run; local path dependencies emitted their
   own warnings. The Linux headless harness also passed project Clippy.
-- A software rasterization of actual egui output at the screenshot-like
-  size was inspected to supplement the numeric geometry checks; it is not
-  a Windows screenshot or a native GPU rendering.
+- An additional headless sweep checked long update labels at six pixel
+  densities, five themes, two extreme valid versions and three installation
+  types. A software rasterization of actual egui output at the screenshot-like
+  size was inspected to supplement numeric geometry checks; it is not a
+  Windows screenshot or a native GPU rendering.
+
+The first v1.5.2 candidate commit `7875c1311558ff34d6a1a67a6d3e6f8614c3ba8b`
+passed [Windows MSVC CI run 40813908563, job 123250392214](https://github.com/Skid-ster/autoclickerBYARENA/actions/runs/40813908563/job/123250392214):
+format, Clippy with warnings denied, tests, release build, GUI-subsystem and
+version-resource checks, and artifact upload succeeded. The metadata annotation
+reported GUI subsystem 2, ProductName MacroClicker, FileVersion 1.5.2, and
+3,917,824 bytes. Publication was correctly skipped for the pull request.
+This run also warned that its checkout and artifact actions targeted the
+retired Node.js 20 runtime; the workflow now uses their Node.js 24 versions,
+without changing the tests or release gates.
 
 These local checks do not establish real Windows resize feel, Snap, mixed-DPI
 transitions, actual input, or update/relaunch behavior. Windows MSVC CI is the

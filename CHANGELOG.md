@@ -13,6 +13,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Removed the manual Window scale percentage picker; automatic window
   adaptation remains available, and existing saved scale values are retained.
+- Updated CI checkout and artifact actions to versions using the supported
+  Node.js 24 runtime.
 
 ### Fixed
 
