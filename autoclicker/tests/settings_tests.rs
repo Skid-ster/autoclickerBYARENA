@@ -13,29 +13,30 @@ use settings::{parse_settings, serialize_settings};
 
 #[test]
 fn full_round_trip_preserves_every_field() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 250.5;
-    config.random_offset_ms = 12.0;
-    config.sigma_ms = 3.25;
-    config.sigma_percent = 7.5;
-    config.min_interval_ms = 2.0;
-    config.max_interval_ms = 9_000.0;
-    config.hold_mean_ms = 33.0;
-    config.hold_sigma_ms = 4.0;
-    config.hold_min_ms = 2.0;
-    config.hold_max_ms = 400.0;
-    config.input_mode = InputMode::BackgroundHwnd;
-    config.coordinate_mode = CoordinateMode::WindowClient;
-    config.fixed_x = -120;
-    config.fixed_y = 340;
-    config.client_x = 55;
-    config.client_y = 77;
-    config.target_hwnd = 0;
-    config.background_synchronous = true;
-    config.mouse_button = MouseButton::Right;
-    config.click_type = ClickType::Triple;
-    config.humanize_enabled = true;
-    config.max_clicks = 1_234;
+    let config = EngineConfig {
+        base_interval_ms: 250.5,
+        random_offset_ms: 12.0,
+        sigma_ms: 3.25,
+        sigma_percent: 7.5,
+        min_interval_ms: 2.0,
+        max_interval_ms: 9_000.0,
+        hold_mean_ms: 33.0,
+        hold_sigma_ms: 4.0,
+        hold_min_ms: 2.0,
+        hold_max_ms: 400.0,
+        input_mode: InputMode::BackgroundHwnd,
+        coordinate_mode: CoordinateMode::WindowClient,
+        fixed_x: -120,
+        fixed_y: 340,
+        client_x: 55,
+        client_y: 77,
+        target_hwnd: 0,
+        background_synchronous: true,
+        mouse_button: MouseButton::Right,
+        click_type: ClickType::Triple,
+        humanize_enabled: true,
+        max_clicks: 1_234,
+    };
 
     let prefs = AppPrefs {
         toggle_hotkey_vk: VK_F7,
@@ -153,8 +154,10 @@ fn empty_document_yields_defaults() {
 #[test]
 fn every_theme_round_trips_through_the_settings_file() {
     for theme in AppTheme::all() {
-        let mut wanted = AppPrefs::default();
-        wanted.theme = theme;
+        let wanted = AppPrefs {
+            theme,
+            ..AppPrefs::default()
+        };
         let document = serialize_settings(&EngineConfig::default(), &wanted);
         assert!(
             document.contains(&format!("theme={}", theme.key())),
@@ -170,6 +173,32 @@ fn every_theme_round_trips_through_the_settings_file() {
 ",
     );
     assert_eq!(prefs.theme, AppTheme::Classic);
+}
+
+#[test]
+fn appearance_keys_preserve_other_saved_preferences_and_legacy_precedence() {
+    for (key, expected) in [
+        ("classic", AppTheme::Classic),
+        ("dark", AppTheme::Dark),
+        ("modern_light", AppTheme::ModernLight),
+        ("modern_dark", AppTheme::ModernDark),
+        ("oled", AppTheme::Oled),
+        ("matrix", AppTheme::Matrix),
+        ("aurora", AppTheme::Aurora),
+    ] {
+        for document in [
+            format!("dark_mode=false\ntheme={key}\nwindow_width=720\nwindow_height=560\n"),
+            format!("theme={key}\ndark_mode=false\nwindow_width=720\nwindow_height=560\n"),
+        ] {
+            let (config, prefs) = parse_settings(&document);
+            assert_eq!(prefs.theme, expected);
+            assert_eq!((prefs.window_width, prefs.window_height), (720, 560));
+            let (restored_config, restored_prefs) =
+                parse_settings(&serialize_settings(&config, &prefs));
+            assert_eq!(restored_config, config);
+            assert_eq!(restored_prefs, prefs);
+        }
+    }
 }
 
 #[test]

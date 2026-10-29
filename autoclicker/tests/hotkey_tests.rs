@@ -6,7 +6,7 @@ mod hotkey;
 use hotkey::{
     capturable_vks, fit_independent_window_size, is_reserved_panic_vk, is_supported_toggle_vk,
     sanitize_ui_scale, sanitize_window_size, vk_display_name, window_floor_for_auto_zoom, AppPrefs,
-    AppTheme, PANIC_VK, UI_SCALE_OPTIONS, VK_ESCAPE, VK_F6,
+    AppTheme, AppearanceMode, AppearanceStyle, PANIC_VK, UI_SCALE_OPTIONS, VK_ESCAPE, VK_F6,
 };
 
 #[test]
@@ -49,6 +49,51 @@ fn theme_keys_and_labels_are_stable_and_unique() {
     // that still names them falls back to the default theme instead.
     assert_eq!(AppTheme::from_key("mog"), None);
     assert_eq!(AppTheme::from_key("vaporwave"), None);
+}
+
+#[test]
+fn style_and_mode_form_four_distinct_appearances() {
+    for (style, mode, expected, key) in [
+        (
+            AppearanceStyle::Classic,
+            AppearanceMode::Light,
+            AppTheme::Classic,
+            "classic",
+        ),
+        (
+            AppearanceStyle::Classic,
+            AppearanceMode::Dark,
+            AppTheme::Dark,
+            "dark",
+        ),
+        (
+            AppearanceStyle::Modern,
+            AppearanceMode::Light,
+            AppTheme::ModernLight,
+            "modern_light",
+        ),
+        (
+            AppearanceStyle::Modern,
+            AppearanceMode::Dark,
+            AppTheme::ModernDark,
+            "modern_dark",
+        ),
+    ] {
+        assert_eq!(AppTheme::from_appearance(style, mode), expected);
+        assert_eq!(expected.style(), Some(style));
+        assert_eq!(expected.mode(), mode);
+        assert_eq!(expected.key(), key);
+        assert_eq!(AppTheme::from_key(key), Some(expected));
+    }
+    for theme in AppTheme::previous() {
+        assert_eq!(
+            theme.style(),
+            None,
+            "a previous theme is not silently remapped"
+        );
+        assert_eq!(theme.mode(), AppearanceMode::Dark);
+        assert_eq!(AppTheme::from_key(theme.key()), Some(theme));
+    }
 }
 
 #[test]

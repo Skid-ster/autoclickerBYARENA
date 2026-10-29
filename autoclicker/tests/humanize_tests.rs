@@ -33,13 +33,15 @@ fn seeded_rng_is_reproducible() {
 
 #[test]
 fn interval_distribution_matches_moments() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 100.0;
-    config.sigma_ms = 5.0;
-    config.sigma_percent = 0.0;
-    config.min_interval_ms = 1.0;
-    config.max_interval_ms = 1000.0;
-    config.humanize_enabled = true;
+    let config = EngineConfig {
+        base_interval_ms: 100.0,
+        sigma_ms: 5.0,
+        sigma_percent: 0.0,
+        min_interval_ms: 1.0,
+        max_interval_ms: 1000.0,
+        humanize_enabled: true,
+        ..EngineConfig::default()
+    };
 
     let humanizer = GaussianHumanizer::with_seed(7);
     let samples = 50_000;
@@ -61,11 +63,13 @@ fn interval_distribution_matches_moments() {
 
 #[test]
 fn hold_distribution_is_clamped() {
-    let mut config = EngineConfig::default();
-    config.hold_mean_ms = 40.0;
-    config.hold_sigma_ms = 6.0;
-    config.hold_min_ms = 10.0;
-    config.hold_max_ms = 90.0;
+    let config = EngineConfig {
+        hold_mean_ms: 40.0,
+        hold_sigma_ms: 6.0,
+        hold_min_ms: 10.0,
+        hold_max_ms: 90.0,
+        ..EngineConfig::default()
+    };
 
     let humanizer = GaussianHumanizer::with_seed(11);
     let mut sum = 0.0;
@@ -80,11 +84,13 @@ fn hold_distribution_is_clamped() {
 
 #[test]
 fn zero_sigma_and_disabled_humanization_are_exact() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 75.0;
-    config.sigma_ms = 0.0;
-    config.sigma_percent = 0.0;
-    config.humanize_enabled = true;
+    let mut config = EngineConfig {
+        base_interval_ms: 75.0,
+        sigma_ms: 0.0,
+        sigma_percent: 0.0,
+        humanize_enabled: true,
+        ..EngineConfig::default()
+    };
     let humanizer = GaussianHumanizer::with_seed(3);
     for _ in 0..100 {
         assert!((humanizer.next_interval_ms(&config) - 75.0).abs() < 1e-12);
@@ -99,11 +105,13 @@ fn zero_sigma_and_disabled_humanization_are_exact() {
 
 #[test]
 fn aggressive_clamp_never_negative() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 5.0;
-    config.sigma_ms = 50.0;
-    config.min_interval_ms = 2.0;
-    config.max_interval_ms = 8.0;
+    let config = EngineConfig {
+        base_interval_ms: 5.0,
+        sigma_ms: 50.0,
+        min_interval_ms: 2.0,
+        max_interval_ms: 8.0,
+        ..EngineConfig::default()
+    };
     let humanizer = GaussianHumanizer::with_seed(99);
     for _ in 0..30_000 {
         let value = humanizer.next_interval_ms(&config);
@@ -113,9 +121,11 @@ fn aggressive_clamp_never_negative() {
 
 #[test]
 fn zero_offset_is_exact_base_interval() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 120.0;
-    config.random_offset_ms = 0.0;
+    let config = EngineConfig {
+        base_interval_ms: 120.0,
+        random_offset_ms: 0.0,
+        ..EngineConfig::default()
+    };
     let humanizer = GaussianHumanizer::with_seed(7);
     for _ in 0..100 {
         assert!((humanizer.next_offset_interval_ms(&config) - 120.0).abs() < 1e-12);
@@ -124,11 +134,13 @@ fn zero_offset_is_exact_base_interval() {
 
 #[test]
 fn random_offset_stays_inside_bounds() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 200.0;
-    config.random_offset_ms = 40.0;
-    config.min_interval_ms = 1.0;
-    config.max_interval_ms = 10_000.0;
+    let config = EngineConfig {
+        base_interval_ms: 200.0,
+        random_offset_ms: 40.0,
+        min_interval_ms: 1.0,
+        max_interval_ms: 10_000.0,
+        ..EngineConfig::default()
+    };
     let humanizer = GaussianHumanizer::with_seed(11);
     for _ in 0..50_000 {
         let value = humanizer.next_offset_interval_ms(&config);
@@ -141,9 +153,11 @@ fn random_offset_stays_inside_bounds() {
 
 #[test]
 fn random_offset_uses_uniform_distribution() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 1_000.0;
-    config.random_offset_ms = 100.0;
+    let config = EngineConfig {
+        base_interval_ms: 1_000.0,
+        random_offset_ms: 100.0,
+        ..EngineConfig::default()
+    };
     let humanizer = GaussianHumanizer::with_seed(23);
     let samples: Vec<f64> = (0..20_000)
         .map(|_| humanizer.next_offset_interval_ms(&config))

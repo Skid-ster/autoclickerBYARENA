@@ -16,8 +16,10 @@ fn default_config_validates() {
 
 #[test]
 fn invalid_intervals_rejected() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 0.0;
+    let mut config = EngineConfig {
+        base_interval_ms: 0.0,
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_err());
     config.base_interval_ms = -1.0;
     assert!(config.validate().is_err());
@@ -29,8 +31,10 @@ fn invalid_intervals_rejected() {
 
 #[test]
 fn negative_sigma_rejected() {
-    let mut config = EngineConfig::default();
-    config.sigma_ms = -0.1;
+    let mut config = EngineConfig {
+        sigma_ms: -0.1,
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_err());
     config.sigma_ms = 5.0;
     config.sigma_percent = -2.0;
@@ -42,9 +46,11 @@ fn negative_sigma_rejected() {
 
 #[test]
 fn inverted_clamps_rejected() {
-    let mut config = EngineConfig::default();
-    config.min_interval_ms = 200.0;
-    config.max_interval_ms = 50.0;
+    let mut config = EngineConfig {
+        min_interval_ms: 200.0,
+        max_interval_ms: 50.0,
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_err());
 
     config.min_interval_ms = 1.0;
@@ -60,10 +66,12 @@ fn inverted_clamps_rejected() {
 
 #[test]
 fn hold_range_validation() {
-    let mut config = EngineConfig::default();
-    config.hold_min_ms = 10.0;
-    config.hold_max_ms = 20.0;
-    config.hold_mean_ms = 50.0;
+    let mut config = EngineConfig {
+        hold_min_ms: 10.0,
+        hold_max_ms: 20.0,
+        hold_mean_ms: 50.0,
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_err());
     config.hold_mean_ms = 15.0;
     assert!(config.validate().is_ok());
@@ -73,9 +81,11 @@ fn hold_range_validation() {
 
 #[test]
 fn background_requires_hwnd() {
-    let mut config = EngineConfig::default();
-    config.input_mode = InputMode::BackgroundHwnd;
-    config.target_hwnd = 0;
+    let mut config = EngineConfig {
+        input_mode: InputMode::BackgroundHwnd,
+        target_hwnd: 0,
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_err());
     config.target_hwnd = 0x1234;
     assert!(config.validate().is_ok());
@@ -83,8 +93,10 @@ fn background_requires_hwnd() {
 
 #[test]
 fn negative_client_coordinates_rejected() {
-    let mut config = EngineConfig::default();
-    config.client_x = -5;
+    let mut config = EngineConfig {
+        client_x: -5,
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_err());
     config.client_x = 10;
     config.client_y = -1;
@@ -93,25 +105,29 @@ fn negative_client_coordinates_rejected() {
 
 #[test]
 fn sub_millisecond_interval_accepted() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 0.25;
-    config.min_interval_ms = 0.05;
-    config.max_interval_ms = 5.0;
-    config.sigma_ms = 0.02;
+    let config = EngineConfig {
+        base_interval_ms: 0.25,
+        min_interval_ms: 0.05,
+        max_interval_ms: 5.0,
+        sigma_ms: 0.02,
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_ok());
     assert!((config.target_cps() - 4000.0).abs() < 1e-9);
 }
 
 #[test]
 fn atomic_snapshot_round_trip() {
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 12.5;
-    config.sigma_ms = 1.25;
-    config.coordinate_mode = CoordinateMode::WindowClient;
-    config.fixed_x = -640;
-    config.client_y = 250;
-    config.max_clicks = 42;
-    config.humanize_enabled = false;
+    let config = EngineConfig {
+        base_interval_ms: 12.5,
+        sigma_ms: 1.25,
+        coordinate_mode: CoordinateMode::WindowClient,
+        fixed_x: -640,
+        client_y: 250,
+        max_clicks: 42,
+        humanize_enabled: false,
+        ..EngineConfig::default()
+    };
 
     let snapshot = AtomicConfigSnapshot::default();
     snapshot.store(&config);
@@ -140,8 +156,10 @@ fn interval_parts_round_trip() {
 
 #[test]
 fn random_offset_validation_rules() {
-    let mut config = EngineConfig::default();
-    config.random_offset_ms = 5.0;
+    let mut config = EngineConfig {
+        random_offset_ms: 5.0,
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_ok());
 
     config.random_offset_ms = -1.0;
@@ -149,10 +167,12 @@ fn random_offset_validation_rules() {
     config.random_offset_ms = f64::NAN;
     assert!(config.validate().is_err());
 
-    let mut config = EngineConfig::default();
-    config.base_interval_ms = 100.0;
-    config.min_interval_ms = 10.0;
-    config.random_offset_ms = 95.0; // base - offset = 5 ms, below minimum
+    let mut config = EngineConfig {
+        base_interval_ms: 100.0,
+        min_interval_ms: 10.0,
+        random_offset_ms: 95.0, // base - offset = 5 ms, below minimum
+        ..EngineConfig::default()
+    };
     assert!(config.validate().is_err());
     config.random_offset_ms = 90.0; // exactly the minimum is allowed
     assert!(config.validate().is_ok());
@@ -160,10 +180,12 @@ fn random_offset_validation_rules() {
 
 #[test]
 fn click_type_and_mouse_button_survive_snapshot() {
-    let mut config = EngineConfig::default();
-    config.mouse_button = MouseButton::Middle;
-    config.click_type = ClickType::Triple;
-    config.random_offset_ms = 7.5;
+    let config = EngineConfig {
+        mouse_button: MouseButton::Middle,
+        click_type: ClickType::Triple,
+        random_offset_ms: 7.5,
+        ..EngineConfig::default()
+    };
 
     let snapshot = AtomicConfigSnapshot::default();
     snapshot.store(&config);
