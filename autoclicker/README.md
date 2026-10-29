@@ -1,17 +1,30 @@
 # MacroClicker (Rust / eframe egui / windows-sys)
 
 **MacroClicker** is a Windows x64 auto-clicker written in stable Rust and
-egui. The familiar clicker controls are available in **Classic** and
-**Modern** styles, each with **Light** and **Dark** modes. The dashboard
-remains resizable and non-scrolling at supported sizes. It is backed by a
+egui. The familiar clicker controls are available in **Classic**, **Modern**
+and customizable **Custom** styles, each with **Light** and **Dark** modes.
+An opt-in real-click timing test measures a selected configuration. The
+dashboard remains resizable and non-scrolling at supported sizes. It is backed by a
 dedicated QPC spin-scheduled worker, uniform/Gaussian timing jitter, global
 `SendInput` injection and background HWND message delivery.
 
 ## Requirements
 
 - Windows 10 21H2 or Windows 11, x64
-- Rust stable toolchain (edition 2021), 1.75 or newer recommended
+- A current stable Rust toolchain (edition 2021); CI uses stable
 - Network access on first build to fetch the pinned crates from crates.io
+
+One unbenchmarked reference configuration reported by the user is an Intel
+Core i5-13400, GeForce RTX 5060 Ti 8 GB and 16 GB RAM. The app is not locked
+to that hardware. Windows controls hybrid-core placement; the program does
+not pin the worker to a P-core or E-core, and the GPU does not accelerate
+click scheduling. Timing, display scaling and input behavior depend on the
+CPU, Windows configuration, workload, display and target application. The
+active worker requests time-critical priority and a 1 ms timer period, then
+busy-spins and may consume a logical CPU and additional power even at long
+intervals. Tune and verify on the actual machine; no native benchmark has been
+run on the reported PC. See the [hardware guidance](../README.md#hardware-and-performance)
+in the root README.
 
 Dependencies are pinned exactly in `Cargo.toml`: `eframe = "=0.27.2"`,
 `egui = "=0.27.2"` and `windows-sys = "=0.52.0"`.
@@ -39,7 +52,7 @@ cargo run --release
 cargo test --release
 ```
 
-Twelve integration test binaries run platform-independent logic (142 test
+Fourteen integration test binaries run platform-independent logic (153 test
 cases, including the self-update module's fault-injection cases). Windows
 also runs the dashboard and click-worker unit tests:
 
@@ -62,6 +75,12 @@ also runs the dashboard and click-worker unit tests:
   cap refuses further clicks, clear resets the timeline, loop indexing
   wraps exactly, and finite loop counts produce an exact saturating click
   budget while "until stopped" stays unlimited.
+- `stability_tests` — explicit late-cycle, worst-deadline and end-overrun
+  thresholds; sample minimums, invalid/short runs, warnings, failures,
+  interruptions, rounded metrics and privacy-limited reports. No real input
+  is sent.
+- `texture_tests` — deterministic, bounded procedural material texture
+  generation, including checks across every row and column.
 - `schedule_tests` — the pure absolute-schedule arithmetic: exact drift-free
   cadence when on time, jitter within the catch-up slack absorbed without
   re-anchoring, a stall beyond the slack re-anchoring to "now" instead of
@@ -193,13 +212,23 @@ automatic adaptation controls.
   backgrounds. Radio choices and checkboxes use distinct shapes with clear
   selected and focus states. Original vector action marks make controls
   recognizable at a glance and give way to their labels when space is limited.
+- **Custom + Light/Dark** applies two chosen RGB colors
+  to a directional gradient on the dashboard, cards, dialogs and primary
+  action. Surfaces sample a shared window-wide gradient rather than restarting
+  it for each card; the preview and primary action show their full local range.
+  Expand **Customize gradient** for the color pickers, 0–359° rotation,
+  0–100% gradient strength and adjustable surface texture, plus reset. The
+  static matte grain is generated locally and cached; set texture to 0% to turn
+  it off. Colors are softened and foregrounds adapted to keep text readable.
+  The controls persist even if another style is selected. At 0° the gradient
+  runs left to right.
 
 The choice applies to the dashboard and dialogs and is saved across restarts.
 It retains all click settings and the current responsive composition.
 The previous **Midnight OLED**, **Terminal green** and **Aurora modern**
 looks remain under **Previous themes**. An existing saved theme stays in
-place on upgrade; while a previous theme is selected, choose Classic or
-Modern before changing its mode. The bundled font and its SIL Open Font
+place on upgrade; while a previous theme is selected, choose Classic,
+Modern or Custom before changing its mode. The bundled font and its SIL Open Font
 License are documented in [`assets/fonts`](assets/fonts/README.md); the full
 license is also readable offline from Modern Settings.
 
@@ -212,8 +241,9 @@ installation's size or appearance.
 Legacy settings files from the dark-mode-only build are still honored:
 `dark_mode=true` loads Classic Dark, `dark_mode=false` loads Classic Light,
 and a recognized `theme=` key always wins over the legacy boolean. The
-new keys are `modern_light` and `modern_dark`; `classic`, `dark`, `oled`,
-`matrix` and `aurora` retain their existing meanings.
+current keys include `modern_light`, `modern_dark`, `custom_light` and
+`custom_dark`; `classic`, `dark`, `oled`, `matrix` and `aurora` retain their
+existing meanings.
 
 Styles share the same responsive compositions and controls, though font
 metrics and card padding differ. Switching appearance can move controls
@@ -337,6 +367,43 @@ range is saved as zero instead of invalidating unrelated settings. An
 update will not restart while settings cannot be saved. A stale window handle from
 a previous session is never reused.
 
+## Real-click stability test
+
+**This sends real desktop clicks.** Choose a disposable safe target: the
+configured current cursor or fixed position may point at controls in any
+application. Do not test over important data or destructive actions.
+
+Open **Settings… → Open stability test…**, choose **10–60 seconds**, and
+press **Start real-click test**. The three-second countdown gives you time to
+move the cursor; a fixed position still uses the configured point. The worker
+runs a snapshot of the current interval, offset, button, click type and
+position. It ignores the finite repeat limit only for this test and does not
+change saved click settings. Stop, the enabled start/stop hotkey, F8, or
+closing the test window cancels. A countdown that expires while the UI is
+unresponsive is cancelled rather than starting clicks unexpectedly. Hotkeys
+are UI-polled, but the worker's own deadline caps its interval, hold and burst
+gap waits and it attempts button-up before finishing. A blocked OS call can
+still delay completion.
+
+A **good timing** verdict requires the full duration, at least **20 completed
+cycles**, **no engine warning**, **at most 5% late**, a worst observed
+deadline lateness of **at most 250 ms**, and an end overrun of **at most
+250 ms**. A cycle is marked late if the scheduler was already overdue or
+dispatch was more than 1 ms late. Double/triple clicks form one cycle.
+Interrupted, failed, warned or short/undersampled runs do not pass. A single
+large observed deadline slip cannot hide inside a low percentage of late cycles.
+
+Progress, exact counts, rounded late percentage, average cycles per second,
+worst observed deadline lateness and end overrun are shown. The maximum uses
+the original deadline before catch-up re-anchoring and includes a deadline
+missed as the test ends. These totals and maximum remain valid if the bounded
+telemetry ring drops records. **Copy timing report** requests an optional
+clipboard copy of the timing summary, omitting cursor coordinates, machine
+identifiers, click settings other than duration, and raw error details. The
+result measures this worker's timing and reports input-dispatch failures; it
+cannot detect every kind of stall or prove the target received clicks, predict
+future uptime or guarantee universal stability.
+
 ## Architecture
 
 | File | Responsibility |
@@ -350,6 +417,8 @@ a previous session is never reused.
 | `src/icon.rs` | Procedurally generated 32x32 RGBA crosshair icon via signed-distance pixel math; no binary asset |
 | `src/humanize.rs` | Thread-local SplitMix64 PRNG (OS/QPC entropy), Box-Muller Gaussian and uniform +/- offset samples with clamping |
 | `src/settings.rs` | Dependency-free key=value serialization, tolerant parsing and atomic settings writes |
+| `src/stability.rs` | Conservative interpretation of real-click timing measurements |
+| `src/texture.rs` | Deterministic, tileable procedural grain for Custom surfaces |
 | `src/telemetry.rs` | Lock-free SPSC ring buffer over atomic `Atom` slots (`Send + Sync`, no `unsafe`), drop-newest back pressure, sliding-window statistics |
 | `src/config.rs` | Configuration struct, validation, h/m/s/ms helpers and the all-atomic runtime snapshot |
 | `src/coordinates.rs` | Bounded virtual-desktop normalization and mouse-message coordinate packing |
@@ -436,8 +505,9 @@ a previous session is never reused.
    every control returns to its default (100 ms, Left, Single, repeat
    until stopped, Current location, F6, Classic light at 100 %) and the
    status strip confirms "Factory defaults restored."
-10. Press F8 mid-run: the session stops within one interval, the status turns
-    red and no mouse button remains stuck.
+10. Press F8 mid-run: the responsive UI detects it, the worker stops and
+    attempts button-up, the status turns red, and no mouse button remains
+    held. OS calls or an unresponsive UI can delay this response.
 11. Open Settings… → Appearance. Try Classic Light, Classic Dark, Modern
     Light and Modern Dark, including each dialog and a restart. Confirm the
     selected appearance persists, controls stay usable at compact, tall and
@@ -451,9 +521,8 @@ a previous session is never reused.
 12. Start a "Repeat until stopped" session, then press Stop: the status
     shows "Stopping…" for at most a moment and then settles on
     "Stopped — N clicks delivered." — it must never remain stuck on
-    "Stopping…". While running, the status dot pulses gently; hovering
-    any enabled button lifts it slightly with a soft shadow; pressing it
-    sits it back down.
+    "Stopping…". The status dot briefly acknowledges a state change;
+    hovering an enabled action lifts it slightly and pressing it lowers it.
 13. In Settings…, confirm there is no Window scale percentage picker.
     Turn automatic adaptation off and resize: the classic layout remains.
     Turn it back on and resize again: the controls reflow and scale.
@@ -517,10 +586,10 @@ a previous session is never reused.
     missing result refreshes on open, and the status card must show
     **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**,
     and **Channel**, with the verdict naming the version GitHub reported.
-    With v1.8.0 published, a portable v1.7.0 EXE should show **Update
-    v1.8.0** with a red **1** after confirming the available update. The
+    With v1.9.0 published, a portable v1.8.0 EXE should show **Update
+    v1.9.0** with a red **1** after confirming the available update. The
     badge must behave like the rest of the button when clicked. After
-    updating, the v1.8.0 footer should show no red notification while up to
+    updating, the v1.9.0 footer should show no red notification while up to
     date; a controlled newer-release fixture can test a future notification.
     It disappears during installation and returns after cancellation or
     failure if the newer version remains confirmed.
@@ -536,9 +605,9 @@ a previous session is never reused.
     the running version was not changed, and keep the current build
     working. **Release notes** opens that version's GitHub page and
     **Copy download link** puts the exact asset URL on the clipboard.
-    For the source path, launch a v1.7.0
+    For the source path, launch a v1.8.0
     `target\release\macro_clicker.exe` from a clean `main` checkout still at
-    v1.7.0 after v1.8.0 is published: **Installation** must say
+    v1.8.0 after v1.9.0 is published: **Installation** must say
     **Source checkout build**, the stages must begin with **Source**,
     the checkout must land exactly on that release tag, and the app
     must reopen as the new version. Make a tracked local edit and
@@ -571,3 +640,17 @@ a previous session is never reused.
     oversized or invalid-UTF-8 settings file. Reopen the app, check the
     recovery instructions in Settings, and verify reset and exit do not
     overwrite that file. Close the app, restore the backup and reopen it.
+21. Select Custom Light and Dark. Expand
+    **Customize gradient**, try contrasting and identical colors, rotate,
+    adjust gradient and texture strength (including 0%), then restart.
+    Check dashboard and dialog readability,
+    keyboard access, reset, persistence, responsive layouts and unchanged
+    Classic/Modern appearances.
+22. With a disposable safe target, verify the real-click test warning and
+    10–60-second range. Check current and fixed positions, a finite repeat
+    setting, countdown cancellation via Stop/F8/close, cancellation while
+    clicking, timeout, long intervals/insufficient data, and dispatch error
+    handling. Verify the live progress, result thresholds and optional copied
+    report; test a resumed or delayed run without relying on it to detect
+    every stall. Confirm no button remains held. The result is not proof that
+    the target received input. These are hands-on checks, not CI automation.

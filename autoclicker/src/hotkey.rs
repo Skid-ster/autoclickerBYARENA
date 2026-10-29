@@ -28,11 +28,12 @@ const VK_A: i32 = 0x41;
 const VK_Z: i32 = 0x5A;
 const VK_SPACE: i32 = 0x20;
 
-/// The two current visual styles. Each can be used in light or dark mode.
+/// Each current visual style can be used in light or dark mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppearanceStyle {
     Classic,
     Modern,
+    Custom,
 }
 
 /// Color mode is independent of the selected visual style.
@@ -55,6 +56,10 @@ pub enum AppTheme {
     ModernLight,
     /// Modern dark cards and controls.
     ModernDark,
+    /// A user-defined gradient with light surfaces.
+    CustomLight,
+    /// A user-defined gradient with dark surfaces.
+    CustomDark,
     /// Previous pure-black theme.
     Oled,
     /// Previous green-on-black theme.
@@ -64,12 +69,14 @@ pub enum AppTheme {
 }
 
 impl AppTheme {
-    pub fn all() -> [AppTheme; 7] {
+    pub fn all() -> [AppTheme; 9] {
         [
             AppTheme::Classic,
             AppTheme::Dark,
             AppTheme::ModernLight,
             AppTheme::ModernDark,
+            AppTheme::CustomLight,
+            AppTheme::CustomDark,
             AppTheme::Oled,
             AppTheme::Matrix,
             AppTheme::Aurora,
@@ -86,15 +93,19 @@ impl AppTheme {
         match self {
             AppTheme::Classic | AppTheme::Dark => Some(AppearanceStyle::Classic),
             AppTheme::ModernLight | AppTheme::ModernDark => Some(AppearanceStyle::Modern),
+            AppTheme::CustomLight | AppTheme::CustomDark => Some(AppearanceStyle::Custom),
             AppTheme::Oled | AppTheme::Matrix | AppTheme::Aurora => None,
         }
     }
 
     pub fn mode(self) -> AppearanceMode {
         match self {
-            AppTheme::Classic | AppTheme::ModernLight => AppearanceMode::Light,
+            AppTheme::Classic | AppTheme::ModernLight | AppTheme::CustomLight => {
+                AppearanceMode::Light
+            }
             AppTheme::Dark
             | AppTheme::ModernDark
+            | AppTheme::CustomDark
             | AppTheme::Oled
             | AppTheme::Matrix
             | AppTheme::Aurora => AppearanceMode::Dark,
@@ -107,6 +118,8 @@ impl AppTheme {
             (AppearanceStyle::Classic, AppearanceMode::Dark) => AppTheme::Dark,
             (AppearanceStyle::Modern, AppearanceMode::Light) => AppTheme::ModernLight,
             (AppearanceStyle::Modern, AppearanceMode::Dark) => AppTheme::ModernDark,
+            (AppearanceStyle::Custom, AppearanceMode::Light) => AppTheme::CustomLight,
+            (AppearanceStyle::Custom, AppearanceMode::Dark) => AppTheme::CustomDark,
         }
     }
 
@@ -117,6 +130,8 @@ impl AppTheme {
             AppTheme::Dark => "dark",
             AppTheme::ModernLight => "modern_light",
             AppTheme::ModernDark => "modern_dark",
+            AppTheme::CustomLight => "custom_light",
+            AppTheme::CustomDark => "custom_dark",
             AppTheme::Oled => "oled",
             AppTheme::Matrix => "matrix",
             AppTheme::Aurora => "aurora",
@@ -132,6 +147,8 @@ impl AppTheme {
             "dark" => Some(AppTheme::Dark),
             "modern_light" => Some(AppTheme::ModernLight),
             "modern_dark" => Some(AppTheme::ModernDark),
+            "custom_light" => Some(AppTheme::CustomLight),
+            "custom_dark" => Some(AppTheme::CustomDark),
             "oled" => Some(AppTheme::Oled),
             "matrix" => Some(AppTheme::Matrix),
             "aurora" => Some(AppTheme::Aurora),
@@ -146,6 +163,8 @@ impl AppTheme {
             AppTheme::Dark => "Classic dark",
             AppTheme::ModernLight => "Modern light",
             AppTheme::ModernDark => "Modern dark",
+            AppTheme::CustomLight => "Custom light",
+            AppTheme::CustomDark => "Custom dark",
             AppTheme::Oled => "Midnight OLED",
             AppTheme::Matrix => "Terminal green",
             AppTheme::Aurora => "Aurora modern",
@@ -232,6 +251,37 @@ pub fn fit_independent_window_size(live_size: (f32, f32), auto_zoom: f32) -> (f3
     (live_size.0 * factor, live_size.1 * factor)
 }
 
+/// User-selected gradient colors and its presentation. Values are bounded
+/// when loaded, so even a hand-edited settings file remains safe to render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CustomGradient {
+    pub start: [u8; 3],
+    pub end: [u8; 3],
+    pub angle_degrees: u16,
+    pub strength: u8,
+    /// Amount of the subtle, procedurally generated surface grain.
+    pub texture_strength: u8,
+}
+
+impl Default for CustomGradient {
+    fn default() -> Self {
+        Self {
+            start: [27, 166, 154],
+            end: [107, 112, 223],
+            angle_degrees: 35,
+            strength: 70,
+            texture_strength: 60,
+        }
+    }
+}
+
+pub const MIN_STABILITY_SECONDS: u32 = 10;
+pub const MAX_STABILITY_SECONDS: u32 = 60;
+
+pub fn sanitize_stability_seconds(seconds: u32) -> u32 {
+    seconds.clamp(MIN_STABILITY_SECONDS, MAX_STABILITY_SECONDS)
+}
+
 /// Application-level hotkey and UI preferences persisted between sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppPrefs {
@@ -243,6 +293,10 @@ pub struct AppPrefs {
     /// Color/label theme for every window. Classic light by default so a
     /// fresh install shows the dialog the 4.x look is modeled on.
     pub theme: AppTheme,
+    /// Retained even when another appearance is selected.
+    pub custom_gradient: CustomGradient,
+    /// Preferred real-click stability-test duration in seconds.
+    pub stability_test_seconds: u32,
     /// Legacy saved window scale (75–200), retained so upgrades preserve
     /// the user's existing appearance and fit-independent window size.
     pub ui_scale_percent: u32,
@@ -279,6 +333,8 @@ impl Default for AppPrefs {
             hotkeys_enabled: true,
             random_offset_enabled: false,
             theme: AppTheme::Classic,
+            custom_gradient: CustomGradient::default(),
+            stability_test_seconds: 20,
             ui_scale_percent: UI_SCALE_DEFAULT,
             auto_scale: true,
             check_updates: true,

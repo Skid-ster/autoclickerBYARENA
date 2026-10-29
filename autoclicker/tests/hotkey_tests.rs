@@ -52,7 +52,7 @@ fn theme_keys_and_labels_are_stable_and_unique() {
 }
 
 #[test]
-fn style_and_mode_form_four_distinct_appearances() {
+fn style_and_mode_form_six_distinct_appearances() {
     for (style, mode, expected, key) in [
         (
             AppearanceStyle::Classic,
@@ -77,6 +77,18 @@ fn style_and_mode_form_four_distinct_appearances() {
             AppearanceMode::Dark,
             AppTheme::ModernDark,
             "modern_dark",
+        ),
+        (
+            AppearanceStyle::Custom,
+            AppearanceMode::Light,
+            AppTheme::CustomLight,
+            "custom_light",
+        ),
+        (
+            AppearanceStyle::Custom,
+            AppearanceMode::Dark,
+            AppTheme::CustomDark,
+            "custom_dark",
         ),
     ] {
         assert_eq!(AppTheme::from_appearance(style, mode), expected);

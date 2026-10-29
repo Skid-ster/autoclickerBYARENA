@@ -5,6 +5,64 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
+## v1.9.0: Custom appearance and real-click stability test
+
+The current source adds Custom Light/Dark, two persisted RGB colors, rotation,
+a shared window-wide surface gradient and procedural texture strength, plus
+an opt-in 10–60-second test that uses the real global click worker. The test
+snapshots the settings, ignores the repeat limit only during the test, warns
+before a three-second countdown and records a conservative timing verdict.
+Its worker deadline is independent of UI repainting; cancellation and error
+outcomes cannot pass. It also reports exact counts, cadence, maximum observed
+original-deadline lateness and end overrun, with an explicitly requested,
+privacy-limited clipboard summary. These additions are **not in the published
+v1.8.0 binary**.
+
+Local verification with Rust 1.88.0:
+
+- **153 standalone tests across 14 binaries** passed with `rustc --test -D
+  warnings`; **109 app/worker tests** passed in an actual-egui 0.27.2 harness
+  using a stub eframe and simulated Win32, input and timing. Five updater
+  tests overlap the two counts. No real desktop input was injected. New tests
+  cover settings round trips and bounds, duration and verdict thresholds,
+  one large observed scheduling slip despite few late cycles, end overrun,
+  deadline re-anchoring, dropped-ring accounting, countdown staleness, F6/F8
+  cancellation, closing the test or exiting during countdown and execution,
+  conflicts, invalid settings, dispatch errors, worker-owned deadlines,
+  capped holds/gaps, attempted release, snapshot isolation and a simulated
+  panic. They exercise result visibility across themes and window sizes, the
+  optional clipboard copy in Custom Dark, both color pickers with RGB edits,
+  keyboard and accessibility labels, reset, settings scrolling, texture
+  caching, rounded meshes and shared gradient coordinates. The v1.8.0 to
+  v1.9.0 updater fixture covers version and executable metadata parsing. A separate 10-second worker run
+  with simulated dispatch completed 99 cycles with no late cycles or warning
+  and a Good verdict; that local result is not a benchmark for another PC.
+- For both Custom modes, the foreground contrast tests cover all pairs of the
+  eight RGB-cube corners at 0%, 50% and 100% gradient strength, including
+  the maximum permitted texture blend on the tested surfaces. The checked
+  text and status colors meet 4.5:1 in those cases; this is not an exhaustive
+  check of every RGB value or a whole-application accessibility-conformance claim.
+- **21 dashboard CPU-raster comparisons** against v1.8.0 were byte-identical:
+  Classic Light/Dark, Modern Light/Dark and the three previous themes at
+  compact, narrow and slender sizes. Custom Light/Dark dashboard rasters were
+  also inspected. These are software simulations, not native screenshots;
+  dialogs with new controls are intentionally changed.
+- Formatting and `git diff --check` passed. Linux harness and Windows-GNU
+  all-target source checks and Clippy passed with project warnings denied.
+  The Windows check uses the real Win32/timing sources and bindings but a
+  stub eframe; it did not link or run a Windows executable. These local
+  checks preceded the Windows CI run for the release candidate.
+
+Hands-on Windows verification remains required for the new UI, color pickers,
+texture rendering, scrolling, responsive layouts, settings persistence,
+actual input, target behavior, F8 and window-close cancellation, real deadline
+and release behavior, and mixed-DPI/multimonitor positioning. Test only on a
+safe disposable target; timing and behavior vary with the specific hardware,
+Windows configuration and target application. The reported i5-13400,
+RTX 5060 Ti 8 GB and 16 GB RAM are an unbenchmarked reference, not the
+machine used by this Linux harness. See the manual checklist in
+`autoclicker/README.md`.
+
 ## v1.8.0: Modern visual polish
 
 Modern Light and Dark use cooler porcelain/midnight-slate surfaces, subtly
@@ -2602,9 +2660,8 @@ Re-run after consolidation against `autoclicker/`:
   source file.
 - No `mouse_event` / `keybd_event` call sites (comments mentioning the
   prohibition only).
-- No sleep call in any click path (idle waiting uses a kernel event, active
-  waiting uses QPC plus `std::hint::spin_loop`); the only textual mentions
-  are comments stating the prohibition.
+- No sleep call in the click path: idle waiting uses a kernel event and active
+  waiting uses QPC plus `std::hint::spin_loop`.
 - `timeBeginPeriod(1)` paired with `timeEndPeriod(1)` via RAII.
 - F8 panic flag sampled before every click and inside every hold and
   inter-click spin; the configurable F6 toggle is polled separately and can
@@ -2613,24 +2670,23 @@ Re-run after consolidation against `autoclicker/`:
   flags; background dispatch uses `PostMessageW` / `SendMessageTimeoutW`
   with the matching `WM_*BUTTON*` messages, `MK_*` flags and `MAKELPARAM`
   client coordinates.
-- No `std::thread::sleep` exists anywhere, including double/triple-click
-  gaps, which are QPC-spun 50 ms waits that keep sampling the stop/panic
-  flags.
+- The click path does not call `std::thread::sleep`; double/triple-click
+  gaps are QPC-spun 50 ms waits that keep sampling stop/panic. Sleeps in
+  source-update polling and post-update cleanup are outside the click path.
 
-The current tree was re-verified in the offline harness after the
-hardening round: `cargo check` reports zero diagnostics in the
+At the time of the historical hardening round, the tree was re-verified in
+the offline harness: `cargo check` reports zero diagnostics in the
 `autoclicker/` sources against real egui 0.27.2, all 44 integration tests
 pass, `rustfmt --check` and `cargo clippy -- -D warnings` are clean and a
-negative-control type error was rejected as expected. All f32 geometry
-literals carry explicit `_f32` suffixes for rustc 1.99's
-`float_literal_f32_fallback` lint; the icon module uses f64 pixel math
-exclusively, so it introduces no f32 fallback at all.
+negative-control type error was rejected as expected. At that point, float
+literals passed to generic f32-taking egui APIs were explicitly typed for
+rustc 1.99's `float_literal_f32_fallback` lint; the icon module used f64
+pixel math.
 
 ## Required Windows acceptance run
 
-On Windows 10 21H2+ or Windows 11 x64 with a stable Rust toolchain (the
-MSVC target reuses the Visual Studio Build Tools linker automatically; no
-CMake, Ninja or vcvars step is needed):
+On Windows 10 21H2+ or Windows 11 x64 with a stable Rust toolchain, the
+MSVC C++ build tools and Windows SDK installed:
 
 ```
 cd autoclicker
@@ -2639,20 +2695,14 @@ cargo test --release
 cargo run --release
 ```
 
-Then follow the fourteen-step manual checklist in `autoclicker/README.md`
-(step 7 now explicitly includes pressing the hotkey while another
-application has focus):
-dashboard rendering, interval and random-offset behavior, right/middle and
-double/triple bursts, picked fixed coordinates, repeat-count auto-stop,
-hotkey remap and F8 reservation, settings persistence across restarts,
-unfocused and minimized background targets, F8 panic stop (button must never
-stick), the six-theme switch (including the MogClicker retitle, hot-pink
-icon swap and meme status lines), the window-scale resize, and clean
-shutdown with no leaked handles.
+Then follow the current manual checklist in `autoclicker/README.md`. It
+covers appearance, responsive sizing, settings persistence, real input,
+hotkeys and F8, recording/playback, the explicit updater, Custom appearance
+and the stability test. Use a safe target when testing clicks.
 
-The repository's GitHub Actions workflow performs an additional, genuinely
-Windows-native gate on every push and pull request: `cargo fmt --check`,
-`cargo clippy`, `cargo test`, a release build on `windows-latest`
-(x86_64-pc-windows-msvc), and uploads `op_auto_clicker.exe` as a build
-artifact. Visual appearance and real click delivery remain manual
-acceptance items because they require an interactive desktop.
+The GitHub Actions workflow runs a Windows-native gate on pushes to `main`,
+version tags, and pull requests targeting `main`: formatting, Clippy, tests,
+a release build and GUI metadata checks on `windows-latest`
+(x86_64-pc-windows-msvc), then uploads `macro_clicker.exe` as a build
+artifact. Check the candidate and tag workflow runs for their actual results.
+Visual appearance and real click delivery require interactive Windows acceptance.

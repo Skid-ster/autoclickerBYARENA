@@ -43,6 +43,14 @@ fn full_round_trip_preserves_every_field() {
         hotkeys_enabled: false,
         random_offset_enabled: true,
         theme: AppTheme::Matrix,
+        custom_gradient: hotkey::CustomGradient {
+            start: [0, 128, 255],
+            end: [250, 12, 34],
+            angle_degrees: 273,
+            strength: 95,
+            texture_strength: 42,
+        },
+        stability_test_seconds: 47,
         ui_scale_percent: 150,
         auto_scale: false,
         check_updates: false,
@@ -182,6 +190,8 @@ fn appearance_keys_preserve_other_saved_preferences_and_legacy_precedence() {
         ("dark", AppTheme::Dark),
         ("modern_light", AppTheme::ModernLight),
         ("modern_dark", AppTheme::ModernDark),
+        ("custom_light", AppTheme::CustomLight),
+        ("custom_dark", AppTheme::CustomDark),
         ("oled", AppTheme::Oled),
         ("matrix", AppTheme::Matrix),
         ("aurora", AppTheme::Aurora),
@@ -199,6 +209,44 @@ fn appearance_keys_preserve_other_saved_preferences_and_legacy_precedence() {
             assert_eq!(restored_prefs, prefs);
         }
     }
+}
+
+#[test]
+fn custom_gradient_and_test_duration_tolerate_bad_values_and_round_trip() {
+    let (_, prefs) = parse_settings(
+        "theme=custom_dark\ngradient_start=#12abEF\ngradient_end=FF0080\ngradient_angle=359\ngradient_strength=100\ngradient_texture=80\nstability_test_seconds=60\n",
+    );
+    assert_eq!(prefs.theme, AppTheme::CustomDark);
+    assert_eq!(prefs.custom_gradient.start, [18, 171, 239]);
+    assert_eq!(prefs.custom_gradient.end, [255, 0, 128]);
+    assert_eq!(prefs.custom_gradient.angle_degrees, 359);
+    assert_eq!(prefs.custom_gradient.strength, 100);
+    assert_eq!(prefs.custom_gradient.texture_strength, 80);
+    assert_eq!(prefs.stability_test_seconds, 60);
+    let (_, restored) = parse_settings(&serialize_settings(&EngineConfig::default(), &prefs));
+    assert_eq!(restored, prefs);
+
+    let defaults = AppPrefs::default();
+    for color in ["", "#123", "#GG0000", "#1234567", "ééé", "000000\0"] {
+        let (_, parsed) = parse_settings(&format!("gradient_start={color}\n"));
+        assert_eq!(parsed.custom_gradient.start, defaults.custom_gradient.start);
+    }
+    let (_, parsed) = parse_settings(
+        "gradient_angle=999999\ngradient_strength=101\ngradient_texture=999\nstability_test_seconds=9999\n",
+    );
+    assert_eq!(parsed.custom_gradient.angle_degrees, 359);
+    assert_eq!(parsed.custom_gradient.strength, 100);
+    assert_eq!(parsed.custom_gradient.texture_strength, 100);
+    assert_eq!(parsed.stability_test_seconds, 60);
+    let (_, parsed) = parse_settings("stability_test_seconds=0\n");
+    assert_eq!(parsed.stability_test_seconds, 10);
+    let (_, parsed) =
+        parse_settings("gradient_angle=-1\ngradient_strength=NaN\ngradient_texture=NaN\nstability_test_seconds=-1\n");
+    assert_eq!(parsed.custom_gradient, defaults.custom_gradient);
+    assert_eq!(
+        parsed.stability_test_seconds,
+        defaults.stability_test_seconds
+    );
 }
 
 #[test]
