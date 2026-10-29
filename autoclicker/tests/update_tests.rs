@@ -118,6 +118,22 @@ fn v1_7_to_v1_8_release_is_available_then_up_to_date_with_asset_metadata() {
 }
 
 #[test]
+fn v1_8_to_v1_9_release_is_available_then_up_to_date_with_asset_metadata() {
+    let body = r#"{"tag_name":"v1.9.0","assets":[{"name":"macro_clicker.exe","size":4200000,"digest":"sha256:80ada94db2c40c701f0eb9a159f2c4b8e459531f94be9c526d655b011ce90073"}]}"#;
+    let (old, old_asset) = evaluate_release(body, "1.8.0").expect("valid release");
+    let (current, current_asset) = evaluate_release(body, "1.9.0").expect("valid release");
+    assert_eq!(old, UpdateOutcome::Available("1.9.0".to_string()));
+    assert_eq!(current, UpdateOutcome::UpToDate("1.9.0".to_string()));
+    assert_eq!(old_asset, current_asset);
+    let asset = old_asset.expect("verified executable metadata");
+    assert_eq!(asset.size, 4_200_000);
+    assert_eq!(
+        asset.sha256.map(|digest| sha256_hex(&digest)).as_deref(),
+        Some("80ada94db2c40c701f0eb9a159f2c4b8e459531f94be9c526d655b011ce90073")
+    );
+}
+
+#[test]
 fn evaluate_reports_up_to_date_for_equal_and_older() {
     assert_eq!(
         evaluate_update(r#"{"tag_name":"v1.1.0"}"#, "1.1.0"),

@@ -12,8 +12,8 @@
 
 use crate::config::{ClickType, CoordinateMode, EngineConfig, InputMode, MouseButton};
 use crate::hotkey::{
-    sanitize_ui_scale as hotkey_scale_sanitize, sanitize_window_dimension, AppPrefs, AppTheme,
-    WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
+    sanitize_stability_seconds, sanitize_ui_scale as hotkey_scale_sanitize,
+    sanitize_window_dimension, AppPrefs, AppTheme, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 };
 
 use std::fs::{self, File, OpenOptions};
@@ -115,6 +115,15 @@ fn parse_i64(value: &str) -> Option<i64> {
 
 fn parse_u64(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
+}
+
+fn parse_rgb(value: &str) -> Option<[u8; 3]> {
+    let value = value.trim().strip_prefix('#').unwrap_or(value.trim());
+    if value.len() != 6 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let rgb = u32::from_str_radix(value, 16).ok()?;
+    Some([(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8])
 }
 
 fn parse_isize(value: &str) -> Option<isize> {
@@ -221,6 +230,25 @@ pub fn serialize_settings(config: &EngineConfig, prefs: &AppPrefs) -> String {
         String::new(),
         "[ui]".to_string(),
         format!("theme={}", prefs.theme.key()),
+        format!(
+            "gradient_start=#{:02X}{:02X}{:02X}",
+            prefs.custom_gradient.start[0],
+            prefs.custom_gradient.start[1],
+            prefs.custom_gradient.start[2]
+        ),
+        format!(
+            "gradient_end=#{:02X}{:02X}{:02X}",
+            prefs.custom_gradient.end[0],
+            prefs.custom_gradient.end[1],
+            prefs.custom_gradient.end[2]
+        ),
+        format!("gradient_angle={}", prefs.custom_gradient.angle_degrees),
+        format!("gradient_strength={}", prefs.custom_gradient.strength),
+        format!(
+            "gradient_texture={}",
+            prefs.custom_gradient.texture_strength
+        ),
+        format!("stability_test_seconds={}", prefs.stability_test_seconds),
         format!("ui_scale={}", prefs.ui_scale_percent),
         format!("auto_scale={}", prefs.auto_scale),
         format!("check_updates={}", prefs.check_updates),
@@ -383,6 +411,37 @@ pub fn parse_settings(text: &str) -> (EngineConfig, AppPrefs) {
                 if let Some(parsed) = AppTheme::from_key(value) {
                     prefs.theme = parsed;
                     theme_key_seen = true;
+                }
+            }
+            "gradient_start" => {
+                if let Some(color) = parse_rgb(value) {
+                    prefs.custom_gradient.start = color;
+                }
+            }
+            "gradient_end" => {
+                if let Some(color) = parse_rgb(value) {
+                    prefs.custom_gradient.end = color;
+                }
+            }
+            "gradient_angle" => {
+                if let Some(angle) = parse_u64(value) {
+                    prefs.custom_gradient.angle_degrees = angle.min(359) as u16;
+                }
+            }
+            "gradient_strength" => {
+                if let Some(strength) = parse_u64(value) {
+                    prefs.custom_gradient.strength = strength.min(100) as u8;
+                }
+            }
+            "gradient_texture" => {
+                if let Some(strength) = parse_u64(value) {
+                    prefs.custom_gradient.texture_strength = strength.min(100) as u8;
+                }
+            }
+            "stability_test_seconds" => {
+                if let Some(seconds) = parse_u64(value) {
+                    prefs.stability_test_seconds =
+                        sanitize_stability_seconds(u32::try_from(seconds).unwrap_or(u32::MAX));
                 }
             }
             // Files written by the dark-mode-only build predate the theme

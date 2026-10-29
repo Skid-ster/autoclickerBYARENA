@@ -25,7 +25,9 @@ mod macro_rec;
 mod schedule;
 mod self_update;
 mod settings;
+mod stability;
 mod telemetry;
+mod texture;
 mod update;
 mod window_layout;
 

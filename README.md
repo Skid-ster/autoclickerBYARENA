@@ -7,16 +7,18 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **MacroClicker** is a Windows x64 auto-clicker written in stable Rust and
-egui. Choose the familiar **Classic** interface or the redesigned **Modern**
-interface, each in **Light** or **Dark**. The resizable dashboard keeps the
-OP Auto Clicker 4.x controls visible: click interval and random offset,
-mouse and repeat options, cursor picking, and real **Record & Playback**.
+egui. Choose the familiar **Classic**, redesigned **Modern**, or customizable
+**Custom** appearance, each in **Light** or **Dark**. An opt-in real-click
+stability test reports timing for a selected configuration. The resizable
+dashboard keeps the OP Auto Clicker 4.x controls visible: click
+interval and random offset, mouse and repeat options, cursor picking, and
+real **Record & Playback**.
 A dedicated worker drives a precision QPC schedule while the UI stays
 responsive; appearance and window size are remembered.
 
 ## MacroClicker vs OP Auto Clicker 4.1
 
-Everything 4.1 does, plus the parts it cannot:
+A comparison of the main controls and capabilities:
 
 | Capability | OP Auto Clicker 4.1 | MacroClicker |
 | --- | --- | --- |
@@ -30,6 +32,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Dedicated panic key (F8) always reserved | No | Yes |
 | Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
 | Classic and Modern, each Light or Dark + automatic scaling | No | Yes |
+| Two-color custom gradient and real-click timing test | No | Yes |
 | Built-in updates against GitHub releases | No | Yes — one click downloads, SHA-256-verifies, installs and restarts |
 | Open source with Windows CI and automated tests | No | Yes |
 
@@ -70,11 +73,37 @@ Windows SmartScreen may ask for confirmation. Verify the published
 SHA-256 if the file was obtained from anywhere other than this
 repository's GitHub Releases.
 
+## Hardware and performance
+
+MacroClicker targets **Windows 10 21H2+ / Windows 11 x64**. A reference
+configuration for this work is an **Intel Core i5-13400, GeForce RTX 5060 Ti
+8 GB and 16 GB RAM**, as reported by the project user. This configuration
+has **not been benchmarked or tested natively** here; the software is not
+locked to those components and results will vary on other systems too.
+
+Click timing depends on the CPU, Windows scheduling, load, power settings,
+privileges and the target application. The GPU may render the interface; it
+does not accelerate the QPC click scheduler. On the i5-13400's hybrid cores,
+Windows chooses where to run the worker: MacroClicker does not force P-core or
+E-core affinity. During a session the worker requests time-critical priority
+and a 1 ms timer period, and busy-spins; it can use a logical CPU and extra
+power even at long intervals. Stop it when not needed, especially during
+other demanding workloads. A denied priority/timer request is reported.
+
+For a useful comparison on the reference PC, try **single clicks at 100 ms
+with random offset off** on a safe disposable target, first with the machine
+mostly idle and then under your normal workload. The 20-second timing test
+can compare those runs. This is a starting point, not a claimed
+optimum or guarantee; adjust the interval for your actual target. Windows,
+drivers, display configuration and target behavior have not been measured
+on the reported PC.
+
 ## Quick start
 
-Requirements: Windows 10 21H2+ or Windows 11 x64 and a Rust stable
-toolchain (edition 2021). The Rust MSVC target uses the Visual Studio Build
-Tools linker, which `rustup` sets up automatically on a standard install.
+To build from source, use Windows 10 21H2+ or Windows 11 x64, a current
+stable Rust toolchain (edition 2021), and the MSVC C++ build tools and Windows
+SDK required by Rust's MSVC target. The release EXE does not need Rust or a
+compiler installed.
 
 ```
 cd autoclicker
@@ -134,7 +163,7 @@ the update before the program file is replaced.
   pollutes the macro; the hotkey and F8 also stop it). Playback replays the
   sequence through the same QPC-scheduled worker as ordinary sessions —
   exact buttons, positions and delays, drift-free, loop N times or until
-  stopped, and F8 panic-stops instantly mid-playback. Up to 2048 steps
+  stopped, with F8 panic-stop support during playback. Up to 2048 steps
   per macro. In the current source, playback stops with an error rather than
   clicking a different position if a recorded point is no longer on a display.
 - **Appearance + automatic scaling** — open **Settings… → Appearance**
@@ -152,6 +181,20 @@ the update before the program file is replaced.
   switched off, and saved scale values from older releases are preserved.
   The native Windows title bar follows Windows' app mode, independently of
   the in-app appearance.
+- **Custom gradient** — choose **Custom** in Appearance,
+  select Light or Dark, then expand **Customize gradient**. Pick two RGB
+  colors, rotate the gradient from 0–359°, adjust its strength and the
+  procedurally generated matte texture, or reset it. The dashboard, cards,
+  dialogs and primary action use the colors; the surface gradient follows a
+  shared window-wide direction rather than restarting in each card. Surfaces
+  are softened and accents adapted to keep text readable. The texture is generated locally,
+  cached, and can be turned off; no third-party image download is needed.
+  The choice persists independently of the Classic and Modern appearances.
+- **Real-click stability test** — open **Settings… →
+  Open stability test…**, choose 10–60 seconds and explicitly start the test.
+  Progress, exact cycle counts, late percentage, average cadence and the worst
+  observed deadline are shown, with an optional timing-only copy report. This
+  sends real mouse input; read the safety instructions below before use.
 - Left, right and middle mouse buttons; single, double and triple click
   types (multi-clicks use QPC-spun gaps, never sleeps).
 - Hours/Mins/Secs/Milliseconds interval fields plus 4.1's uniform
@@ -181,14 +224,53 @@ the update before the program file is replaced.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 142 standalone tests over platform-independent modules, plus Windows
-  app and worker tests and a CI workflow (format check, clippy with warnings
-  denied, tests, release build and binary artifact), and a generated crosshair application icon.
+- 153 standalone tests over platform-independent modules in the current
+  source, plus app and worker tests and a Windows CI workflow (format check,
+  Clippy with warnings denied, tests, release build and binary artifact), and
+  a generated crosshair application icon.
 
 The GUI, input injection and worker threads are Windows-specific and need
 hands-on Windows acceptance; see [`autoclicker/README.md`](autoclicker/README.md)
 for the full manual checklist and
 [`docs/VERIFICATION.md`](docs/VERIFICATION.md) for the verification record.
+
+## Using the real-click stability test
+
+**Warning: this test sends real clicks.** They can activate or change whatever
+is at your current cursor position or the configured fixed point, including in
+other applications. Use a disposable, safe target and never test over
+important controls or data.
+
+1. Set the interval, button, click type, offset and cursor/fixed position on
+   the dashboard. Open **Settings… → Open stability test…**.
+2. Choose **10–60 seconds**, then press **Start real-click test**. A
+   three-second countdown gives you time to move the cursor. For a fixed
+   position, the saved point is used regardless of cursor movement.
+3. The test snapshots the current click settings and ignores a finite repeat
+   limit for this run only; your saved settings are not changed. **Stop**, an
+   enabled start/stop hotkey, **F8**, or closing the test window cancels it.
+   Hotkeys are polled by the UI and depend on it being responsive. The worker
+   independently limits its scheduled waits to the test deadline and attempts
+   to release a pressed button; an OS call can still delay completion.
+4. A **good timing** result requires the full duration, at least 20 completed
+   cycles, no engine warning, at most 5% late cycles, no observed deadline
+   more than 250 ms late, and no more than 250 ms end overrun. A cycle is
+   late when already overdue before scheduling or more than 1 ms late at
+   dispatch. Double/triple bursts count as one cycle. Cancellation, failure,
+   warnings or too few cycles never pass; long intervals can leave too few
+   samples even when the clicker works normally.
+5. Compare completed cycles, the rounded late percentage, average cycles per
+   second and worst deadline lateness. **Copy timing report** is optional and
+   copies the timing summary only—not cursor coordinates, machine identifiers,
+   click settings other than duration, or raw error details. The test only
+   requests a clipboard copy when you choose that action.
+
+The result uses exact worker counters and an independent maximum even if the
+bounded telemetry ring drops records. Worst deadline lateness is measured
+against the original deadline before any catch-up re-anchoring, including a
+deadline missed as the test ends. The result describes this run and reports
+input-dispatch errors; it **cannot prove that another application received
+the clicks**, detect every kind of stall, or guarantee future stability.
 
 ## Repository layout
 

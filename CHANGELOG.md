@@ -7,6 +7,34 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-29
+
+### Added
+
+- A Custom Light/Dark appearance with two persistent RGB colors, adjustable
+  gradient rotation and strength, a reset action, a locally generated,
+  adjustable matte texture, and contrast-protected dashboard, card, dialog
+  and primary-action surfaces. Existing Classic, Modern and previous
+  appearances remain available.
+- An explicitly started, 10–60-second **real-click stability test** in
+  Settings. A warning and cancellable countdown precede real input. The test
+  snapshots the current click settings, ignores the finite repeat limit only
+  for the test, and uses an independent worker deadline. Stop, the enabled
+  start/stop hotkey, F8 and closing the test window cancel it.
+- A timing verdict based on exact completed-cycle and late-cycle counters,
+  worst observed deadline lateness and end overrun, including warning,
+  interruption, failure and insufficient-data results. A good result requires
+  a full run, at least 20 cycles, no warning, no more than 5% late, and neither
+  worst deadline lateness nor end overrun exceeding 250 ms. It does not prove
+  target receipt or future stability.
+- Live progress and counts, a rounded late percentage and average cadence,
+  clear verdict guidance, and an optional timing-only clipboard report.
+  Custom surfaces share a window-wide gradient while the preview and primary
+  action retain their local color range.
+- Hardware guidance using the user's i5-13400, RTX 5060 Ti 8 GB and 16 GB RAM
+  as an unbenchmarked reference, without forcing core affinity or claiming
+  GPU-accelerated click timing.
+
 ## [1.8.0] - 2026-10-29
 
 ### Changed
@@ -206,7 +234,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   precision QPC click engine, Record & Playback, global hotkeys, themes,
   resizable/scaling window, persistent settings, and Windows CI releases.
 
-[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.2...v1.6.0

@@ -1,5 +1,5 @@
 //! MacroClicker — a resizable OP Auto Clicker 4.1-style dashboard with
-//! Classic and Modern appearances, each in Light or Dark.
+//! Classic, Modern and Custom appearances, each in Light or Dark.
 //!
 //! The main window is a naturally resizable, non-scrolling rendition of
 //! the classic OP Auto Clicker 4.x controls: four group cards (Click
@@ -7,9 +7,8 @@
 //! authentic 2x2 grid of push buttons. The classic 560x456 size is the
 //! enforced minimum; larger windows scale and reflow the dashboard to
 //! fit, using stacked portrait or three-abreast panoramic compositions.
-//! There is no diagnostics surface: every control on screen
-//! configures clicking, and the engine's telemetry stays an internal,
-//! test-verified concern.
+//! The optional, explicitly started stability test reports bounded worker
+//! timing totals without claiming that target applications received input.
 //!
 //! All worker interaction goes through atomics. The update thread never
 //! blocks on the worker.
@@ -19,7 +18,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use egui::{Align2, Color32, FontId, Frame, Grid, Layout, Margin, Rounding, Sense, Stroke, Vec2};
+use egui::{
+    Align2, Color32, FontId, Frame, Grid, Layout, Margin, Pos2, Rect, Rounding, Sense, Stroke, Vec2,
+};
 
 use crate::config::{
     commit_ui_interval, interval_parts_to_ms, ms_to_interval_parts, ClickType, CoordinateMode,
@@ -28,11 +29,13 @@ use crate::config::{
 use crate::engine::{ClickEngine, SessionOutcome, STATE_RUNNING, STATE_STOPPING};
 use crate::hotkey::{
     self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, AppTheme,
-    AppearanceMode, AppearanceStyle, VK_ESCAPE,
+    AppearanceMode, AppearanceStyle, CustomGradient, VK_ESCAPE,
 };
 use crate::macro_rec::{self, MacroRecorder};
 use crate::self_update::{self, InstallKind, UpdatePaths};
 use crate::settings;
+use crate::stability::{self, EndReason as StabilityEndReason, Measurements, Verdict};
+use crate::texture;
 use crate::update::{self, ReleaseAsset, UpdateOutcome};
 use crate::win32;
 use crate::window_layout::{self, MainLayout};
@@ -40,9 +43,11 @@ use crate::window_layout::{self, MainLayout};
 /// Complete color and surface treatment for one appearance. The modern
 /// treatment uses the same responsive compositions, with its own card
 /// captions, typography, controls and colors.
+#[derive(Clone, Copy)]
 struct Palette {
     dark: bool,
     modern: bool,
+    custom: Option<CustomGradient>,
     face: Color32,
     button: Color32,
     button_disabled: Color32,
@@ -81,6 +86,7 @@ struct Palette {
 static LIGHT_PALETTE: Palette = Palette {
     dark: false,
     modern: false,
+    custom: None,
     face: Color32::from_rgb(240, 240, 240),
     button: Color32::from_rgb(236, 236, 236),
     button_disabled: Color32::from_rgb(245, 245, 245),
@@ -112,6 +118,7 @@ static LIGHT_PALETTE: Palette = Palette {
 static DARK_PALETTE: Palette = Palette {
     dark: true,
     modern: false,
+    custom: None,
     face: Color32::from_rgb(32, 32, 32),
     button: Color32::from_rgb(51, 51, 51),
     button_disabled: Color32::from_rgb(40, 40, 40),
@@ -142,6 +149,7 @@ static DARK_PALETTE: Palette = Palette {
 static MODERN_LIGHT_PALETTE: Palette = Palette {
     dark: false,
     modern: true,
+    custom: None,
     face: Color32::from_rgb(239, 242, 247),
     button: Color32::from_rgb(247, 249, 252),
     button_disabled: Color32::from_rgb(230, 237, 242),
@@ -172,6 +180,7 @@ static MODERN_LIGHT_PALETTE: Palette = Palette {
 static MODERN_DARK_PALETTE: Palette = Palette {
     dark: true,
     modern: true,
+    custom: None,
     face: Color32::from_rgb(11, 16, 27),
     button: Color32::from_rgb(27, 40, 55),
     button_disabled: Color32::from_rgb(25, 37, 51),
@@ -202,6 +211,7 @@ static MODERN_DARK_PALETTE: Palette = Palette {
 static OLED_PALETTE: Palette = Palette {
     dark: true,
     modern: false,
+    custom: None,
     face: Color32::BLACK,
     button: Color32::from_rgb(24, 24, 24),
     button_disabled: Color32::from_rgb(14, 14, 14),
@@ -232,6 +242,7 @@ static OLED_PALETTE: Palette = Palette {
 static MATRIX_PALETTE: Palette = Palette {
     dark: true,
     modern: false,
+    custom: None,
     face: Color32::from_rgb(8, 14, 8),
     button: Color32::from_rgb(16, 30, 16),
     button_disabled: Color32::from_rgb(10, 20, 10),
@@ -265,6 +276,7 @@ static MATRIX_PALETTE: Palette = Palette {
 static AURORA_PALETTE: Palette = Palette {
     dark: true,
     modern: false,
+    custom: None,
     face: Color32::from_rgb(18, 19, 27),
     button: Color32::from_rgb(37, 40, 56),
     button_disabled: Color32::from_rgb(25, 27, 37),
@@ -467,6 +479,34 @@ impl StatusKind {
     }
 }
 
+enum StabilityTestState {
+    Idle,
+    Countdown {
+        starts_at: Instant,
+        config: EngineConfig,
+        seconds: u32,
+    },
+    Running {
+        seconds: u32,
+    },
+    Finished {
+        reason: StabilityEndReason,
+        measurements: Measurements,
+        dropped_records: u64,
+        detail: Option<String>,
+    },
+}
+
+impl StabilityTestState {
+    fn is_active(&self) -> bool {
+        matches!(self, Self::Countdown { .. } | Self::Running { .. })
+    }
+
+    fn is_countdown(&self) -> bool {
+        matches!(self, Self::Countdown { .. })
+    }
+}
+
 pub struct OpAutoClickerApp {
     engine: ClickEngine,
     config: EngineConfig,
@@ -512,6 +552,9 @@ pub struct OpAutoClickerApp {
     show_settings: bool,
     show_updates: bool,
     show_font_license: bool,
+    show_stability_test: bool,
+    stability_test: StabilityTestState,
+    stability_report_copy_requested: Option<Instant>,
 
     // Update checker: the Updates window's state, the latch for the
     // once-per-launch background check, and the channel its detached
@@ -708,6 +751,9 @@ impl OpAutoClickerApp {
             show_settings: false,
             show_updates: false,
             show_font_license: false,
+            show_stability_test: false,
+            stability_test: StabilityTestState::Idle,
+            stability_report_copy_requested: None,
             update_state: UpdateUiState::NotChecked,
             update_auto_check_started: false,
             update_rx: None,
@@ -1063,22 +1109,296 @@ impl OpAutoClickerApp {
 
     // -------------------------------------------------------------- styling
 
-    /// The palette for the persisted theme choice. `'static` on purpose so
-    /// closures can hold it without borrowing `self`.
-    fn palette(&self) -> &'static Palette {
+    /// Return a small palette snapshot so closures never borrow the app. The
+    /// original appearances retain their exact static colors; only Custom
+    /// derives surfaces and an accessible accent from the saved colors.
+    fn palette(&self) -> Palette {
         match self.prefs.theme {
-            AppTheme::Classic => &LIGHT_PALETTE,
-            AppTheme::Dark => &DARK_PALETTE,
-            AppTheme::ModernLight => &MODERN_LIGHT_PALETTE,
-            AppTheme::ModernDark => &MODERN_DARK_PALETTE,
-            AppTheme::Oled => &OLED_PALETTE,
-            AppTheme::Matrix => &MATRIX_PALETTE,
-            AppTheme::Aurora => &AURORA_PALETTE,
+            AppTheme::Classic => LIGHT_PALETTE,
+            AppTheme::Dark => DARK_PALETTE,
+            AppTheme::ModernLight => MODERN_LIGHT_PALETTE,
+            AppTheme::ModernDark => MODERN_DARK_PALETTE,
+            AppTheme::CustomLight => {
+                Self::custom_palette(MODERN_LIGHT_PALETTE, self.prefs.custom_gradient)
+            }
+            AppTheme::CustomDark => {
+                Self::custom_palette(MODERN_DARK_PALETTE, self.prefs.custom_gradient)
+            }
+            AppTheme::Oled => OLED_PALETTE,
+            AppTheme::Matrix => MATRIX_PALETTE,
+            AppTheme::Aurora => AURORA_PALETTE,
         }
     }
 
+    fn mix_color(base: Color32, tint: Color32, amount: f32) -> Color32 {
+        let t = amount.clamp(0.0, 1.0);
+        let mix = |a: u8, b: u8| (f32::from(a) * (1.0 - t) + f32::from(b) * t).round() as u8;
+        Color32::from_rgb(
+            mix(base.r(), tint.r()),
+            mix(base.g(), tint.g()),
+            mix(base.b(), tint.b()),
+        )
+    }
+
+    fn custom_palette(mut pal: Palette, gradient: CustomGradient) -> Palette {
+        let start = Color32::from_rgb(gradient.start[0], gradient.start[1], gradient.start[2]);
+        let end = Color32::from_rgb(gradient.end[0], gradient.end[1], gradient.end[2]);
+        let mean = Self::mix_color(start, end, 0.5);
+        // Bound the tint so arbitrary user colors cannot make normal text
+        // disappear. The gradient itself is also contrast-protected below.
+        let strength = f32::from(gradient.strength.min(100)) / 100.0;
+        let tint = if pal.dark { 0.05 } else { 0.025 } * strength;
+        pal.face = Self::mix_color(pal.face, mean, tint);
+        pal.group_fill = Self::mix_color(pal.group_fill, mean, tint);
+        pal.button = Self::mix_color(pal.button, mean, tint);
+        pal.button_disabled = Self::mix_color(pal.button_disabled, mean, tint);
+        pal.input_bg = Self::mix_color(pal.input_bg, mean, tint);
+        pal.input_disabled = Self::mix_color(pal.input_disabled, mean, tint);
+        pal.well_fill = Self::mix_color(pal.well_fill, mean, tint);
+        pal.hover_fill = Self::mix_color(pal.hover_fill, mean, tint);
+        pal.pressed_fill = Self::mix_color(pal.pressed_fill, mean, tint);
+        pal.accent = if pal.dark {
+            // A lighter warning red keeps its contrast on the brightest
+            // permitted gradient corner.
+            pal.danger = Self::mix_color(pal.danger, Color32::WHITE, 0.22);
+            pal.text_dim = Self::mix_color(pal.text_dim, Color32::WHITE, 0.08);
+            Self::mix_color(Color32::WHITE, mean, 0.25)
+        } else {
+            // Darker status colors leave room for a visible gradient while
+            // keeping small text readable even for black chosen as a color.
+            pal.text_dim = Self::mix_color(Color32::BLACK, pal.text_dim, 0.90);
+            pal.success = Self::mix_color(Color32::BLACK, pal.success, 0.85);
+            pal.danger = Self::mix_color(Color32::BLACK, pal.danger, 0.85);
+            pal.warning = Self::mix_color(Color32::BLACK, pal.warning, 0.85);
+            Self::mix_color(Color32::BLACK, mean, 0.30)
+        };
+        pal.group_title = pal.accent;
+        pal.custom = Some(gradient);
+        pal
+    }
+
+    fn custom_face_tint(pal: &Palette) -> f32 {
+        if pal.dark {
+            0.15
+        } else {
+            0.12
+        }
+    }
+
+    fn custom_card_tint(pal: &Palette) -> f32 {
+        if pal.dark {
+            0.14
+        } else {
+            0.13
+        }
+    }
+
+    fn custom_header_tint(pal: &Palette) -> f32 {
+        if pal.dark {
+            0.16
+        } else {
+            0.15
+        }
+    }
+
+    fn custom_dialog_tint(pal: &Palette) -> f32 {
+        if pal.dark {
+            0.12
+        } else {
+            0.11
+        }
+    }
+
+    fn material_alpha(pal: &Palette, gradient: CustomGradient) -> u8 {
+        let cap = if pal.dark { 8_u16 } else { 12_u16 };
+        (u16::from(gradient.texture_strength.min(100)) * cap / 100) as u8
+    }
+
+    /// Cache one small generated texture per egui context, rather than
+    /// rebuilding or uploading it on every frame. It contains no third-party
+    /// artwork and is static: grain is a material treatment, not motion.
+    fn material_texture(ctx: &egui::Context) -> egui::TextureId {
+        let key = egui::Id::new("macroclicker_custom_material_texture");
+        if let Some(handle) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(key)) {
+            return handle.id();
+        }
+        let pixels = texture::material_alpha_tile()
+            .into_iter()
+            .map(Color32::from_white_alpha)
+            .collect();
+        let image = egui::ColorImage {
+            size: [texture::TILE_SIDE, texture::TILE_SIDE],
+            pixels,
+        };
+        let handle = ctx.load_texture(
+            "custom-material-grain",
+            image,
+            egui::TextureOptions::LINEAR_REPEAT,
+        );
+        let id = handle.id();
+        ctx.data_mut(|data| data.insert_temp(key, handle));
+        id
+    }
+
+    /// A rounded, world-aligned tile meshes the texture into the same
+    /// surfaces as the gradient without painting over their borders.
+    fn material_shape(
+        rect: Rect,
+        radius: f32,
+        texture_id: egui::TextureId,
+        tint: Color32,
+    ) -> egui::Shape {
+        let mut mesh = egui::Mesh::with_texture(texture_id);
+        let tile = texture::TILE_SIDE as f32;
+        let vertex = |point: Pos2| egui::epaint::Vertex {
+            pos: point,
+            uv: egui::pos2(point.x / tile, point.y / tile),
+            color: tint,
+        };
+        mesh.vertices.push(vertex(rect.center()));
+        let radius = radius
+            .max(0.0)
+            .min(rect.width() / 2.0)
+            .min(rect.height() / 2.0);
+        let corners = [
+            (
+                Pos2::new(rect.right() - radius, rect.top() + radius),
+                -90.0_f32,
+            ),
+            (
+                Pos2::new(rect.right() - radius, rect.bottom() - radius),
+                0.0_f32,
+            ),
+            (
+                Pos2::new(rect.left() + radius, rect.bottom() - radius),
+                90.0_f32,
+            ),
+            (
+                Pos2::new(rect.left() + radius, rect.top() + radius),
+                180.0_f32,
+            ),
+        ];
+        const STEPS: u32 = 6;
+        for (center, start_angle) in corners {
+            for step in 0..=STEPS {
+                let radians = (start_angle + 90.0 * step as f32 / STEPS as f32).to_radians();
+                mesh.vertices.push(vertex(
+                    center + Vec2::new(radians.cos(), radians.sin()) * radius,
+                ));
+            }
+        }
+        let perimeter = 4 * (STEPS + 1);
+        for index in 0..perimeter {
+            mesh.add_triangle(0, 1 + index, 1 + (index + 1) % perimeter);
+        }
+        egui::Shape::mesh(mesh)
+    }
+
+    fn material_tint(pal: &Palette, gradient: CustomGradient) -> Color32 {
+        let alpha = Self::material_alpha(pal, gradient);
+        if pal.dark {
+            Color32::from_white_alpha(alpha)
+        } else {
+            Color32::from_black_alpha(alpha)
+        }
+    }
+
+    /// Zero runs left-to-right, 90° top-to-bottom. Project over the whole
+    /// rectangle so diagonal gradients work at every aspect ratio and DPI.
+    fn gradient_position(rect: Rect, point: Pos2, angle_degrees: u16) -> f32 {
+        let angle = f32::from(angle_degrees % 360).to_radians();
+        let (sin, cos) = angle.sin_cos();
+        let span = (rect.width() * cos.abs() + rect.height() * sin.abs()).max(f32::EPSILON);
+        let relative = point - rect.center();
+        (0.5 + (relative.x * cos + relative.y * sin) / span).clamp(0.0, 1.0)
+    }
+
+    fn gradient_mesh(
+        rect: Rect,
+        radius: f32,
+        start: Color32,
+        end: Color32,
+        angle: u16,
+    ) -> egui::Shape {
+        Self::gradient_mesh_in(rect, rect, radius, start, end, angle)
+    }
+
+    /// Sample against a shared canvas rather than restarting the gradient
+    /// in each card. A local canvas is still useful for the preview and
+    /// primary action, where the complete color range is intentional.
+    fn gradient_mesh_in(
+        rect: Rect,
+        canvas: Rect,
+        radius: f32,
+        start: Color32,
+        end: Color32,
+        angle: u16,
+    ) -> egui::Shape {
+        let mut mesh = egui::Mesh::default();
+        let color =
+            |point| Self::mix_color(start, end, Self::gradient_position(canvas, point, angle));
+        mesh.colored_vertex(rect.center(), color(rect.center()));
+        let radius = radius
+            .max(0.0)
+            .min(rect.width() / 2.0)
+            .min(rect.height() / 2.0);
+        let corners = [
+            (
+                Pos2::new(rect.right() - radius, rect.top() + radius),
+                -90.0_f32,
+            ),
+            (
+                Pos2::new(rect.right() - radius, rect.bottom() - radius),
+                0.0_f32,
+            ),
+            (
+                Pos2::new(rect.left() + radius, rect.bottom() - radius),
+                90.0_f32,
+            ),
+            (
+                Pos2::new(rect.left() + radius, rect.top() + radius),
+                180.0_f32,
+            ),
+        ];
+        const STEPS: u32 = 6;
+        for (center, start_angle) in corners {
+            for step in 0..=STEPS {
+                let radians = (start_angle + 90.0 * step as f32 / STEPS as f32).to_radians();
+                let point = center + Vec2::new(radians.cos(), radians.sin()) * radius;
+                mesh.colored_vertex(point, color(point));
+            }
+        }
+        let perimeter = 4 * (STEPS + 1);
+        for index in 0..perimeter {
+            mesh.add_triangle(0, 1 + index, 1 + (index + 1) % perimeter);
+        }
+        egui::Shape::mesh(mesh)
+    }
+
+    fn custom_gradient_shape(
+        rect: Rect,
+        canvas: Rect,
+        radius: f32,
+        base: Color32,
+        gradient: CustomGradient,
+        max_tint: f32,
+    ) -> egui::Shape {
+        let strength = f32::from(gradient.strength.min(100)) / 100.0;
+        let start = Color32::from_rgb(gradient.start[0], gradient.start[1], gradient.start[2]);
+        let end = Color32::from_rgb(gradient.end[0], gradient.end[1], gradient.end[2]);
+        Self::gradient_mesh_in(
+            rect,
+            canvas,
+            radius,
+            Self::mix_color(base, start, max_tint * strength),
+            Self::mix_color(base, end, max_tint * strength),
+            gradient.angle_degrees,
+        )
+    }
+
     fn apply_style(&self, ctx: &egui::Context) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         // Font definitions take effect at the next frame. Keep the standard
         // proportional family present so the first frame (and a switch back
         // to Classic) is safe, then install the bundled modern face ahead of
@@ -1234,12 +1554,18 @@ impl OpAutoClickerApp {
         if f8_down && !self.f8_was_down && self.macro_recording {
             self.stop_macro_recording("F8");
         }
-        if f8_down && !self.f8_was_down && self.engine.is_running() {
-            self.engine.panic_stop();
-            self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
-            self.log("PANIC STOP triggered by F8.");
-            self.mark_dirty();
-            self.flush_settings();
+        if f8_down && !self.f8_was_down {
+            if self.cancel_stability_test(true) {
+                self.log("Real-click stability test cancelled by F8.");
+                self.mark_dirty();
+                self.flush_settings();
+            } else if self.engine.is_running() {
+                self.engine.panic_stop();
+                self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
+                self.log("PANIC STOP triggered by F8.");
+                self.mark_dirty();
+                self.flush_settings();
+            }
         }
         self.f8_was_down = f8_down;
 
@@ -1305,6 +1631,13 @@ impl OpAutoClickerApp {
     // ------------------------------------------------------ location picking
 
     fn arm_location_pick(&mut self) {
+        if self.stability_test.is_active() {
+            self.set_status(
+                StatusKind::Warning,
+                "Cancel the stability test before choosing a location.",
+            );
+            return;
+        }
         self.config.coordinate_mode = CoordinateMode::FixedScreen;
         self.picking_location = true;
         // The click that pressed the button must not capture itself.
@@ -1345,6 +1678,13 @@ impl OpAutoClickerApp {
     // -------------------------------------------------------- record & play
 
     fn start_macro_recording(&mut self) {
+        if self.stability_test.is_active() {
+            self.set_status(
+                StatusKind::Warning,
+                "Cancel the stability test before recording.",
+            );
+            return;
+        }
         if self.update_is_finishing() {
             self.set_status(
                 StatusKind::Warning,
@@ -1434,6 +1774,13 @@ impl OpAutoClickerApp {
     }
 
     fn start_macro_playback(&mut self) {
+        if self.stability_test.is_active() {
+            self.set_status(
+                StatusKind::Warning,
+                "Cancel the stability test before playback.",
+            );
+            return;
+        }
         if self.update_is_finishing() {
             self.set_status(
                 StatusKind::Warning,
@@ -1506,6 +1853,262 @@ impl OpAutoClickerApp {
         }
     }
 
+    fn empty_stability_measurements(seconds: u32) -> Measurements {
+        Measurements {
+            requested_seconds: seconds,
+            elapsed_ms: 0.0,
+            completed_cycles: 0,
+            late_cycles: 0,
+            max_deadline_lateness_ms: None,
+            warning: false,
+        }
+    }
+
+    fn finish_stability_test(
+        &mut self,
+        reason: StabilityEndReason,
+        measurements: Measurements,
+        dropped_records: u64,
+        detail: Option<String>,
+    ) {
+        let verdict = stability::assess(reason, measurements);
+        let (kind, message) = match verdict {
+            Verdict::Good => (
+                StatusKind::Ready,
+                "Stability test complete: timing was good.",
+            ),
+            Verdict::TimingIssues => (
+                StatusKind::Warning,
+                "Stability test complete: timing issues observed.",
+            ),
+            Verdict::Warning => (
+                StatusKind::Warning,
+                "Stability test complete with an engine warning.",
+            ),
+            Verdict::InsufficientData => (
+                StatusKind::Warning,
+                "Stability test: not enough data for a verdict.",
+            ),
+            Verdict::Interrupted => (
+                StatusKind::Warning,
+                "Stability test interrupted; no pass was issued.",
+            ),
+            Verdict::Failed => (
+                StatusKind::Error,
+                "Stability test failed; open the test for details.",
+            ),
+        };
+        if reason == StabilityEndReason::Panicked {
+            self.set_status(
+                StatusKind::Panic,
+                "Panic stop interrupted the stability test.",
+            );
+        } else {
+            self.set_status(kind, message);
+        }
+        self.log(message);
+        self.stability_report_copy_requested = None;
+        self.stability_test = StabilityTestState::Finished {
+            reason,
+            measurements,
+            dropped_records,
+            detail,
+        };
+    }
+
+    fn begin_stability_test(&mut self) {
+        if self.stability_test.is_active() {
+            return;
+        }
+        let seconds = hotkey::sanitize_stability_seconds(self.prefs.stability_test_seconds);
+        self.prefs.stability_test_seconds = seconds;
+        self.commit_interval_editors();
+        let error = if self.engine.is_running()
+            || self.macro_recording
+            || self.picking_location
+            || self.capturing
+        {
+            Some("Stop the current activity and finish any capture first.".to_string())
+        } else if self.update_is_finishing() {
+            Some("The update is waiting to restart.".to_string())
+        } else if !self.engine.worker_alive() {
+            Some("The click worker is unavailable. Restart the app before testing.".to_string())
+        } else {
+            self.validation_message()
+        };
+        if let Some(error) = error {
+            self.finish_stability_test(
+                StabilityEndReason::StartRejected,
+                Self::empty_stability_measurements(seconds),
+                0,
+                Some(error),
+            );
+            return;
+        }
+        // Freeze the current settings now, before the countdown. The
+        // worker clears only the repeat limit in its own private snapshot.
+        let mut config = self.config.clone();
+        config.input_mode = InputMode::GlobalSendInput;
+        config.target_hwnd = 0;
+        self.stability_report_copy_requested = None;
+        self.stability_test = StabilityTestState::Countdown {
+            starts_at: Instant::now() + Duration::from_secs(stability::COUNTDOWN_SECONDS),
+            config,
+            seconds,
+        };
+        self.set_status(
+            StatusKind::Warning,
+            "Real-click test starting in 3 seconds — move to a safe target.",
+        );
+        self.log("Real-click stability test countdown started.");
+        self.mark_dirty();
+    }
+
+    /// Cancel the countdown or ask the worker to stop. A timed run remains
+    /// Running until the worker has released its button and reported a
+    /// terminal outcome; no interruption is ever presented as a pass.
+    fn cancel_stability_test(&mut self, panic: bool) -> bool {
+        match &self.stability_test {
+            StabilityTestState::Countdown { seconds, .. } => {
+                let seconds = *seconds;
+                self.finish_stability_test(
+                    if panic {
+                        StabilityEndReason::Panicked
+                    } else {
+                        StabilityEndReason::Stopped
+                    },
+                    Self::empty_stability_measurements(seconds),
+                    0,
+                    Some("Cancelled during the countdown; no test clicks were sent.".to_string()),
+                );
+                if panic {
+                    self.set_status(
+                        StatusKind::Panic,
+                        "Panic stop cancelled the real-click test.",
+                    );
+                }
+                true
+            }
+            StabilityTestState::Running { .. } => {
+                if panic {
+                    self.engine.panic_stop();
+                    self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
+                } else {
+                    self.engine.request_stop();
+                    self.set_status(StatusKind::Stopping, "Stopping the stability test…");
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn advance_stability_test(&mut self) {
+        let ready = matches!(
+            &self.stability_test,
+            StabilityTestState::Countdown { starts_at, .. } if Instant::now() >= *starts_at
+        );
+        if !ready {
+            return;
+        }
+        let previous = std::mem::replace(&mut self.stability_test, StabilityTestState::Idle);
+        if let StabilityTestState::Countdown {
+            starts_at,
+            config,
+            seconds,
+        } = previous
+        {
+            // A frozen UI must not unexpectedly start injecting input long
+            // after the user agreed to the short countdown.
+            if Instant::now().saturating_duration_since(starts_at) > Duration::from_secs(2) {
+                self.finish_stability_test(
+                    StabilityEndReason::Stopped,
+                    Self::empty_stability_measurements(seconds),
+                    0,
+                    Some("The countdown expired while the app was unresponsive; no test clicks were sent. Start again when ready.".to_string()),
+                );
+                return;
+            }
+            if self.update_is_finishing() {
+                self.finish_stability_test(
+                    StabilityEndReason::Stopped,
+                    Self::empty_stability_measurements(seconds),
+                    0,
+                    Some("Cancelled before clicking because an update is restarting.".to_string()),
+                );
+                return;
+            }
+            if self.engine.is_running()
+                || self.macro_recording
+                || self.picking_location
+                || self.capturing
+            {
+                self.finish_stability_test(
+                    StabilityEndReason::StartRejected,
+                    Self::empty_stability_measurements(seconds),
+                    0,
+                    Some("Another activity began during the countdown; no test clicks were sent. Stop that activity and try again.".to_string()),
+                );
+                return;
+            }
+            match self.engine.start_stability_test(&config, seconds) {
+                Ok(()) => {
+                    self.stability_test = StabilityTestState::Running { seconds };
+                    self.was_running = true;
+                    self.last_seen_error = None;
+                    self.set_status(
+                        StatusKind::Running,
+                        "Real-click stability test running — F8 stops it.",
+                    );
+                    self.log(format!(
+                        "Real-click stability test started for {seconds} seconds."
+                    ));
+                }
+                Err(error) => self.finish_stability_test(
+                    StabilityEndReason::StartRejected,
+                    Self::empty_stability_measurements(seconds),
+                    0,
+                    Some(error),
+                ),
+            }
+        }
+    }
+
+    fn finish_stability_from_engine(&mut self, outcome: SessionOutcome, seconds: u32) {
+        let reason = match outcome {
+            SessionOutcome::Completed => StabilityEndReason::Finished,
+            SessionOutcome::Stopped => StabilityEndReason::Stopped,
+            SessionOutcome::Panicked => StabilityEndReason::Panicked,
+            SessionOutcome::DispatchFailed => StabilityEndReason::DispatchFailed,
+            SessionOutcome::WorkerLost | SessionOutcome::Pending => StabilityEndReason::WorkerLost,
+        };
+        let telemetry = self.engine.telemetry();
+        let detail = self.engine.last_error();
+        let measurements = Measurements {
+            requested_seconds: seconds,
+            elapsed_ms: self.engine.elapsed_ms(),
+            completed_cycles: telemetry.total_clicks(),
+            late_cycles: telemetry.missed_deadlines(),
+            max_deadline_lateness_ms: self.engine.test_max_lateness_ms(),
+            warning: detail.is_some(),
+        };
+        self.finish_stability_test(reason, measurements, telemetry.dropped_records(), detail);
+    }
+
+    /// Only ordinary click sessions follow live dashboard edits. Playback
+    /// and the real-click test own immutable worker snapshots.
+    fn push_live_config_if_ordinary(&mut self) {
+        if self.engine.is_running() && !self.macro_playing && !self.stability_test.is_active() {
+            if let Err(error) = self.engine.update_config(&self.config) {
+                if self.last_seen_error.as_deref() != Some(error.as_str()) {
+                    self.log(format!("Engine error: {error}"));
+                    self.set_status(StatusKind::Error, format!("Error: {error}"));
+                    self.last_seen_error = Some(error);
+                }
+            }
+        }
+    }
+
     fn report_session_outcome(&mut self, outcome: SessionOutcome, was_macro: bool) {
         let count = self.engine.click_count();
         match outcome {
@@ -1564,7 +2167,11 @@ impl OpAutoClickerApp {
         if self.was_running && !running {
             let was_macro = self.macro_playing;
             self.macro_playing = false;
-            self.report_session_outcome(self.engine.session_outcome(), was_macro);
+            if let StabilityTestState::Running { seconds } = &self.stability_test {
+                self.finish_stability_from_engine(self.engine.session_outcome(), *seconds);
+            } else {
+                self.report_session_outcome(self.engine.session_outcome(), was_macro);
+            }
             self.mark_dirty();
             self.flush_settings();
         }
@@ -1572,6 +2179,10 @@ impl OpAutoClickerApp {
     }
 
     fn toggle_session(&mut self) {
+        if self.stability_test.is_countdown() {
+            self.cancel_stability_test(false);
+            return;
+        }
         if self.macro_recording {
             self.stop_macro_recording("hotkey");
             return;
@@ -1591,6 +2202,13 @@ impl OpAutoClickerApp {
     }
 
     fn handle_start(&mut self) {
+        if self.stability_test.is_active() {
+            self.set_status(
+                StatusKind::Warning,
+                "Cancel the stability test before starting another session.",
+            );
+            return;
+        }
         if self.update_is_finishing() {
             self.set_status(
                 StatusKind::Warning,
@@ -1641,6 +2259,7 @@ impl OpAutoClickerApp {
     }
 
     fn reset_to_defaults(&mut self) {
+        self.cancel_stability_test(false);
         self.engine.request_stop();
         self.config = EngineConfig::default();
         self.prefs = AppPrefs::default();
@@ -2168,6 +2787,8 @@ impl OpAutoClickerApp {
         // the Modern header wash sits under all controls and never changes
         // layout, clipping or interaction order.
         let mut header_slot = None;
+        let mut card_slot = None;
+        let mut material_slot = None;
         let response = Frame::none()
             .fill(pal.group_fill)
             .stroke(Stroke::new(1.0_f32, pal.group_border))
@@ -2179,6 +2800,12 @@ impl OpAutoClickerApp {
                 bottom: (if pal.modern { 4.0_f32 } else { 12.0_f32 }) + extra_vertical / 2.0_f32,
             })
             .show(ui, |ui| {
+                if let Some(gradient) = pal.custom {
+                    card_slot = Some(ui.painter().add(egui::Shape::Noop));
+                    if Self::material_alpha(pal, gradient) > 0 {
+                        material_slot = Some(ui.painter().add(egui::Shape::Noop));
+                    }
+                }
                 if pal.modern {
                     header_slot = Some(ui.painter().add(egui::Shape::Noop));
                 }
@@ -2209,6 +2836,31 @@ impl OpAutoClickerApp {
                 (value, natural_height)
             });
         let rect = response.response.rect;
+        if let (Some(slot), Some(gradient)) = (card_slot, pal.custom) {
+            let tint = Self::custom_card_tint(pal);
+            ui.painter().set(
+                slot,
+                Self::custom_gradient_shape(
+                    rect.shrink(1.0),
+                    ui.ctx().screen_rect(),
+                    10.0,
+                    pal.group_fill,
+                    gradient,
+                    tint,
+                ),
+            );
+        }
+        if let (Some(slot), Some(gradient)) = (material_slot, pal.custom) {
+            ui.painter().set(
+                slot,
+                Self::material_shape(
+                    rect.shrink(1.0),
+                    10.0,
+                    Self::material_texture(ui.ctx()),
+                    Self::material_tint(pal, gradient),
+                ),
+            );
+        }
         if let Some(slot) = header_slot {
             let header = egui::Rect::from_min_max(
                 rect.min + Vec2::splat(1.0_f32),
@@ -2218,8 +2870,29 @@ impl OpAutoClickerApp {
                 ),
             );
             let wash = Self::modern_header_color(pal);
-            ui.painter().set(
-                slot,
+            let header_shape = if let Some(gradient) = pal.custom {
+                let background = Self::custom_gradient_shape(
+                    header,
+                    ui.ctx().screen_rect(),
+                    8.0,
+                    wash,
+                    gradient,
+                    Self::custom_header_tint(pal),
+                );
+                if Self::material_alpha(pal, gradient) > 0 {
+                    egui::Shape::Vec(vec![
+                        background,
+                        Self::material_shape(
+                            header,
+                            8.0,
+                            Self::material_texture(ui.ctx()),
+                            Self::material_tint(pal, gradient),
+                        ),
+                    ])
+                } else {
+                    background
+                }
+            } else {
                 egui::Shape::rect_filled(
                     header,
                     Rounding {
@@ -2229,8 +2902,9 @@ impl OpAutoClickerApp {
                         se: 0.0_f32,
                     },
                     wash,
-                ),
-            );
+                )
+            };
+            ui.painter().set(slot, header_shape);
         }
         if let Some(slot) = shadow_slot {
             // The shadow peeks out below and beside the card only; the
@@ -2693,8 +3367,32 @@ impl OpAutoClickerApp {
             );
         }
         if pal.modern && primary && enabled {
-            let (left, right) = Self::modern_start_colors(hovered, pressed);
-            Self::paint_modern_gradient(painter, face_rect, 9.0_f32, left, right);
+            if let Some(gradient) = pal.custom {
+                let start =
+                    Color32::from_rgb(gradient.start[0], gradient.start[1], gradient.start[2]);
+                let end = Color32::from_rgb(gradient.end[0], gradient.end[1], gradient.end[2]);
+                let intensity = if pressed {
+                    0.33
+                } else if hovered {
+                    0.20
+                } else {
+                    0.25
+                };
+                let first = Self::mix_color(Color32::WHITE, start, intensity);
+                let second = Self::mix_color(Color32::WHITE, end, intensity);
+                let middle = Self::mix_color(first, second, 0.5);
+                let strength = f32::from(gradient.strength.min(100)) / 100.0;
+                painter.add(Self::gradient_mesh(
+                    face_rect,
+                    9.0,
+                    Self::mix_color(middle, first, strength),
+                    Self::mix_color(middle, second, strength),
+                    gradient.angle_degrees,
+                ));
+            } else {
+                let (left, right) = Self::modern_start_colors(hovered, pressed);
+                Self::paint_modern_gradient(painter, face_rect, 9.0_f32, left, right);
+            }
             painter.rect_stroke(
                 face_rect,
                 rounding,
@@ -3018,7 +3716,8 @@ impl OpAutoClickerApp {
     // ------------------------------------------------------------- the screen
 
     fn draw_interval_group(&mut self, ui: &mut egui::Ui, extra_vertical: f32) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let _ = Self::group_box(ui, pal, "Click interval", 0.0_f32, extra_vertical, |ui| {
             if self.main_layout == MainLayout::Slender {
                 // Stacked unit labels allow two fields per row even on the
@@ -3121,7 +3820,7 @@ impl OpAutoClickerApp {
 
     fn random_offset_checkbox(&mut self, ui: &mut egui::Ui) -> bool {
         let mut enabled = self.prefs.random_offset_enabled;
-        if Self::choice_checkbox(ui, self.palette(), &mut enabled, "Random offset ±").changed() {
+        if Self::choice_checkbox(ui, &self.palette(), &mut enabled, "Random offset ±").changed() {
             self.prefs.random_offset_enabled = enabled;
             if enabled && self.offset_ms <= 0.0 {
                 self.offset_ms = 40.0;
@@ -3269,8 +3968,14 @@ impl OpAutoClickerApp {
         } else {
             "Pick location"
         };
-        let pick_response = Self::classic_button(ui, pal, pick_label, true, 104.0_f32)
-            .on_hover_text("Capture the fixed click point by clicking it on screen");
+        let pick_response = Self::classic_button(
+            ui,
+            pal,
+            pick_label,
+            !self.stability_test.is_active(),
+            104.0_f32,
+        )
+        .on_hover_text("Capture the fixed click point by clicking it on screen");
         if pick_response.clicked() {
             if self.picking_location {
                 self.picking_location = false;
@@ -3391,7 +4096,8 @@ impl OpAutoClickerApp {
     // later correction within tens of milliseconds, so no visible
     // jump occurs.
     fn draw_options_and_repeat(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let row_height = self.row_group_height.max(0.0_f32);
         let mut taller_natural = 0.0_f32;
         ui.columns(2, |columns| {
@@ -3422,7 +4128,8 @@ impl OpAutoClickerApp {
         gap_extra: f32,
         extra_vertical: f32,
     ) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let _ = Self::group_box(ui, pal, "Click options", 0.0_f32, extra_vertical, |ui| {
             self.options_group_contents(ui, pal)
         });
@@ -3436,7 +4143,8 @@ impl OpAutoClickerApp {
     /// Cursor position three-abreast, still meeting at one bottom
     /// edge through the same shared-height mechanism.
     fn draw_wide_group_row(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let row_height = self.row_group_height.max(0.0_f32);
         let mut tallest_natural = 0.0_f32;
         ui.columns(3, |columns| {
@@ -3470,7 +4178,8 @@ impl OpAutoClickerApp {
     }
 
     fn draw_position_group(&mut self, ui: &mut egui::Ui, extra_vertical: f32) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, extra_vertical, |ui| {
             if self.main_layout.is_portrait() {
                 if self.main_layout == MainLayout::Slender {
@@ -3531,13 +4240,15 @@ impl OpAutoClickerApp {
             ui,
             pal,
             &format!("Start ({hotkey_name})"),
-            !running && validation.is_none() && !finishing,
+            !running && !self.stability_test.is_active() && validation.is_none() && !finishing,
             width,
             true,
             false,
         );
         let reason = if running {
             Some("Stop the current session first.".to_string())
+        } else if self.stability_test.is_active() {
+            Some("Cancel the stability test first.".to_string())
         } else if finishing {
             Some("The update is waiting to restart.".to_string())
         } else {
@@ -3557,7 +4268,7 @@ impl OpAutoClickerApp {
     }
 
     fn stop_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
-        let running = self.engine.state() == STATE_RUNNING;
+        let running = self.engine.state() == STATE_RUNNING || self.stability_test.is_countdown();
         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
         if Self::toned_button(
             ui,
@@ -3570,8 +4281,10 @@ impl OpAutoClickerApp {
         )
         .clicked()
         {
-            self.engine.request_stop();
-            self.set_status(StatusKind::Stopping, "Stopping…");
+            if !self.cancel_stability_test(false) {
+                self.engine.request_stop();
+                self.set_status(StatusKind::Stopping, "Stopping…");
+            }
             self.log("Graceful stop requested.");
             self.mark_dirty();
             self.flush_settings();
@@ -3606,7 +4319,8 @@ impl OpAutoClickerApp {
     }
 
     fn draw_action_buttons(&mut self, ui: &mut egui::Ui) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let gap = ui.spacing().item_spacing.x;
         if self.main_layout == MainLayout::Wide {
             // One row of four: the wide canvas earns the flatter,
@@ -3869,13 +4583,15 @@ impl OpAutoClickerApp {
             || self.show_hotkey_dialog
             || self.show_macro_window
             || self.show_font_license
+            || self.show_stability_test
     }
 
     /// Dim only the Modern dashboard, on the background layer underneath all
     /// windows. This is a visual treatment rather than a new modal lock: the
     /// existing dashboard and emergency-stop interaction stays available.
     fn draw_dialog_backdrop(&self, ctx: &egui::Context) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         if pal.modern && self.any_dialog_open() {
             let alpha = if pal.dark { 110 } else { 72 };
             ctx.layer_painter(egui::LayerId::background()).rect_filled(
@@ -3884,6 +4600,46 @@ impl OpAutoClickerApp {
                 Color32::from_black_alpha(alpha),
             );
         }
+    }
+
+    /// Paint the same protected gradient behind dialog contents without
+    /// changing their layout, input handling, scrolling, or legacy styles.
+    fn custom_dialog_contents<R>(
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        add: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> R {
+        let slot = pal.custom.map(|_| ui.painter().add(egui::Shape::Noop));
+        let result = add(ui);
+        if let (Some(slot), Some(gradient)) = (slot, pal.custom) {
+            let rect = ui.min_rect().expand(4.0).intersect(ui.clip_rect());
+            if rect.is_positive() {
+                let tint = Self::custom_dialog_tint(pal);
+                let background = Self::custom_gradient_shape(
+                    rect,
+                    ui.ctx().screen_rect(),
+                    6.0,
+                    pal.group_fill,
+                    gradient,
+                    tint,
+                );
+                let shape = if Self::material_alpha(pal, gradient) > 0 {
+                    egui::Shape::Vec(vec![
+                        background,
+                        Self::material_shape(
+                            rect,
+                            6.0,
+                            Self::material_texture(ui.ctx()),
+                            Self::material_tint(pal, gradient),
+                        ),
+                    ])
+                } else {
+                    background
+                };
+                ui.painter().set(slot, shape);
+            }
+        }
+        result
     }
 
     /// Leave room for the native egui window's title and margins. Long
@@ -3896,7 +4652,8 @@ impl OpAutoClickerApp {
     // ---------------------------------------------------------- hotkey dialog
 
     fn draw_hotkey_dialog(&mut self, ctx: &egui::Context) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let mut open = self.show_hotkey_dialog;
         let mut should_close = false;
         egui::Window::new("Hotkey setting")
@@ -3907,7 +4664,7 @@ impl OpAutoClickerApp {
             .vscroll(true)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .default_width(340.0_f32)
-            .show(ctx, |ui| {
+            .show(ctx, |ui| Self::custom_dialog_contents(ui, pal, |ui| {
                 Self::choice_checkbox(ui, pal, &mut self.prefs.hotkeys_enabled, "Enable global hotkey");
                 ui.add_space(6.0_f32);
                 ui.label(
@@ -3924,11 +4681,22 @@ impl OpAutoClickerApp {
                         egui::RichText::new("Press any key to assign it…  (Esc cancels)")
                             .color(pal.warning),
                     );
-                } else if ui.button("Assign new key…").clicked() {
+                } else if Self::focus_safe_button(
+                    ui,
+                    "Assign new key…",
+                    !self.stability_test.is_active(),
+                ).clicked() {
                     self.capturing = true;
                     // Baseline: ignore anything currently held; require a
                     // distinct press after the button click.
                     self.capture_key_was_down = true;
+                }
+                if self.stability_test.is_active() {
+                    ui.label(
+                        egui::RichText::new("Cancel the stability test before assigning a key.")
+                            .color(pal.text_dim)
+                            .small(),
+                    );
                 }
                 ui.add_space(6.0_f32);
                 ui.label(
@@ -3942,7 +4710,7 @@ impl OpAutoClickerApp {
                 if ui.button("Close").clicked() {
                     should_close = true;
                 }
-            });
+            }));
         if self.capturing {
             self.poll_hotkey_capture();
         }
@@ -3958,7 +4726,8 @@ impl OpAutoClickerApp {
     // --------------------------------------------------- record & playback UI
 
     fn draw_macro_window(&mut self, ctx: &egui::Context) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let mut open = self.show_macro_window;
         egui::Window::new("Record & Playback")
             .open(&mut open)
@@ -3969,128 +4738,140 @@ impl OpAutoClickerApp {
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .default_width(360.0_f32)
             .show(ctx, |ui| {
-                let steps = self.macro_recorder.len();
-                // An empty floating-point iterator sum can be negative zero.
-                // Keep Classic's existing presentation, but show a clean
-                // zero in Modern before the first recording.
-                let duration_s = if pal.modern && steps == 0 {
-                    0.0
-                } else {
-                    self.macro_recorder.total_duration_ms() / 1000.0
-                };
-                ui.label(
-                    egui::RichText::new(format!(
-                        "Recorded steps: {steps}   ·   one loop: {duration_s:.1} s"
-                    ))
-                    .color(pal.text)
-                    .strong(),
-                );
-                if self.macro_recording {
+                Self::custom_dialog_contents(ui, pal, |ui| {
+                    let steps = self.macro_recorder.len();
+                    // An empty floating-point iterator sum can be negative zero.
+                    // Keep Classic's existing presentation, but show a clean
+                    // zero in Modern before the first recording.
+                    let duration_s = if pal.modern && steps == 0 {
+                        0.0
+                    } else {
+                        self.macro_recorder.total_duration_ms() / 1000.0
+                    };
                     ui.label(
-                        egui::RichText::new(
-                            "Recording… click anywhere on screen. Clicks on this \
-                             window are ignored; the hotkey or F8 also stops recording.",
-                        )
-                        .color(pal.warning),
+                        egui::RichText::new(format!(
+                            "Recorded steps: {steps}   ·   one loop: {duration_s:.1} s"
+                        ))
+                        .color(pal.text)
+                        .strong(),
                     );
-                } else {
+                    if self.macro_recording {
+                        ui.label(
+                            egui::RichText::new(
+                                "Recording… click anywhere on screen. Clicks on this \
+                             window are ignored; the hotkey or F8 also stops recording.",
+                            )
+                            .color(pal.warning),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(
+                                "Record real clicks (position, button and timing), then \
+                             replay them exactly through the precision engine.",
+                            )
+                            .color(pal.text_dim)
+                            .small(),
+                        );
+                    }
+                    ui.add_space(6.0_f32);
+
+                    let engine_running = self.engine.is_running();
+                    let test_countdown = self.stability_test.is_countdown();
+                    ui.horizontal(|ui| {
+                        if self.macro_recording {
+                            if ui.button("Stop recording").clicked() {
+                                self.stop_macro_recording("button");
+                            }
+                        } else if Self::focus_safe_button(
+                            ui,
+                            "Record",
+                            !engine_running && !test_countdown,
+                        )
+                        .clicked()
+                        {
+                            self.start_macro_recording();
+                        }
+                        if Self::focus_safe_button(
+                            ui,
+                            "Clear",
+                            steps > 0 && !self.macro_recording && !engine_running,
+                        )
+                        .clicked()
+                        {
+                            self.macro_recorder.clear();
+                            self.set_status(StatusKind::Ready, "Macro cleared.");
+                            self.log("Macro cleared.");
+                        }
+                    });
+                    ui.add_space(6.0_f32);
+
+                    ui.horizontal(|ui| {
+                        Self::choice_radio(
+                            ui,
+                            pal,
+                            &mut self.macro_until_stopped,
+                            true,
+                            "Play until stopped",
+                        );
+                        Self::choice_radio(ui, pal, &mut self.macro_until_stopped, false, "Play");
+                        let mut loops = self.macro_loops.max(1);
+                        ui.add_enabled_ui(!self.macro_until_stopped, |ui| {
+                            if ui.is_enabled() {
+                                ui.add_sized(
+                                    [64.0_f32, 20.0_f32],
+                                    egui::DragValue::new(&mut loops).clamp_range(1..=1_000_000),
+                                );
+                            } else {
+                                loops = loops.clamp(1, 1_000_000);
+                                Self::disabled_numeric_field(
+                                    ui,
+                                    loops.to_string(),
+                                    loops as f64,
+                                    [64.0_f32, 20.0_f32],
+                                );
+                            }
+                        });
+                        self.macro_loops = loops;
+                        ui.label("times");
+                    });
+                    ui.add_space(8.0_f32);
+
+                    ui.horizontal(|ui| {
+                        if Self::focus_safe_button(
+                            ui,
+                            "Play",
+                            steps > 0
+                                && !self.macro_recording
+                                && !engine_running
+                                && !test_countdown,
+                        )
+                        .clicked()
+                        {
+                            self.start_macro_playback();
+                        }
+                        if Self::focus_safe_button(
+                            ui,
+                            "Stop playback",
+                            engine_running && self.macro_playing,
+                        )
+                        .clicked()
+                        {
+                            self.engine.request_stop();
+                            self.set_status(StatusKind::Stopping, "Stopping playback…");
+                            self.log("Playback stop requested.");
+                        }
+                    });
+                    ui.add_space(6.0_f32);
                     ui.label(
                         egui::RichText::new(
-                            "Record real clicks (position, button and timing), then \
-                             replay them exactly through the precision engine.",
+                            "Playback uses global SendInput at the recorded screen \
+                         positions; gaps are replayed on the drift-free QPC \
+                         schedule and F8 still panic-stops instantly.",
                         )
                         .color(pal.text_dim)
                         .small(),
                     );
-                }
-                ui.add_space(6.0_f32);
-
-                let engine_running = self.engine.is_running();
-                ui.horizontal(|ui| {
-                    if self.macro_recording {
-                        if ui.button("Stop recording").clicked() {
-                            self.stop_macro_recording("button");
-                        }
-                    } else if Self::focus_safe_button(ui, "Record", !engine_running).clicked() {
-                        self.start_macro_recording();
-                    }
-                    if Self::focus_safe_button(
-                        ui,
-                        "Clear",
-                        steps > 0 && !self.macro_recording && !engine_running,
-                    )
-                    .clicked()
-                    {
-                        self.macro_recorder.clear();
-                        self.set_status(StatusKind::Ready, "Macro cleared.");
-                        self.log("Macro cleared.");
-                    }
-                });
-                ui.add_space(6.0_f32);
-
-                ui.horizontal(|ui| {
-                    Self::choice_radio(
-                        ui,
-                        pal,
-                        &mut self.macro_until_stopped,
-                        true,
-                        "Play until stopped",
-                    );
-                    Self::choice_radio(ui, pal, &mut self.macro_until_stopped, false, "Play");
-                    let mut loops = self.macro_loops.max(1);
-                    ui.add_enabled_ui(!self.macro_until_stopped, |ui| {
-                        if ui.is_enabled() {
-                            ui.add_sized(
-                                [64.0_f32, 20.0_f32],
-                                egui::DragValue::new(&mut loops).clamp_range(1..=1_000_000),
-                            );
-                        } else {
-                            loops = loops.clamp(1, 1_000_000);
-                            Self::disabled_numeric_field(
-                                ui,
-                                loops.to_string(),
-                                loops as f64,
-                                [64.0_f32, 20.0_f32],
-                            );
-                        }
-                    });
-                    self.macro_loops = loops;
-                    ui.label("times");
-                });
-                ui.add_space(8.0_f32);
-
-                ui.horizontal(|ui| {
-                    if Self::focus_safe_button(
-                        ui,
-                        "Play",
-                        steps > 0 && !self.macro_recording && !engine_running,
-                    )
-                    .clicked()
-                    {
-                        self.start_macro_playback();
-                    }
-                    if Self::focus_safe_button(
-                        ui,
-                        "Stop playback",
-                        engine_running && self.macro_playing,
-                    )
-                    .clicked()
-                    {
-                        self.engine.request_stop();
-                        self.set_status(StatusKind::Stopping, "Stopping playback…");
-                        self.log("Playback stop requested.");
-                    }
-                });
-                ui.add_space(6.0_f32);
-                ui.label(
-                    egui::RichText::new(
-                        "Playback uses global SendInput at the recorded screen \
-                         positions; gaps are replayed on the drift-free QPC \
-                         schedule and F8 still panic-stops instantly.",
-                    )
-                    .color(pal.text_dim)
-                    .small(),
-                );
+                })
             });
         self.show_macro_window = open;
     }
@@ -4098,7 +4879,8 @@ impl OpAutoClickerApp {
     // ------------------------------------------------------------ advanced UI
 
     fn draw_settings_window(&mut self, ctx: &egui::Context) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let mut open = self.show_settings;
         egui::Window::new("Settings")
             .open(&mut open)
@@ -4108,138 +4890,474 @@ impl OpAutoClickerApp {
             .vscroll(true)
             .default_width(280.0_f32)
             .show(ctx, |ui| {
-                if pal.modern {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Appearance").color(pal.text).strong());
-                        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.link("Outfit license").clicked() {
-                                self.show_font_license = true;
-                            }
-                        });
-                    });
-                } else {
-                    ui.label(egui::RichText::new("Appearance").color(pal.text).strong());
-                }
-                ui.horizontal(|ui| {
-                    ui.add_sized([40.0_f32, 22.0_f32], egui::Label::new("Style"));
-                    for (style, label) in [
-                        (AppearanceStyle::Classic, "Classic"),
-                        (AppearanceStyle::Modern, "Modern"),
-                    ] {
-                        let selected = self.prefs.theme.style() == Some(style);
-                        if ui.selectable_label(selected, label).clicked() && !selected {
-                            self.prefs.theme =
-                                AppTheme::from_appearance(style, self.prefs.theme.mode());
-                            self.mark_dirty();
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.add_sized([40.0_f32, 22.0_f32], egui::Label::new("Mode"));
-                    ui.add_enabled_ui(self.prefs.theme.style().is_some(), |ui| {
-                        for (mode, label) in [
-                            (AppearanceMode::Light, "Light"),
-                            (AppearanceMode::Dark, "Dark"),
-                        ] {
-                            let selected = self.prefs.theme.mode() == mode;
-                            if ui.is_enabled() {
-                                if ui.selectable_label(selected, label).clicked() && !selected {
-                                    if let Some(style) = self.prefs.theme.style() {
-                                        self.prefs.theme = AppTheme::from_appearance(style, mode);
-                                        self.mark_dirty();
-                                    }
+                Self::custom_dialog_contents(ui, pal, |ui| {
+                    if pal.modern {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("Appearance").color(pal.text).strong());
+                            ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.link("Outfit license").clicked() {
+                                    self.show_font_license = true;
                                 }
-                            } else {
-                                Self::disabled_selectable_label(ui, selected, label);
-                            }
-                        }
-                    });
-                });
-                if self.prefs.theme.style().is_none() {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Previous theme: {}. Choose Classic or Modern to change it.",
-                            self.prefs.theme.label()
-                        ))
-                        .color(pal.text_dim)
-                        .small(),
-                    );
-                }
-                egui::CollapsingHeader::new("Previous themes")
-                    .id_source("settings_previous_themes")
-                    .show(ui, |ui| {
-                        for theme in AppTheme::previous() {
-                            if ui
-                                .selectable_value(&mut self.prefs.theme, theme, theme.label())
-                                .changed()
-                            {
+                            });
+                        });
+                    } else {
+                        ui.label(egui::RichText::new("Appearance").color(pal.text).strong());
+                    }
+                    ui.horizontal(|ui| {
+                        ui.add_sized([40.0_f32, 22.0_f32], egui::Label::new("Style"));
+                        for (style, label) in [
+                            (AppearanceStyle::Classic, "Classic"),
+                            (AppearanceStyle::Modern, "Modern"),
+                            (AppearanceStyle::Custom, "Custom"),
+                        ] {
+                            let selected = self.prefs.theme.style() == Some(style);
+                            if ui.selectable_label(selected, label).clicked() && !selected {
+                                self.prefs.theme =
+                                    AppTheme::from_appearance(style, self.prefs.theme.mode());
                                 self.mark_dirty();
                             }
                         }
                     });
-                ui.add_space(8.0_f32);
-                if Self::choice_checkbox(
-                    ui,
-                    pal,
-                    &mut self.prefs.auto_scale,
-                    "Scale and rearrange with window size",
-                )
-                .changed()
-                {
-                    if !self.prefs.auto_scale {
-                        // Back to the fixed classic composition at once;
-                        // the evaluator would retire the fit on its own,
-                        // just a few frames later.
-                        self.auto_zoom = 1.0_f32;
-                        self.displayed_auto_zoom = 1.0_f32;
-                        self.zoom_transition = None;
-                        self.zoom_candidate = 1.0_f32;
-                        self.main_layout = MainLayout::Classic;
-                        self.stable_frames = 0;
+                    ui.horizontal(|ui| {
+                        ui.add_sized([40.0_f32, 22.0_f32], egui::Label::new("Mode"));
+                        ui.add_enabled_ui(self.prefs.theme.style().is_some(), |ui| {
+                            for (mode, label) in [
+                                (AppearanceMode::Light, "Light"),
+                                (AppearanceMode::Dark, "Dark"),
+                            ] {
+                                let selected = self.prefs.theme.mode() == mode;
+                                if ui.is_enabled() {
+                                    if ui.selectable_label(selected, label).clicked() && !selected {
+                                        if let Some(style) = self.prefs.theme.style() {
+                                            self.prefs.theme =
+                                                AppTheme::from_appearance(style, mode);
+                                            self.mark_dirty();
+                                        }
+                                    }
+                                } else {
+                                    Self::disabled_selectable_label(ui, selected, label);
+                                }
+                            }
+                        });
+                    });
+                    if self.prefs.theme.style() == Some(AppearanceStyle::Custom) {
+                        egui::CollapsingHeader::new("Customize gradient")
+                            .id_source("settings_custom_gradient")
+                            .show(ui, |ui| {
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label("First color");
+                                    let first = ui.color_edit_button_srgb(
+                                        &mut self.prefs.custom_gradient.start,
+                                    );
+                                    first.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::ColorButton,
+                                            "First gradient color",
+                                        )
+                                    });
+                                    if first.changed() {
+                                        self.mark_dirty();
+                                    }
+                                    ui.add_space(12.0);
+                                    ui.label("Second color");
+                                    let second = ui.color_edit_button_srgb(
+                                        &mut self.prefs.custom_gradient.end,
+                                    );
+                                    second.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::ColorButton,
+                                            "Second gradient color",
+                                        )
+                                    });
+                                    if second.changed() {
+                                        self.mark_dirty();
+                                    }
+                                });
+                                if ui
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut self.prefs.custom_gradient.angle_degrees,
+                                            0..=359,
+                                        )
+                                        .text("Rotation °"),
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_dirty();
+                                }
+                                if ui
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut self.prefs.custom_gradient.strength,
+                                            0..=100,
+                                        )
+                                        .text("Strength %"),
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_dirty();
+                                }
+                                if ui
+                                    .add(
+                                        egui::Slider::new(
+                                            &mut self.prefs.custom_gradient.texture_strength,
+                                            0..=100,
+                                        )
+                                        .text("Texture %"),
+                                    )
+                                    .changed()
+                                {
+                                    self.mark_dirty();
+                                }
+                                let (preview, _) = ui.allocate_exact_size(
+                                    Vec2::new(ui.available_width(), 18.0),
+                                    Sense::hover(),
+                                );
+                                ui.painter().add(Self::custom_gradient_shape(
+                                    preview,
+                                    preview,
+                                    5.0,
+                                    pal.group_fill,
+                                    self.prefs.custom_gradient,
+                                    Self::custom_card_tint(pal),
+                                ));
+                                if Self::material_alpha(pal, self.prefs.custom_gradient) > 0 {
+                                    ui.painter().add(Self::material_shape(
+                                        preview,
+                                        5.0,
+                                        Self::material_texture(ui.ctx()),
+                                        Self::material_tint(pal, self.prefs.custom_gradient),
+                                    ));
+                                }
+                                ui.painter().rect_stroke(
+                                    preview,
+                                    Rounding::same(5.0),
+                                    Stroke::new(1.0_f32, pal.group_border),
+                                );
+                                ui.label(
+                            egui::RichText::new(
+                                "Colors are softened to keep text readable. 0° runs left to right.",
+                            )
+                            .color(pal.text_dim)
+                            .small(),
+                        );
+                                if ui.small_button("Reset gradient").clicked() {
+                                    self.prefs.custom_gradient = CustomGradient::default();
+                                    self.mark_dirty();
+                                }
+                            });
                     }
-                    self.mark_dirty();
-                }
-                ui.label(
-                    egui::RichText::new(
-                        "The interface scales as the window grows or shrinks. \
+                    if self.prefs.theme.style().is_none() {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Previous theme: {}. Choose a style above to change it.",
+                                self.prefs.theme.label()
+                            ))
+                            .color(pal.text_dim)
+                            .small(),
+                        );
+                    }
+                    egui::CollapsingHeader::new("Previous themes")
+                        .id_source("settings_previous_themes")
+                        .show(ui, |ui| {
+                            for theme in AppTheme::previous() {
+                                if ui
+                                    .selectable_value(&mut self.prefs.theme, theme, theme.label())
+                                    .changed()
+                                {
+                                    self.mark_dirty();
+                                }
+                            }
+                        });
+                    ui.add_space(8.0_f32);
+                    if Self::choice_checkbox(
+                        ui,
+                        pal,
+                        &mut self.prefs.auto_scale,
+                        "Scale and rearrange with window size",
+                    )
+                    .changed()
+                    {
+                        if !self.prefs.auto_scale {
+                            // Back to the fixed classic composition at once;
+                            // the evaluator would retire the fit on its own,
+                            // just a few frames later.
+                            self.auto_zoom = 1.0_f32;
+                            self.displayed_auto_zoom = 1.0_f32;
+                            self.zoom_transition = None;
+                            self.zoom_candidate = 1.0_f32;
+                            self.main_layout = MainLayout::Classic;
+                            self.stable_frames = 0;
+                        }
+                        self.mark_dirty();
+                    }
+                    ui.label(
+                        egui::RichText::new(
+                            "The interface scales as the window grows or shrinks. \
                          Tall windows stack the controls; panoramic windows \
                          arrange them side by side.",
-                    )
-                    .color(pal.text_dim)
-                    .small(),
-                );
-                if let Some(error) = &self.settings_load_error {
-                    ui.add_space(8.0_f32);
-                    ui.label(egui::RichText::new(error).color(pal.warning).small());
-                } else if let Some(error) = &self.last_save_error {
-                    ui.add_space(8.0_f32);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "Settings not saved: {error}. Retrying automatically."
-                        ))
-                        .color(pal.warning)
+                        )
+                        .color(pal.text_dim)
                         .small(),
                     );
-                }
-                ui.add_space(10.0_f32);
-                ui.separator();
-                ui.add_space(6.0_f32);
-                if ui
-                    .button("Reset all settings to factory defaults")
-                    .clicked()
-                {
-                    self.reset_to_defaults();
-                }
+                    ui.add_space(8.0_f32);
+                    ui.separator();
+                    ui.label(
+                        egui::RichText::new("Stability test")
+                            .color(pal.text)
+                            .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new("Measure timing with real clicks for 10–60 seconds.")
+                            .color(pal.text_dim)
+                            .small(),
+                    );
+                    if ui.button("Open stability test…").clicked() {
+                        self.show_stability_test = true;
+                        self.show_settings = false;
+                    }
+                    if let Some(error) = &self.settings_load_error {
+                        ui.add_space(8.0_f32);
+                        ui.label(egui::RichText::new(error).color(pal.warning).small());
+                    } else if let Some(error) = &self.last_save_error {
+                        ui.add_space(8.0_f32);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Settings not saved: {error}. Retrying automatically."
+                            ))
+                            .color(pal.warning)
+                            .small(),
+                        );
+                    }
+                    ui.add_space(10.0_f32);
+                    ui.separator();
+                    ui.add_space(6.0_f32);
+                    if ui
+                        .button("Reset all settings to factory defaults")
+                        .clicked()
+                    {
+                        self.reset_to_defaults();
+                    }
+                })
             });
         if !open {
             self.show_settings = false;
         }
     }
 
+    /// Place the outcome before the controls for another run, so the result
+    /// is not hidden below the fold on a short window. Clipboard contents are
+    /// constructed only when explicitly requested by the user.
+    fn stability_result_contents(&self, ui: &mut egui::Ui, pal: &Palette) -> Option<String> {
+        let StabilityTestState::Finished {
+            reason,
+            measurements,
+            dropped_records,
+            detail,
+        } = &self.stability_test
+        else {
+            return None;
+        };
+        let verdict = stability::assess(*reason, *measurements);
+        let color = match verdict {
+            Verdict::Good => pal.success,
+            Verdict::TimingIssues
+            | Verdict::Warning
+            | Verdict::InsufficientData
+            | Verdict::Interrupted => pal.warning,
+            Verdict::Failed => pal.danger,
+        };
+        ui.add_space(6.0_f32);
+        ui.separator();
+        ui.label(egui::RichText::new(verdict.title()).color(color).strong());
+        if measurements.elapsed_ms.is_finite() && measurements.elapsed_ms >= 0.0 {
+            ui.label(format!(
+                "Elapsed: {:.1} / {} s",
+                measurements.elapsed_ms / 1000.0,
+                measurements.requested_seconds
+            ));
+        } else {
+            ui.label(format!(
+                "Elapsed: n/a / {} s",
+                measurements.requested_seconds
+            ));
+        }
+        ui.label(format!(
+            "Cycles: {}  ·  late: {} ({}; rounded)",
+            measurements.completed_cycles,
+            measurements.late_cycles,
+            stability::format_late_percent(*measurements),
+        ));
+        if let Some(rate) = measurements.cycles_per_second() {
+            ui.label(format!("Average cadence: {rate:.2} cycles/s"));
+        } else {
+            ui.label("Average cadence: n/a");
+        }
+        let worst = measurements
+            .max_deadline_lateness_ms
+            .filter(|ms| ms.is_finite() && *ms >= 0.0);
+        let worst_text = worst.map_or_else(|| "n/a".to_string(), |ms| format!("{ms:.1} ms"));
+        let overrun = if *reason == StabilityEndReason::Finished {
+            measurements.end_overrun_ms()
+        } else {
+            None
+        };
+        let timing_color = if worst.is_some_and(|ms| ms > stability::MAX_DEADLINE_LATENESS_MS)
+            || overrun.is_some_and(|ms| ms > stability::MAX_END_OVERRUN_MS)
+        {
+            pal.warning
+        } else {
+            pal.text_dim
+        };
+        let timing_text = match overrun {
+            Some(ms) => {
+                format!("Worst deadline lateness: {worst_text}  ·  end overrun: {ms:.1} ms")
+            }
+            None => format!("Worst deadline lateness: {worst_text}"),
+        };
+        ui.label(egui::RichText::new(timing_text).color(timing_color).small());
+        ui.label(
+            egui::RichText::new(verdict.guidance())
+                .color(pal.text_dim)
+                .small(),
+        );
+        if let Some(detail) = detail {
+            ui.label(egui::RichText::new(detail).color(pal.text_dim).small());
+        }
+        if *dropped_records > 0 {
+            ui.label(egui::RichText::new(format!(
+                "{dropped_records} detail records were dropped; the totals use independent counters."
+            )).color(pal.text_dim).small());
+        }
+        let mut report = None;
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Copy timing report")
+                .on_hover_text("Copies timing counts only; no cursor position, device identifiers, or raw error details.")
+                .clicked()
+            {
+                report = Some(stability::format_report(*reason, *measurements, *dropped_records));
+            }
+            if self.stability_report_copy_requested.is_some_and(|at| at.elapsed() < Duration::from_secs(3)) {
+                ui.label(egui::RichText::new("Copy requested").color(pal.text_dim).small());
+            }
+        });
+        report
+    }
+
+    fn draw_stability_test_window(&mut self, ctx: &egui::Context) {
+        let palette = self.palette();
+        let pal = &palette;
+        let mut open = self.show_stability_test;
+        let mut start = false;
+        let mut stop = false;
+        let mut copy_report = None;
+        egui::Window::new("Real-click stability test")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .max_height(Self::dialog_content_height(ctx))
+            .vscroll(true)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .default_width(360.0_f32)
+            .show(ctx, |ui| Self::custom_dialog_contents(ui, pal, |ui| {
+                ui.label(egui::RichText::new("REAL CLICKS — choose a safe target")
+                    .color(pal.warning).strong());
+                ui.label("This sends actual mouse input to the current cursor or your fixed position, including in other applications. A 3-second countdown lets you move the cursor first.");
+                ui.label(egui::RichText::new(
+                    "Current click settings are captured when you start. The repeat limit is ignored only for this run; saved settings are unchanged. Stop, the enabled start/stop hotkey, F8, or closing this window cancels."
+                ).color(pal.text_dim).small());
+                copy_report = self.stability_result_contents(ui, pal);
+                ui.add_space(6.0);
+
+                match &self.stability_test {
+                    StabilityTestState::Countdown { starts_at, seconds, .. } => {
+                        let left = starts_at.saturating_duration_since(Instant::now()).as_secs_f64().ceil().max(1.0);
+                        ui.label(egui::RichText::new(format!("Starting in {left:.0} seconds · {seconds}-second test"))
+                            .color(pal.warning).strong());
+                        if ui.button("Cancel countdown").clicked() { stop = true; }
+                    }
+                    StabilityTestState::Running { seconds } => {
+                        let elapsed = self.engine.elapsed_ms() / 1000.0;
+                        ui.label(egui::RichText::new(format!("Testing… {elapsed:.1} / {seconds} s"))
+                            .color(pal.text).strong());
+                        let progress = if *seconds > 0 && elapsed.is_finite() {
+                            (elapsed / f64::from(*seconds)).clamp(0.0, 1.0) as f32
+                        } else {
+                            0.0
+                        };
+                        let progress_response = ui.add(
+                            egui::ProgressBar::new(progress)
+                                .desired_height(8.0_f32)
+                                .fill(pal.accent),
+                        );
+                        progress_response.widget_info(|| {
+                            let mut info = egui::WidgetInfo::labeled(
+                                egui::WidgetType::ProgressIndicator,
+                                "Stability test progress",
+                            );
+                            info.value = Some(f64::from(progress) * 100.0);
+                            info
+                        });
+                        let sample = Measurements {
+                            requested_seconds: *seconds,
+                            elapsed_ms: elapsed * 1000.0,
+                            completed_cycles: self.engine.telemetry().total_clicks(),
+                            late_cycles: self.engine.telemetry().missed_deadlines(),
+                            max_deadline_lateness_ms: self.engine.test_max_lateness_ms(),
+                            warning: false,
+                        };
+                        ui.label(format!("Cycles: {}  ·  late: {} ({}; rounded)",
+                            sample.completed_cycles, sample.late_cycles, stability::format_late_percent(sample)));
+                        if let Some(rate) = sample.cycles_per_second() {
+                            ui.label(format!("Average cadence: {rate:.2} cycles/s"));
+                        }
+                        if ui.button("Stop test").clicked() { stop = true; }
+                    }
+                    StabilityTestState::Idle | StabilityTestState::Finished { .. } => {
+                        if ui.add(egui::Slider::new(&mut self.prefs.stability_test_seconds,
+                            hotkey::MIN_STABILITY_SECONDS..=hotkey::MAX_STABILITY_SECONDS)
+                            .text("seconds")).changed() {
+                            self.mark_dirty();
+                        }
+                        let available = !self.engine.is_running() && !self.macro_recording
+                            && !self.picking_location && !self.capturing && !self.update_is_finishing();
+                        if Self::focus_safe_button(ui, "Start real-click test", available).clicked() {
+                            start = true;
+                        }
+                        if !available {
+                            ui.label(egui::RichText::new("Stop the current activity and finish any capture first.")
+                                .color(pal.text_dim).small());
+                        }
+                    }
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(egui::RichText::new(
+                    "Good means the full duration, at least 20 completed cycles, at most 5% late, no observed deadline more than 250 ms late, an end overrun of at most 250 ms, and no engine warning. A cycle is late if already overdue before scheduling or over 1 ms late at dispatch. One cycle may contain multiple clicks. Results vary by hardware, Windows and target application; they do not prove target receipt or future stability."
+                ).color(pal.text_dim).small());
+            }));
+        if let Some(report) = copy_report {
+            ctx.copy_text(report);
+            self.stability_report_copy_requested = Some(Instant::now());
+            ctx.request_repaint();
+        }
+        if !open {
+            self.cancel_stability_test(false);
+            self.show_stability_test = false;
+        } else if stop {
+            self.cancel_stability_test(false);
+        } else if start {
+            self.begin_stability_test();
+        }
+    }
+
     /// The executable embeds Outfit, so include its complete license in the
     /// executable too and make it readable without a network or separate file.
     fn draw_font_license_window(&mut self, ctx: &egui::Context) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let mut open = self.show_font_license;
         egui::Window::new("Outfit font license")
             .open(&mut open)
@@ -4249,11 +5367,13 @@ impl OpAutoClickerApp {
             .max_height(Self::dialog_content_height(ctx))
             .vscroll(true)
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(include_str!("../assets/fonts/OFL-Outfit.txt"))
-                        .size(12.0_f32)
-                        .color(pal.text),
-                );
+                Self::custom_dialog_contents(ui, pal, |ui| {
+                    ui.label(
+                        egui::RichText::new(include_str!("../assets/fonts/OFL-Outfit.txt"))
+                            .size(12.0_f32)
+                            .color(pal.text),
+                    );
+                })
             });
         self.show_font_license = open;
     }
@@ -4743,6 +5863,9 @@ impl OpAutoClickerApp {
         let paths = &ready.paths;
         let version = &ready.version;
         let source_context = Self::source_advanced_context(version, ready.source_advanced);
+        if self.stability_test.is_countdown() {
+            self.cancel_stability_test(false);
+        }
         if self.macro_recording {
             self.stop_macro_recording("update restart");
         }
@@ -4966,7 +6089,8 @@ impl OpAutoClickerApp {
 
     fn draw_updates_window(&mut self, ctx: &egui::Context) {
         self.refresh_update_check_if_stale();
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         let mut open = self.show_updates;
         let state = self.update_state.clone();
         let current_version = env!("CARGO_PKG_VERSION");
@@ -5172,285 +6296,287 @@ impl OpAutoClickerApp {
                 .inner_margin(Margin::same(12.0_f32)),
         )
         .show(ctx, |ui| {
-            // Status plate: glyph, headline and the facts a user
-            // needs to trust the verdict — what they run, what
-            // GitHub reported, how this build is installed, and how
-            // fresh that answer is.
-            Frame::none()
-                .fill(pal.input_bg)
-                .stroke(Stroke::new(1.0_f32, pal.input_border))
-                .rounding(Rounding::same(7.0_f32))
-                .inner_margin(Margin::same(10.0_f32))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.horizontal_top(|ui| {
-                        Self::paint_update_status_icon(ui, pal, &state);
-                        ui.vertical(|ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&heading)
-                                        .color(pal.text)
-                                        .size(15.0_f32)
-                                        .strong(),
-                                )
-                                .truncate(true),
-                            );
-                            ui.label(
-                                egui::RichText::new(&detail)
-                                    .color(pal.text_dim)
-                                    .size(12.0_f32),
-                            );
-                        });
-                    });
-                    if available_version.is_some() || install_progress.is_some() {
-                        ui.add_space(7.0_f32);
-                        Self::paint_update_steps(ui, pal, update_steps, update_step);
-                    }
-                    ui.add_space(8.0_f32);
-                    ui.separator();
-                    ui.add_space(6.0_f32);
-                    // Measure the other fact columns in the active font:
-                    // a wider typeface (or installation label) must not let
-                    // a long version expand this window beyond the viewport.
-                    let fact_font = FontId::proportional(12.0_f32);
-                    let measure = |text: &str| {
-                        ui.fonts(|fonts| {
-                            fonts
-                                .layout_no_wrap(text.to_owned(), fact_font.clone(), pal.text)
-                                .size()
-                                .x
-                        })
-                    };
-                    let first_column = ["Installed", "Installation", "Checked"]
-                        .into_iter()
-                        .map(measure)
-                        .fold(0.0_f32, f32::max);
-                    let installed = format!("v{current_version}");
-                    let second_column =
-                        [installed.as_str(), install_kind_label, &last_checked_label]
-                            .into_iter()
-                            .map(measure)
-                            .fold(0.0_f32, f32::max);
-                    let third_column = ["Latest", "Size", "Channel"]
-                        .into_iter()
-                        .map(measure)
-                        .fold(0.0_f32, f32::max);
-                    let latest_width = (ui.available_width()
-                        - first_column
-                        - second_column
-                        - third_column
-                        - 3.0_f32 * 8.0_f32
-                        - 2.0_f32)
-                        .max(0.0_f32);
-                    Grid::new("updates_facts")
-                        .num_columns(4)
-                        .spacing([8.0_f32, 3.0_f32])
-                        .show(ui, |ui| {
-                            let facts = [
-                                ("Installed", format!("v{current_version}")),
-                                ("Latest", latest_label.clone()),
-                                ("Installation", install_kind_label.to_string()),
-                                ("Size", download_size_label.clone()),
-                                ("Checked", last_checked_label.clone()),
-                                ("Channel", "Stable".to_string()),
-                            ];
-                            for (index, (label, value)) in facts.into_iter().enumerate() {
+            Self::custom_dialog_contents(ui, pal, |ui| {
+                // Status plate: glyph, headline and the facts a user
+                // needs to trust the verdict — what they run, what
+                // GitHub reported, how this build is installed, and how
+                // fresh that answer is.
+                Frame::none()
+                    .fill(pal.input_bg)
+                    .stroke(Stroke::new(1.0_f32, pal.input_border))
+                    .rounding(Rounding::same(7.0_f32))
+                    .inner_margin(Margin::same(10.0_f32))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal_top(|ui| {
+                            Self::paint_update_status_icon(ui, pal, &state);
+                            ui.vertical(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&heading)
+                                            .color(pal.text)
+                                            .size(15.0_f32)
+                                            .strong(),
+                                    )
+                                    .truncate(true),
+                                );
                                 ui.label(
-                                    egui::RichText::new(label)
+                                    egui::RichText::new(&detail)
                                         .color(pal.text_dim)
                                         .size(12.0_f32),
                                 );
-                                let text = egui::RichText::new(value)
-                                    .color(pal.text)
-                                    .size(12.0_f32)
-                                    .strong();
-                                if label == "Latest" {
-                                    let galley = Self::truncated_galley(ui, text, latest_width);
-                                    ui.add(egui::Label::new(galley));
-                                } else {
-                                    ui.label(text);
-                                }
-                                if index % 2 == 1 {
-                                    ui.end_row();
-                                }
-                            }
+                            });
                         });
-                });
+                        if available_version.is_some() || install_progress.is_some() {
+                            ui.add_space(7.0_f32);
+                            Self::paint_update_steps(ui, pal, update_steps, update_step);
+                        }
+                        ui.add_space(8.0_f32);
+                        ui.separator();
+                        ui.add_space(6.0_f32);
+                        // Measure the other fact columns in the active font:
+                        // a wider typeface (or installation label) must not let
+                        // a long version expand this window beyond the viewport.
+                        let fact_font = FontId::proportional(12.0_f32);
+                        let measure = |text: &str| {
+                            ui.fonts(|fonts| {
+                                fonts
+                                    .layout_no_wrap(text.to_owned(), fact_font.clone(), pal.text)
+                                    .size()
+                                    .x
+                            })
+                        };
+                        let first_column = ["Installed", "Installation", "Checked"]
+                            .into_iter()
+                            .map(measure)
+                            .fold(0.0_f32, f32::max);
+                        let installed = format!("v{current_version}");
+                        let second_column =
+                            [installed.as_str(), install_kind_label, &last_checked_label]
+                                .into_iter()
+                                .map(measure)
+                                .fold(0.0_f32, f32::max);
+                        let third_column = ["Latest", "Size", "Channel"]
+                            .into_iter()
+                            .map(measure)
+                            .fold(0.0_f32, f32::max);
+                        let latest_width = (ui.available_width()
+                            - first_column
+                            - second_column
+                            - third_column
+                            - 3.0_f32 * 8.0_f32
+                            - 2.0_f32)
+                            .max(0.0_f32);
+                        Grid::new("updates_facts")
+                            .num_columns(4)
+                            .spacing([8.0_f32, 3.0_f32])
+                            .show(ui, |ui| {
+                                let facts = [
+                                    ("Installed", format!("v{current_version}")),
+                                    ("Latest", latest_label.clone()),
+                                    ("Installation", install_kind_label.to_string()),
+                                    ("Size", download_size_label.clone()),
+                                    ("Checked", last_checked_label.clone()),
+                                    ("Channel", "Stable".to_string()),
+                                ];
+                                for (index, (label, value)) in facts.into_iter().enumerate() {
+                                    ui.label(
+                                        egui::RichText::new(label)
+                                            .color(pal.text_dim)
+                                            .size(12.0_f32),
+                                    );
+                                    let text = egui::RichText::new(value)
+                                        .color(pal.text)
+                                        .size(12.0_f32)
+                                        .strong();
+                                    if label == "Latest" {
+                                        let galley = Self::truncated_galley(ui, text, latest_width);
+                                        ui.add(egui::Label::new(galley));
+                                    } else {
+                                        ui.label(text);
+                                    }
+                                    if index % 2 == 1 {
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                    });
 
-            ui.add_space(10.0_f32);
-            let gap = ui.spacing().item_spacing.x;
-            let button_width = ((ui.available_width() - gap) / 2.0_f32).max(0.0_f32);
-            if let Some((_version, done, total, phase)) = &install_progress {
-                if *phase == UPDATE_PHASE_STOPPING {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new("Waiting for clicks to stop…")
-                                .color(pal.text)
-                                .size(12.0_f32),
-                        );
-                    });
-                } else if *phase == UPDATE_PHASE_SOURCE {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new("Updating the source checkout\u{2026}")
-                                .color(pal.text)
-                                .size(12.0_f32),
-                        );
-                    });
-                } else if *phase == UPDATE_PHASE_VERIFYING {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new("Verifying the SHA-256 fingerprint\u{2026}")
-                                .color(pal.text)
-                                .size(12.0_f32),
-                        );
-                    });
-                } else {
-                    let fraction = if *total > 0 {
-                        (*done as f32 / *total as f32).clamp(0.0_f32, 1.0_f32)
+                ui.add_space(10.0_f32);
+                let gap = ui.spacing().item_spacing.x;
+                let button_width = ((ui.available_width() - gap) / 2.0_f32).max(0.0_f32);
+                if let Some((_version, done, total, phase)) = &install_progress {
+                    if *phase == UPDATE_PHASE_STOPPING {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("Waiting for clicks to stop…")
+                                    .color(pal.text)
+                                    .size(12.0_f32),
+                            );
+                        });
+                    } else if *phase == UPDATE_PHASE_SOURCE {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("Updating the source checkout\u{2026}")
+                                    .color(pal.text)
+                                    .size(12.0_f32),
+                            );
+                        });
+                    } else if *phase == UPDATE_PHASE_VERIFYING {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("Verifying the SHA-256 fingerprint\u{2026}")
+                                    .color(pal.text)
+                                    .size(12.0_f32),
+                            );
+                        });
                     } else {
-                        0.0_f32
-                    };
-                    ui.add(egui::ProgressBar::new(fraction));
-                    ui.add_space(4.0_f32);
-                    ui.label(
-                        egui::RichText::new(update::download_progress_label(*done, *total))
-                            .color(pal.text_dim)
-                            .size(12.0_f32),
-                    );
-                }
-                ui.add_space(8.0_f32);
-                ui.horizontal(|ui| {
-                    if Self::update_action_button(
-                        ui,
-                        pal,
-                        "Cancel update",
-                        true,
-                        false,
-                        button_width,
-                        30.0_f32,
-                    )
-                    .on_hover_text("Stop this update; the running version stays in place")
-                    .clicked()
-                    {
-                        cancel_clicked = true;
+                        let fraction = if *total > 0 {
+                            (*done as f32 / *total as f32).clamp(0.0_f32, 1.0_f32)
+                        } else {
+                            0.0_f32
+                        };
+                        ui.add(egui::ProgressBar::new(fraction));
+                        ui.add_space(4.0_f32);
+                        ui.label(
+                            egui::RichText::new(update::download_progress_label(*done, *total))
+                                .color(pal.text_dim)
+                                .size(12.0_f32),
+                        );
                     }
-                });
-            } else {
-                ui.horizontal(|ui| {
-                    if Self::update_action_button(
-                        ui,
-                        pal,
-                        &check_label,
-                        !checking,
-                        available_version.is_none(),
-                        button_width,
-                        34.0_f32,
-                    )
-                    .on_hover_text("Ask GitHub for the newest published release")
-                    .clicked()
-                    {
-                        check_clicked = true;
-                    }
-                    if Self::update_action_button(
-                        ui,
-                        pal,
-                        &download_label,
-                        download_url.is_some(),
-                        available_version.is_some(),
-                        button_width,
-                        34.0_f32,
-                    )
-                    .on_hover_text(download_hover)
-                    .clicked()
-                    {
-                        download_clicked = true;
-                    }
-                });
-
-                if available_version.is_some() {
                     ui.add_space(8.0_f32);
                     ui.horizontal(|ui| {
                         if Self::update_action_button(
                             ui,
                             pal,
-                            "Release notes",
+                            "Cancel update",
                             true,
                             false,
                             button_width,
-                            28.0_f32,
+                            30.0_f32,
                         )
+                        .on_hover_text("Stop this update; the running version stays in place")
                         .clicked()
                         {
-                            notes_clicked = true;
+                            cancel_clicked = true;
+                        }
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        if Self::update_action_button(
+                            ui,
+                            pal,
+                            &check_label,
+                            !checking,
+                            available_version.is_none(),
+                            button_width,
+                            34.0_f32,
+                        )
+                        .on_hover_text("Ask GitHub for the newest published release")
+                        .clicked()
+                        {
+                            check_clicked = true;
                         }
                         if Self::update_action_button(
                             ui,
                             pal,
-                            "Copy download link",
-                            true,
-                            false,
+                            &download_label,
+                            download_url.is_some(),
+                            available_version.is_some(),
                             button_width,
-                            28.0_f32,
+                            34.0_f32,
                         )
+                        .on_hover_text(download_hover)
                         .clicked()
                         {
-                            copy_clicked = true;
+                            download_clicked = true;
                         }
                     });
+
+                    if available_version.is_some() {
+                        ui.add_space(8.0_f32);
+                        ui.horizontal(|ui| {
+                            if Self::update_action_button(
+                                ui,
+                                pal,
+                                "Release notes",
+                                true,
+                                false,
+                                button_width,
+                                28.0_f32,
+                            )
+                            .clicked()
+                            {
+                                notes_clicked = true;
+                            }
+                            if Self::update_action_button(
+                                ui,
+                                pal,
+                                "Copy download link",
+                                true,
+                                false,
+                                button_width,
+                                28.0_f32,
+                            )
+                            .clicked()
+                            {
+                                copy_clicked = true;
+                            }
+                        });
+                    }
                 }
-            }
 
-            if let Some((kind, message)) = &notice {
-                let color = match kind {
-                    UpdateNoticeKind::Info => pal.success,
-                    UpdateNoticeKind::Error => pal.warning,
-                };
+                if let Some((kind, message)) = &notice {
+                    let color = match kind {
+                        UpdateNoticeKind::Info => pal.success,
+                        UpdateNoticeKind::Error => pal.warning,
+                    };
+                    ui.add_space(7.0_f32);
+                    ui.label(egui::RichText::new(message).color(color).size(12.0_f32));
+                }
+
                 ui.add_space(7.0_f32);
-                ui.label(egui::RichText::new(message).color(color).size(12.0_f32));
-            }
-
-            ui.add_space(7.0_f32);
-            let fine_print = if matches!(
-                &install_progress,
-                Some((_version, _done, _total, UPDATE_PHASE_SOURCE))
-            ) {
-                "Only a clean main checkout is fast-forwarded. Local tracked \
+                let fine_print = if matches!(
+                    &install_progress,
+                    Some((_version, _done, _total, UPDATE_PHASE_SOURCE))
+                ) {
+                    "Only a clean main checkout is fast-forwarded. Local tracked \
                  changes stop the update before any program file is replaced."
-            } else if install_progress.is_some() {
-                "Downloading never interrupts a running session; clicking \
+                } else if install_progress.is_some() {
+                    "Downloading never interrupts a running session; clicking \
                  stops only for the restart itself."
-            } else if can_install && is_source_checkout {
-                "Update fast-forwards this clean source checkout to the release \
+                } else if can_install && is_source_checkout {
+                    "Update fast-forwards this clean source checkout to the release \
                  tag, verifies the SHA-256 fingerprint, then restarts. Settings are kept."
-            } else if can_install {
-                "Update downloads, verifies the SHA-256 fingerprint, then \
+                } else if can_install {
+                    "Update downloads, verifies the SHA-256 fingerprint, then \
                  restarts MacroClicker. Settings are kept."
-            } else if available_version.is_some() {
-                self.self_update_unavailable_reason()
-            } else {
-                "Nothing installs without a click here; the check only reads \
+                } else if available_version.is_some() {
+                    self.self_update_unavailable_reason()
+                } else {
+                    "Nothing installs without a click here; the check only reads \
                  GitHub's public release metadata."
-            };
-            ui.label(egui::RichText::new(fine_print).color(pal.text_dim).small());
+                };
+                ui.label(egui::RichText::new(fine_print).color(pal.text_dim).small());
 
-            ui.add_space(8.0_f32);
-            ui.separator();
-            ui.add_space(6.0_f32);
-            Self::choice_checkbox(
-                ui,
-                pal,
-                &mut check_on_startup,
-                "Check for updates on startup",
-            );
-            ui.label(
-                egui::RichText::new("One check per launch; reopening refreshes stale results.")
-                    .color(pal.text_dim)
-                    .small(),
-            );
+                ui.add_space(8.0_f32);
+                ui.separator();
+                ui.add_space(6.0_f32);
+                Self::choice_checkbox(
+                    ui,
+                    pal,
+                    &mut check_on_startup,
+                    "Check for updates on startup",
+                );
+                ui.label(
+                    egui::RichText::new("One check per launch; reopening refreshes stale results.")
+                        .color(pal.text_dim)
+                        .small(),
+                );
+            })
         });
 
         if check_on_startup != self.prefs.check_updates {
@@ -5519,7 +6645,8 @@ impl OpAutoClickerApp {
     }
     /// Draw the dashboard independently of native-window bookkeeping.
     fn draw_dashboard(&mut self, ctx: &egui::Context) {
-        let pal = self.palette();
+        let palette = self.palette();
+        let pal = &palette;
         // Single non-scrolling screen: no ScrollArea, everything fits at
         // the OS-enforced floor and still fits above it. Growing the
         // window widens the group boxes and the button grid (all field
@@ -5567,6 +6694,26 @@ impl OpAutoClickerApp {
                 bottom: 10.0_f32,
             }))
             .show(ctx, |ui| {
+                if let Some(gradient) = pal.custom {
+                    let tint = Self::custom_face_tint(pal);
+                    let painter = ctx.layer_painter(ui.layer_id());
+                    painter.add(Self::custom_gradient_shape(
+                        ctx.screen_rect(),
+                        ctx.screen_rect(),
+                        0.0,
+                        pal.face,
+                        gradient,
+                        tint,
+                    ));
+                    if Self::material_alpha(pal, gradient) > 0 {
+                        painter.add(Self::material_shape(
+                            ctx.screen_rect(),
+                            0.0,
+                            Self::material_texture(ctx),
+                            Self::material_tint(pal, gradient),
+                        ));
+                    }
+                }
                 ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
                     self.draw_interval_group(ui, extra_per_card);
                     if wide {
@@ -5898,18 +7045,8 @@ impl eframe::App for OpAutoClickerApp {
         self.poll_pick_capture();
         self.poll_macro_record();
         self.surface_engine_errors();
-        // During macro playback the engine runs a cloned configuration
-        // (fixed-step budget, per-step positions); pushing the live UI
-        // config into it would overwrite that budget mid-run.
-        if self.engine.is_running() && !self.macro_playing {
-            if let Err(error) = self.engine.update_config(&self.config) {
-                if self.last_seen_error.as_deref() != Some(error.as_str()) {
-                    self.log(format!("Engine error: {error}"));
-                    self.set_status(StatusKind::Error, format!("Error: {error}"));
-                    self.last_seen_error = Some(error);
-                }
-            }
-        }
+        self.advance_stability_test();
+        self.push_live_config_if_ordinary();
         // Watchdog: if the dedicated worker thread ever died while a
         // session is marked running, force the engine back to idle and say
         // so — the UI must never report a running session that no thread
@@ -5974,9 +7111,14 @@ impl eframe::App for OpAutoClickerApp {
         if self.show_font_license {
             self.draw_font_license_window(ctx);
         }
+        if self.show_stability_test {
+            self.draw_stability_test_window(ctx);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.cancel_stability_test(false);
+        self.engine.request_stop();
         // After an update relaunch the replacement process has
         // already read the settings flushed before the swap; a
         // second write from this dying process could only race it.
@@ -6222,7 +7364,7 @@ mod dashboard_layout_tests {
                     }
                     let mut cards = Vec::new();
                     for clipped in &output.shapes {
-                        collect_cards(&clipped.shape, app.palette(), &mut cards);
+                        collect_cards(&clipped.shape, &app.palette(), &mut cards);
                     }
                     assert_eq!(cards.len(), 4, "{theme:?} at {size:?}, {ppp}");
                     for rect in cards {
@@ -6282,7 +7424,7 @@ mod dashboard_layout_tests {
                 }
                 let mut cards = Vec::new();
                 for clipped in &output.shapes {
-                    collect_cards(&clipped.shape, app.palette(), size.x, &mut cards);
+                    collect_cards(&clipped.shape, &app.palette(), size.x, &mut cards);
                 }
                 cards.sort_by(|a, b| a.top().total_cmp(&b.top()));
                 assert_eq!(cards.len(), 4, "{height}px / {layout:?}: {cards:?}");
@@ -6438,6 +7580,7 @@ mod dashboard_layout_tests {
                 "hotkey" => app.draw_hotkey_dialog(ctx),
                 "macro" => app.draw_macro_window(ctx),
                 "updates" => app.draw_updates_window(ctx),
+                "stability" => app.draw_stability_test_window(ctx),
                 _ => unreachable!(),
             }
         })
@@ -6926,7 +8069,7 @@ mod dashboard_layout_tests {
             let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
             for ppp in [1.0, 1.25, 2.0] {
                 for theme in AppTheme::all() {
-                    for name in ["settings", "hotkey", "macro", "updates"] {
+                    for name in ["settings", "hotkey", "macro", "updates", "stability"] {
                         let ctx = egui::Context::default();
                         let mut app = test_app(layout);
                         app.prefs.theme = theme;
@@ -6936,6 +8079,7 @@ mod dashboard_layout_tests {
                         app.show_hotkey_dialog = name == "hotkey";
                         app.show_macro_window = name == "macro";
                         app.show_updates = name == "updates";
+                        app.show_stability_test = name == "stability";
                         app.macro_until_stopped = false;
                         app.macro_loops = 1_000_000;
                         let mut output = render_dialog(&mut app, &ctx, size, ppp, name, vec![]);
@@ -6948,6 +8092,7 @@ mod dashboard_layout_tests {
                             "hotkey" => "Hotkey setting",
                             "macro" => "Record & Playback",
                             "updates" => "Updates",
+                            "stability" => "Real-click stability test",
                             _ => unreachable!(),
                         };
                         assert!(text.iter().any(|(label, _, _)| label == title));
@@ -7455,6 +8600,1215 @@ mod dashboard_layout_tests {
 
     fn click_text(app: &mut OpAutoClickerApp, ctx: &egui::Context, label: &str) {
         click_text_at(app, ctx, Vec2::new(400.0, 600.0), label);
+    }
+
+    #[test]
+    fn custom_theme_controls_are_reachable_and_reset_without_changing_mode() {
+        let size = Vec2::new(560.0, 900.0);
+        for mode in [AppearanceMode::Light, AppearanceMode::Dark] {
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Classic);
+            app.show_settings = true;
+            app.prefs.theme = AppTheme::from_appearance(AppearanceStyle::Modern, mode);
+            for _ in 0..5 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            click_dialog_text(&mut app, &ctx, size, "settings", "Custom");
+            assert_eq!(
+                app.prefs.theme,
+                AppTheme::from_appearance(AppearanceStyle::Custom, mode)
+            );
+            for _ in 0..5 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            click_dialog_text(&mut app, &ctx, size, "settings", "Customize gradient");
+            let mut output = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            for _ in 0..25 {
+                output = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            let text = text_bounds(&output);
+            for label in [
+                "First color",
+                "Second color",
+                "Rotation °",
+                "Strength %",
+                "Texture %",
+                "Reset gradient",
+            ] {
+                assert!(
+                    text.iter().any(|(item, _, _)| item == label),
+                    "missing {label}"
+                );
+            }
+            for (label, accessible_name, red_label, new_red) in [
+                ("First color", "First gradient color", "R 27", 128),
+                ("Second color", "Second gradient color", "R 107", 210),
+            ] {
+                let bounds = text.iter().find(|(item, _, _)| item == label).unwrap().1;
+                let point = Pos2::new(bounds.right() + 18.0, bounds.center().y);
+                let pointer = |pressed| Event::PointerButton {
+                    pos: point,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::default(),
+                };
+                let _ = render_dialog(
+                    &mut app,
+                    &ctx,
+                    size,
+                    1.0,
+                    "settings",
+                    vec![Event::PointerMoved(point), pointer(true)],
+                );
+                let output =
+                    render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![pointer(false)]);
+                assert!(
+                    ctx.memory(|memory| memory.any_popup_open()),
+                    "{label} must open"
+                );
+                assert!(output
+                    .platform_output
+                    .events
+                    .iter()
+                    .any(|event| matches!(event,
+                    egui::output::OutputEvent::Clicked(info)
+                        if info.label.as_deref() == Some(accessible_name))));
+                // Wait for egui's popup first-frame layout, then change an
+                // actual RGB field rather than only checking that it opens.
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+                app.settings_dirty = false;
+                click_dialog_text(&mut app, &ctx, size, "settings", red_label);
+                let _ = render_dialog(
+                    &mut app,
+                    &ctx,
+                    size,
+                    1.0,
+                    "settings",
+                    vec![Event::Text(new_red.to_string())],
+                );
+                let enter = |pressed| Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: Modifiers::default(),
+                };
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![enter(true)]);
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![enter(false)]);
+                let saved_red = if label == "First color" {
+                    app.prefs.custom_gradient.start[0]
+                } else {
+                    app.prefs.custom_gradient.end[0]
+                };
+                assert_eq!(saved_red, new_red, "{label} edit");
+                assert!(app.settings_dirty, "color changes must be saved");
+                ctx.memory_mut(|memory| memory.close_popup());
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            app.prefs.custom_gradient.start = [255, 0, 20];
+            app.prefs.custom_gradient.angle_degrees = 245;
+            app.prefs.custom_gradient.strength = 10;
+            click_dialog_text(&mut app, &ctx, size, "settings", "Reset gradient");
+            assert_eq!(app.prefs.custom_gradient, CustomGradient::default());
+            assert_eq!(
+                app.prefs.theme,
+                AppTheme::from_appearance(AppearanceStyle::Custom, mode)
+            );
+        }
+    }
+
+    #[test]
+    fn untouched_custom_color_pickers_preserve_exact_rgb_values() {
+        let size = Vec2::new(560.0, 900.0);
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Classic);
+        app.prefs.theme = AppTheme::CustomLight;
+        app.show_settings = true;
+        for _ in 0..5 {
+            let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+        }
+        click_dialog_text(&mut app, &ctx, size, "settings", "Customize gradient");
+        for _ in 0..25 {
+            let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+        }
+        for (first, second) in [
+            ([0, 0, 0], [255, 255, 255]),
+            ([1, 2, 3], [254, 253, 252]),
+            ([27, 166, 154], [107, 112, 223]),
+            ([13, 201, 78], [221, 39, 180]),
+            ([255, 0, 127], [0, 255, 128]),
+        ] {
+            app.prefs.custom_gradient.start = first;
+            app.prefs.custom_gradient.end = second;
+            for _ in 0..5 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            assert_eq!(app.prefs.custom_gradient.start, first);
+            assert_eq!(app.prefs.custom_gradient.end, second);
+        }
+    }
+
+    #[test]
+    fn custom_color_pickers_have_keyboard_accessible_names() {
+        let size = Vec2::new(560.0, 900.0);
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Classic);
+        app.prefs.theme = AppTheme::CustomLight;
+        app.show_settings = true;
+        for _ in 0..5 {
+            let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+        }
+        click_dialog_text(&mut app, &ctx, size, "settings", "Customize gradient");
+        for _ in 0..25 {
+            let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+        }
+        let key = |key, pressed| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+        let mut reached = Vec::new();
+        for _ in 0..40 {
+            let press = render_dialog(
+                &mut app,
+                &ctx,
+                size,
+                1.0,
+                "settings",
+                vec![key(egui::Key::Tab, true)],
+            );
+            let release = render_dialog(
+                &mut app,
+                &ctx,
+                size,
+                1.0,
+                "settings",
+                vec![key(egui::Key::Tab, false)],
+            );
+            for event in press
+                .platform_output
+                .events
+                .iter()
+                .chain(&release.platform_output.events)
+            {
+                if let egui::output::OutputEvent::FocusGained(info) = event {
+                    if let Some(label) = &info.label {
+                        if label == "First gradient color" || label == "Second gradient color" {
+                            reached.push(label.clone());
+                        }
+                    }
+                }
+            }
+            if reached.iter().any(|label| label == "Second gradient color") {
+                let _ = render_dialog(
+                    &mut app,
+                    &ctx,
+                    size,
+                    1.0,
+                    "settings",
+                    vec![key(egui::Key::Enter, true)],
+                );
+                assert!(
+                    ctx.memory(|memory| memory.any_popup_open()),
+                    "focused color picker must open with Enter"
+                );
+                break;
+            }
+        }
+        assert!(
+            reached.iter().any(|label| label == "First gradient color"),
+            "{reached:?}"
+        );
+        assert!(
+            reached.iter().any(|label| label == "Second gradient color"),
+            "{reached:?}"
+        );
+    }
+
+    #[test]
+    fn stability_dialog_warns_and_its_start_and_cancel_controls_work() {
+        let size = Vec2::new(560.0, 456.0);
+        for theme in AppTheme::all() {
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Classic);
+            app.prefs.theme = theme;
+            app.show_stability_test = true;
+            app.config.base_interval_ms = 600_000.0;
+            app.config.max_interval_ms = 600_000.0;
+            app.sync_interval_editors();
+            let mut output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+            for _ in 0..5 {
+                output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+            }
+            let text = text_bounds(&output);
+            assert!(text
+                .iter()
+                .any(|(label, _, _)| label.contains("REAL CLICKS")));
+            let button = text
+                .iter()
+                .find(|(label, _, _)| label == "Start real-click test")
+                .expect("start button");
+            assert!(
+                button.2.expand(0.5).contains_rect(button.1),
+                "{theme:?}: start button clipped"
+            );
+            click_dialog_text(&mut app, &ctx, size, "stability", "Start real-click test");
+            assert!(app.stability_test.is_countdown());
+            assert!(!app.engine.is_running());
+            click_dialog_text(&mut app, &ctx, size, "stability", "Cancel countdown");
+            assert!(matches!(
+                app.stability_test,
+                StabilityTestState::Finished {
+                    reason: StabilityEndReason::Stopped,
+                    ..
+                }
+            ));
+            assert!(!app.engine.is_running());
+        }
+    }
+
+    #[test]
+    fn stability_results_are_visible_and_copy_a_privacy_limited_report() {
+        let size = Vec2::new(560.0, 456.0);
+        let base = Measurements {
+            requested_seconds: 10,
+            elapsed_ms: 10_000.0,
+            completed_cycles: 100,
+            late_cycles: 5,
+            max_deadline_lateness_ms: Some(2.0),
+            warning: false,
+        };
+        let scenarios = [
+            (StabilityEndReason::Finished, base, Verdict::Good),
+            (
+                StabilityEndReason::Finished,
+                Measurements {
+                    late_cycles: 6,
+                    ..base
+                },
+                Verdict::TimingIssues,
+            ),
+            (
+                StabilityEndReason::Finished,
+                Measurements {
+                    elapsed_ms: 10_251.0,
+                    ..base
+                },
+                Verdict::TimingIssues,
+            ),
+            (
+                StabilityEndReason::Finished,
+                Measurements {
+                    completed_cycles: 10_000,
+                    late_cycles: 1,
+                    max_deadline_lateness_ms: Some(251.0),
+                    ..base
+                },
+                Verdict::TimingIssues,
+            ),
+            (
+                StabilityEndReason::Finished,
+                Measurements {
+                    warning: true,
+                    ..base
+                },
+                Verdict::Warning,
+            ),
+            (
+                StabilityEndReason::Finished,
+                Measurements {
+                    completed_cycles: 19,
+                    late_cycles: 0,
+                    ..base
+                },
+                Verdict::InsufficientData,
+            ),
+            (StabilityEndReason::Stopped, base, Verdict::Interrupted),
+            (StabilityEndReason::DispatchFailed, base, Verdict::Failed),
+        ];
+        for theme in AppTheme::all() {
+            for (reason, measurements, verdict) in scenarios {
+                let ctx = egui::Context::default();
+                let mut app = test_app(MainLayout::Classic);
+                app.prefs.theme = theme;
+                app.show_stability_test = true;
+                app.stability_test = StabilityTestState::Finished {
+                    reason,
+                    measurements,
+                    dropped_records: 0,
+                    detail: None,
+                };
+                let mut output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+                for _ in 0..5 {
+                    output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+                }
+                let labels = text_bounds(&output);
+                for expected in [verdict.title(), "Copy timing report"] {
+                    let (_, rect, clip) = labels
+                        .iter()
+                        .find(|(text, _, _)| text == expected)
+                        .unwrap_or_else(|| panic!("missing {expected:?}: {theme:?}/{verdict:?}"));
+                    assert!(
+                        clip.expand(0.5).contains_rect(*rect),
+                        "{expected:?} clipped in {theme:?}/{verdict:?}: {rect:?} by {clip:?}"
+                    );
+                }
+                assert!(labels
+                    .iter()
+                    .any(|(text, _, _)| text.starts_with("Cycles: ")));
+                assert!(labels
+                    .iter()
+                    .any(|(text, _, _)| text.starts_with("Average cadence: ")));
+            }
+        }
+
+        // Short and portrait windows must retain a visible verdict; the
+        // scrollable dialog still makes the remaining controls reachable.
+        for size in [Vec2::new(420.0, 420.0), Vec2::new(320.0, 740.0)] {
+            for theme in AppTheme::all() {
+                let ctx = egui::Context::default();
+                let mut app = test_app(MainLayout::Classic);
+                app.prefs.theme = theme;
+                app.show_stability_test = true;
+                app.stability_test = StabilityTestState::Finished {
+                    reason: StabilityEndReason::Finished,
+                    measurements: base,
+                    dropped_records: 0,
+                    detail: None,
+                };
+                let mut output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+                for _ in 0..5 {
+                    output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+                }
+                let verdict = text_bounds(&output)
+                    .into_iter()
+                    .find(|(text, _, _)| text == Verdict::Good.title())
+                    .expect("verdict");
+                assert!(
+                    verdict.2.expand(0.5).contains_rect(verdict.1),
+                    "{theme:?} at {size:?}: verdict clipped"
+                );
+                let pointer = Pos2::new(size.x / 2.0, size.y / 2.0);
+                let mut copy_visible = false;
+                for _ in 0..10 {
+                    copy_visible = text_bounds(&output).into_iter().any(|(text, rect, clip)| {
+                        text == "Copy timing report" && clip.expand(0.5).contains_rect(rect)
+                    });
+                    if copy_visible {
+                        break;
+                    }
+                    output = render_dialog(
+                        &mut app,
+                        &ctx,
+                        size,
+                        1.0,
+                        "stability",
+                        vec![
+                            Event::PointerMoved(pointer),
+                            Event::Scroll(Vec2::new(0.0, -48.0)),
+                        ],
+                    );
+                }
+                assert!(copy_visible, "{theme:?} at {size:?}: copy not reachable");
+            }
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Classic);
+        app.prefs.theme = AppTheme::CustomDark;
+        app.show_stability_test = true;
+        app.stability_test = StabilityTestState::Finished {
+            reason: StabilityEndReason::DispatchFailed,
+            measurements: base,
+            dropped_records: 17,
+            detail: Some("private marker: cursor position and OS detail".to_string()),
+        };
+        let mut output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+        for _ in 0..5 {
+            output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+        }
+        let button = text_bounds(&output)
+            .into_iter()
+            .find(|(text, _, _)| text == "Copy timing report")
+            .expect("copy button");
+        assert!(button.2.expand(0.5).contains_rect(button.1));
+        let position = button.1.center();
+        let pointer = |pressed| Event::PointerButton {
+            pos: position,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        let _ = render_dialog(
+            &mut app,
+            &ctx,
+            size,
+            1.0,
+            "stability",
+            vec![Event::PointerMoved(position), pointer(true)],
+        );
+        let output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![pointer(false)]);
+        let expected = stability::format_report(StabilityEndReason::DispatchFailed, base, 17);
+        assert_eq!(output.platform_output.copied_text, expected);
+        assert!(!output
+            .platform_output
+            .copied_text
+            .contains("private marker"));
+        let output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+        assert!(text_bounds(&output)
+            .iter()
+            .any(|(text, _, _)| text == "Copy requested"));
+        assert_eq!(app.engine.click_count(), 0);
+    }
+
+    #[test]
+    fn stability_running_progress_shows_live_counts_and_stop_drains_the_worker() {
+        let size = Vec2::new(560.0, 456.0);
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Classic);
+        app.prefs.theme = AppTheme::CustomDark;
+        app.show_stability_test = true;
+        let config = EngineConfig {
+            base_interval_ms: 600_000.0,
+            max_interval_ms: 600_000.0,
+            ..EngineConfig::default()
+        };
+        assert!(app.engine.start_stability_test(&config, 10).is_ok());
+        app.was_running = true;
+        app.stability_test = StabilityTestState::Running { seconds: 10 };
+        let mut output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+        for _ in 0..5 {
+            output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+        }
+        let labels = text_bounds(&output);
+        assert!(labels
+            .iter()
+            .any(|(text, _, _)| text.starts_with("Testing… ")));
+        assert!(labels
+            .iter()
+            .any(|(text, _, _)| text == "Cycles: 0  ·  late: 0 (n/a; rounded)"));
+        let (_, stop, clip) = labels
+            .iter()
+            .find(|(text, _, _)| text == "Stop test")
+            .expect("stop control");
+        assert!(clip.expand(0.5).contains_rect(*stop));
+        click_dialog_text(&mut app, &ctx, size, "stability", "Stop test");
+        let timeout = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(Instant::now() < timeout, "worker did not stop");
+            std::thread::yield_now();
+        }
+        app.reconcile_session_status();
+        assert!(matches!(
+            app.stability_test,
+            StabilityTestState::Finished {
+                reason: StabilityEndReason::Stopped,
+                ..
+            }
+        ));
+        assert_eq!(app.engine.click_count(), 0);
+    }
+
+    #[test]
+    fn expanded_custom_settings_scroll_to_the_stability_test() {
+        let size = Vec2::new(560.0, 456.0);
+        for theme in [AppTheme::CustomLight, AppTheme::CustomDark] {
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Classic);
+            app.prefs.theme = theme;
+            app.show_settings = true;
+            for _ in 0..5 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            click_dialog_text(&mut app, &ctx, size, "settings", "Customize gradient");
+            for _ in 0..25 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            let position = Pos2::new(size.x / 2.0, size.y / 2.0);
+            let _ = render_dialog(
+                &mut app,
+                &ctx,
+                size,
+                1.0,
+                "settings",
+                vec![
+                    Event::PointerMoved(position),
+                    Event::Scroll(Vec2::new(0.0, -1200.0)),
+                ],
+            );
+            let mut output = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            for _ in 0..10 {
+                output = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            let button = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == "Open stability test…")
+                .expect("stability test button in expanded settings");
+            assert!(
+                button.2.expand(0.5).contains_rect(button.1),
+                "{theme:?}: scrolled stability test button is clipped: {button:?}"
+            );
+            click_dialog_text(&mut app, &ctx, size, "settings", "Open stability test…");
+            assert!(app.show_stability_test && !app.show_settings);
+        }
+    }
+
+    #[test]
+    fn stability_rejects_invalid_and_conflicting_activity_without_starting() {
+        for activity in ["invalid", "recording", "picking", "capturing"] {
+            let mut app = test_app(MainLayout::Classic);
+            match activity {
+                "invalid" => {
+                    app.config.base_interval_ms = 0.0;
+                    app.sync_interval_editors();
+                }
+                "recording" => app.macro_recording = true,
+                "picking" => app.picking_location = true,
+                "capturing" => app.capturing = true,
+                _ => unreachable!(),
+            }
+            app.begin_stability_test();
+            assert!(!app.engine.is_running(), "{activity}");
+            assert!(
+                matches!(
+                    app.stability_test,
+                    StabilityTestState::Finished {
+                        reason: StabilityEndReason::StartRejected,
+                        detail: Some(_),
+                        ..
+                    }
+                ),
+                "{activity}"
+            );
+        }
+
+        // Recheck activities immediately before dispatch, even if a future
+        // code path somehow bypasses the UI guards during the countdown.
+        for activity in ["recording", "picking", "capturing"] {
+            let mut app = test_app(MainLayout::Classic);
+            app.begin_stability_test();
+            match activity {
+                "recording" => app.macro_recording = true,
+                "picking" => app.picking_location = true,
+                "capturing" => app.capturing = true,
+                _ => unreachable!(),
+            }
+            if let StabilityTestState::Countdown { starts_at, .. } = &mut app.stability_test {
+                *starts_at = Instant::now();
+            } else {
+                panic!("test did not enter countdown");
+            }
+            app.advance_stability_test();
+            assert!(!app.engine.is_running(), "{activity}");
+            assert!(
+                matches!(
+                    app.stability_test,
+                    StabilityTestState::Finished {
+                        reason: StabilityEndReason::StartRejected,
+                        detail: Some(_),
+                        ..
+                    }
+                ),
+                "{activity}"
+            );
+        }
+
+        // Even if a different session starts during the countdown through a
+        // non-UI caller, the test must fail safely and leave it untouched.
+        let mut app = test_app(MainLayout::Classic);
+        app.config.base_interval_ms = 600_000.0;
+        app.config.max_interval_ms = 600_000.0;
+        app.sync_interval_editors();
+        app.begin_stability_test();
+        assert!(app.engine.start(&app.config).is_ok());
+        if let StabilityTestState::Countdown { starts_at, .. } = &mut app.stability_test {
+            *starts_at = Instant::now();
+        } else {
+            panic!("test did not enter countdown");
+        }
+        app.advance_stability_test();
+        assert!(app.engine.is_running());
+        assert!(matches!(
+            app.stability_test,
+            StabilityTestState::Finished {
+                reason: StabilityEndReason::StartRejected,
+                detail: Some(_),
+                ..
+            }
+        ));
+        app.engine.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "ordinary worker did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.click_count(), 0);
+    }
+
+    #[test]
+    fn stability_blocks_new_hotkey_capture_during_countdown_and_run() {
+        let size = Vec2::new(560.0, 456.0);
+        for running in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Classic);
+            app.show_hotkey_dialog = true;
+            app.config.base_interval_ms = 600_000.0;
+            app.config.max_interval_ms = 600_000.0;
+            app.sync_interval_editors();
+            app.begin_stability_test();
+            if running {
+                if let StabilityTestState::Countdown { starts_at, .. } = &mut app.stability_test {
+                    *starts_at = Instant::now();
+                }
+                app.advance_stability_test();
+                assert!(app.engine.is_running());
+            }
+            for _ in 0..5 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "hotkey", vec![]);
+            }
+            let output = render_dialog(&mut app, &ctx, size, 1.0, "hotkey", vec![]);
+            assert!(text_bounds(&output)
+                .iter()
+                .any(|(label, _, _)| label == "Cancel the stability test before assigning a key."));
+            click_dialog_text(&mut app, &ctx, size, "hotkey", "Assign new key…");
+            assert!(
+                !app.capturing,
+                "assign must remain disabled during the test"
+            );
+            assert!(app.cancel_stability_test(false));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.engine.is_running() {
+                assert!(Instant::now() < deadline, "test worker did not stop");
+                std::thread::yield_now();
+            }
+            assert_eq!(app.engine.click_count(), 0);
+        }
+    }
+
+    #[test]
+    fn stability_window_close_cancels_countdown_and_running_test() {
+        fn find_window(shape: &Shape, fill: Color32) -> Option<Rect> {
+            match shape {
+                Shape::Vec(children) => children.iter().find_map(|child| find_window(child, fill)),
+                Shape::Rect(rect) if rect.fill == fill && rect.rect.width() > 350.0 => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            }
+        }
+        let size = Vec2::new(560.0, 456.0);
+        for theme in [AppTheme::Classic, AppTheme::CustomDark] {
+            for running in [false, true] {
+                let ctx = egui::Context::default();
+                let mut app = test_app(MainLayout::Classic);
+                app.prefs.theme = theme;
+                app.show_stability_test = true;
+                app.config.base_interval_ms = 600_000.0;
+                app.config.max_interval_ms = 600_000.0;
+                app.sync_interval_editors();
+                app.begin_stability_test();
+                if running {
+                    if let StabilityTestState::Countdown { starts_at, .. } = &mut app.stability_test
+                    {
+                        *starts_at = Instant::now();
+                    }
+                    app.advance_stability_test();
+                    assert!(app.engine.is_running());
+                }
+                let mut output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+                for _ in 0..5 {
+                    output = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![]);
+                }
+                let pal = app.palette();
+                let fill = if pal.modern { pal.group_fill } else { pal.face };
+                let window = output
+                    .shapes
+                    .iter()
+                    .find_map(|clipped| find_window(&clipped.shape, fill))
+                    .expect("stability window frame");
+                let title = text_bounds(&output)
+                    .into_iter()
+                    .find(|(text, _, _)| text == "Real-click stability test")
+                    .expect("stability title")
+                    .1;
+                let close = Pos2::new(window.right() - 18.0, title.center().y);
+                let pointer = |pressed| Event::PointerButton {
+                    pos: close,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::default(),
+                };
+                let _ = render_dialog(
+                    &mut app,
+                    &ctx,
+                    size,
+                    1.0,
+                    "stability",
+                    vec![Event::PointerMoved(close), pointer(true)],
+                );
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "stability", vec![pointer(false)]);
+                assert!(!app.show_stability_test, "{theme:?}, running={running}");
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while app.engine.is_running() {
+                    assert!(Instant::now() < deadline, "test worker did not stop");
+                    std::thread::yield_now();
+                }
+                if running {
+                    app.reconcile_session_status();
+                }
+                assert_eq!(app.engine.click_count(), 0);
+                assert!(matches!(
+                    app.stability_test,
+                    StabilityTestState::Finished {
+                        reason: StabilityEndReason::Stopped,
+                        ..
+                    }
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn application_exit_stops_an_active_stability_test() {
+        for running in [false, true] {
+            let mut app = test_app(MainLayout::Classic);
+            app.skip_exit_save = true;
+            app.config.base_interval_ms = 600_000.0;
+            app.config.max_interval_ms = 600_000.0;
+            app.sync_interval_editors();
+            app.begin_stability_test();
+            if running {
+                if let StabilityTestState::Countdown { starts_at, .. } = &mut app.stability_test {
+                    *starts_at = Instant::now();
+                }
+                app.advance_stability_test();
+                assert!(app.engine.is_running());
+            }
+            eframe::App::on_exit(&mut app, None);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.engine.is_running() {
+                assert!(
+                    Instant::now() < deadline,
+                    "test worker did not stop on exit"
+                );
+                std::thread::yield_now();
+            }
+            if running {
+                app.reconcile_session_status();
+            }
+            assert_eq!(app.engine.click_count(), 0);
+            assert!(matches!(
+                app.stability_test,
+                StabilityTestState::Finished {
+                    reason: StabilityEndReason::Stopped,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn stability_countdown_is_cancellable_and_never_turns_f6_into_a_normal_start() {
+        let mut app = test_app(MainLayout::Classic);
+        app.config.base_interval_ms = 600_000.0;
+        app.config.max_interval_ms = 600_000.0;
+        app.sync_interval_editors();
+        app.begin_stability_test();
+        assert!(app.stability_test.is_countdown());
+        app.toggle_session();
+        assert!(!app.engine.is_running());
+        assert!(matches!(
+            app.stability_test,
+            StabilityTestState::Finished {
+                reason: StabilityEndReason::Stopped,
+                ..
+            }
+        ));
+
+        app.begin_stability_test();
+        assert!(app.cancel_stability_test(true));
+        assert!(!app.engine.is_running());
+        assert!(matches!(
+            app.stability_test,
+            StabilityTestState::Finished {
+                reason: StabilityEndReason::Panicked,
+                ..
+            }
+        ));
+        assert!(app.status_kind == StatusKind::Panic);
+        app.advance_stability_test();
+        assert!(!app.engine.is_running());
+
+        app.begin_stability_test();
+        if let StabilityTestState::Countdown { starts_at, .. } = &mut app.stability_test {
+            *starts_at = Instant::now() - Duration::from_secs(3);
+        }
+        app.advance_stability_test();
+        assert!(
+            !app.engine.is_running(),
+            "a stalled countdown must not start clicking late"
+        );
+        assert!(matches!(
+            app.stability_test,
+            StabilityTestState::Finished {
+                reason: StabilityEndReason::Stopped,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stability_run_freezes_settings_ignores_repeat_and_stops_without_input() {
+        let mut app = test_app(MainLayout::Classic);
+        // No test input is injected: the first scheduled click is ten
+        // minutes away, and the test explicitly stops the worker below.
+        app.config.base_interval_ms = 600_000.0;
+        app.config.max_interval_ms = 600_000.0;
+        app.config.max_clicks = 3;
+        app.sync_interval_editors();
+        app.begin_stability_test();
+        app.config.max_clicks = 7;
+        app.config.mouse_button = MouseButton::Right;
+        if let StabilityTestState::Countdown { starts_at, .. } = &mut app.stability_test {
+            *starts_at = Instant::now();
+        } else {
+            panic!("test did not enter countdown");
+        }
+        app.advance_stability_test();
+        assert!(app.engine.is_running());
+        let snapshot = app
+            .engine
+            .live_config_for_test()
+            .expect("stable worker snapshot");
+        assert_eq!(snapshot.max_clicks, 0);
+        assert_eq!(snapshot.mouse_button, MouseButton::Left);
+        assert_eq!(app.config.max_clicks, 7, "saved settings remain untouched");
+        app.push_live_config_if_ordinary();
+        assert_eq!(
+            app.engine.live_config_for_test(),
+            Some(snapshot),
+            "live UI edits must not replace the test snapshot"
+        );
+        assert!(app.cancel_stability_test(false));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "test worker did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.click_count(), 0);
+        app.reconcile_session_status();
+        assert!(matches!(
+            app.stability_test,
+            StabilityTestState::Finished {
+                reason: StabilityEndReason::Stopped,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stability_dispatch_failure_is_never_reported_as_good() {
+        let mut app = test_app(MainLayout::Classic);
+        // This point cannot be on any Windows desktop. The Win32 wrapper
+        // rejects it before sending a button-down, even in CI.
+        app.config.base_interval_ms = 1.0;
+        app.config.coordinate_mode = CoordinateMode::FixedScreen;
+        app.config.fixed_x = i64::MAX;
+        app.config.fixed_y = i64::MAX;
+        app.sync_interval_editors();
+        app.begin_stability_test();
+        if let StabilityTestState::Countdown { starts_at, .. } = &mut app.stability_test {
+            *starts_at = Instant::now();
+        } else {
+            panic!("test did not enter countdown");
+        }
+        app.advance_stability_test();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "failed test worker did not stop");
+            std::thread::yield_now();
+        }
+        app.reconcile_session_status();
+        match &app.stability_test {
+            StabilityTestState::Finished {
+                reason,
+                measurements,
+                detail,
+                ..
+            } => {
+                assert_eq!(*reason, StabilityEndReason::DispatchFailed);
+                assert_eq!(measurements.completed_cycles, 0);
+                assert_eq!(stability::assess(*reason, *measurements), Verdict::Failed);
+                assert!(detail.is_some());
+            }
+            _ => panic!("dispatch failure did not finish the test"),
+        }
+    }
+
+    #[test]
+    fn stability_result_uses_exact_totals_even_when_the_ring_overflows() {
+        let mut app = test_app(MainLayout::Classic);
+        let telemetry = app.engine.telemetry();
+        for index in 0..5_000 {
+            telemetry.record_click(crate::telemetry::ClickRecord {
+                seq: index,
+                missed_deadline: index >= 4_500,
+                ..Default::default()
+            });
+        }
+        assert!(telemetry.dropped_records() > 0);
+        app.finish_stability_from_engine(SessionOutcome::Completed, 10);
+        match &app.stability_test {
+            StabilityTestState::Finished {
+                measurements,
+                dropped_records,
+                ..
+            } => {
+                assert_eq!(measurements.completed_cycles, 5_000);
+                assert_eq!(measurements.late_cycles, 500);
+                assert!(*dropped_records > 0);
+                assert_eq!(
+                    stability::assess(StabilityEndReason::Finished, *measurements),
+                    Verdict::InsufficientData,
+                    "the synthetic, unelapsed session must not be reported as good"
+                );
+            }
+            _ => panic!("missing finished test"),
+        }
+    }
+
+    #[test]
+    fn custom_material_texture_is_cached_and_stays_inside_rounded_surfaces() {
+        let ctx = egui::Context::default();
+        let mut first = None;
+        let output = ctx.run(RawInput::default(), |ctx| {
+            let id = OpAutoClickerApp::material_texture(ctx);
+            assert_eq!(id, OpAutoClickerApp::material_texture(ctx));
+            first = Some(id);
+        });
+        let id = first.expect("texture was created");
+        assert!(output
+            .textures_delta
+            .set
+            .iter()
+            .any(|(texture, _)| *texture == id));
+        let output = ctx.run(RawInput::default(), |ctx| {
+            assert_eq!(id, OpAutoClickerApp::material_texture(ctx));
+        });
+        assert!(
+            !output
+                .textures_delta
+                .set
+                .iter()
+                .any(|(texture, _)| *texture == id),
+            "the material must not be re-uploaded each frame"
+        );
+        let rect = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(300.0, 100.0));
+        let Shape::Mesh(mesh) = OpAutoClickerApp::material_shape(rect, 10.0, id, Color32::WHITE)
+        else {
+            panic!("expected material mesh");
+        };
+        assert_eq!(mesh.texture_id, id);
+        assert_eq!(mesh.vertices.len(), 29);
+        for vertex in &mesh.vertices {
+            assert!(rect.expand(0.001).contains(vertex.pos));
+            assert!(vertex.uv.x.is_finite() && vertex.uv.y.is_finite());
+        }
+    }
+
+    #[test]
+    fn custom_gradient_geometry_rotates_and_stays_within_its_rectangle() {
+        let rect = Rect::from_min_size(Pos2::new(13.0, 27.0), Vec2::new(260.0, 83.0));
+        let at = |point, angle| OpAutoClickerApp::gradient_position(rect, point, angle);
+        assert!((at(rect.left_center(), 0) - 0.0).abs() < 0.0001);
+        assert!((at(rect.right_center(), 0) - 1.0).abs() < 0.0001);
+        assert!((at(rect.center_top(), 90) - 0.0).abs() < 0.0001);
+        assert!((at(rect.center_bottom(), 90) - 1.0).abs() < 0.0001);
+        assert!((at(rect.left_center(), 180) - 1.0).abs() < 0.0001);
+        assert!((at(rect.center(), 359) - 0.5).abs() < 0.0001);
+        for angle in [0, 35, 90, 179, 270, 359] {
+            let shape =
+                OpAutoClickerApp::gradient_mesh(rect, 11.0, Color32::RED, Color32::BLUE, angle);
+            let Shape::Mesh(mesh) = shape else {
+                panic!("expected gradient mesh")
+            };
+            assert_eq!(mesh.vertices.len(), 29);
+            assert_eq!(mesh.indices.len(), 84);
+            for vertex in &mesh.vertices {
+                assert!(rect.expand(0.001).contains(vertex.pos));
+                assert!(vertex.pos.x.is_finite() && vertex.pos.y.is_finite());
+            }
+            assert!(mesh
+                .vertices
+                .iter()
+                .any(|vertex| vertex.color != mesh.vertices[0].color));
+        }
+    }
+
+    #[test]
+    fn custom_card_gradients_share_the_dashboard_canvas() {
+        let canvas = Rect::from_min_size(Pos2::ZERO, Vec2::new(560.0, 456.0));
+        // Two differently sized surfaces with the same center should sample
+        // the same point in the dashboard-wide gradient, not restart it.
+        let center = Pos2::new(180.0, 120.0);
+        let first = Rect::from_center_size(center, Vec2::new(100.0, 40.0));
+        let second = Rect::from_center_size(center, Vec2::new(200.0, 80.0));
+        for angle in [0, 35, 90, 180, 270, 359] {
+            let shape = |rect| {
+                OpAutoClickerApp::gradient_mesh_in(
+                    rect,
+                    canvas,
+                    8.0,
+                    Color32::RED,
+                    Color32::BLUE,
+                    angle,
+                )
+            };
+            let (Shape::Mesh(a), Shape::Mesh(b)) = (shape(first), shape(second)) else {
+                panic!("expected gradient meshes");
+            };
+            assert_eq!(a.vertices[0].pos, center);
+            assert_eq!(b.vertices[0].pos, center);
+            assert_eq!(a.vertices[0].color, b.vertices[0].color);
+            let expected = OpAutoClickerApp::mix_color(
+                Color32::RED,
+                Color32::BLUE,
+                OpAutoClickerApp::gradient_position(canvas, center, angle),
+            );
+            assert_eq!(a.vertices[0].color, expected);
+        }
+    }
+
+    #[test]
+    fn custom_colors_preserve_text_and_status_contrast_on_extreme_gradients() {
+        fn contrast(a: Color32, b: Color32) -> f64 {
+            let luminance = |color: Color32| {
+                let linear = |channel: u8| {
+                    let value = f64::from(channel) / 255.0;
+                    if value <= 0.04045 {
+                        value / 12.92
+                    } else {
+                        ((value + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+            };
+            let (a, b) = (luminance(a), luminance(b));
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        }
+        let extremes = [
+            [0, 0, 0],
+            [255, 255, 255],
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [255, 255, 0],
+            [255, 0, 255],
+            [0, 255, 255],
+        ];
+        for base in [MODERN_LIGHT_PALETTE, MODERN_DARK_PALETTE] {
+            for first in extremes {
+                for second in extremes {
+                    for strength in [0, 50, 100] {
+                        let gradient = CustomGradient {
+                            start: first,
+                            end: second,
+                            angle_degrees: 35,
+                            strength,
+                            texture_strength: 100,
+                        };
+                        let pal = OpAutoClickerApp::custom_palette(base, gradient);
+                        let first_color = Color32::from_rgb(first[0], first[1], first[2]);
+                        let second_color = Color32::from_rgb(second[0], second[1], second[2]);
+                        let amount = f32::from(strength) / 100.0;
+                        let mut backgrounds = vec![
+                            pal.face,
+                            pal.group_fill,
+                            pal.well_fill,
+                            pal.button,
+                            pal.input_bg,
+                            pal.hover_fill,
+                        ];
+                        for color in [first_color, second_color] {
+                            backgrounds.push(OpAutoClickerApp::mix_color(
+                                pal.face,
+                                color,
+                                amount * OpAutoClickerApp::custom_face_tint(&pal),
+                            ));
+                            backgrounds.push(OpAutoClickerApp::mix_color(
+                                pal.group_fill,
+                                color,
+                                amount * OpAutoClickerApp::custom_card_tint(&pal),
+                            ));
+                            backgrounds.push(OpAutoClickerApp::mix_color(
+                                OpAutoClickerApp::modern_header_color(&pal),
+                                color,
+                                amount * OpAutoClickerApp::custom_header_tint(&pal),
+                            ));
+                        }
+                        let grain_color = if pal.dark {
+                            Color32::WHITE
+                        } else {
+                            Color32::BLACK
+                        };
+                        let grain_amount =
+                            f32::from(OpAutoClickerApp::material_alpha(&pal, gradient)) / 255.0;
+                        let textured: Vec<_> = backgrounds
+                            .iter()
+                            .map(|&background| {
+                                OpAutoClickerApp::mix_color(background, grain_color, grain_amount)
+                            })
+                            .collect();
+                        backgrounds.extend(textured);
+                        for foreground in [
+                            pal.text,
+                            pal.text_dim,
+                            pal.group_title,
+                            pal.accent,
+                            pal.success,
+                            pal.danger,
+                            pal.warning,
+                        ] {
+                            for &background in &backgrounds {
+                                let ratio = contrast(foreground, background);
+                                assert!(ratio >= 4.5, "dark={} {first:?} {second:?} strength={strength}: {foreground:?} on {background:?}: {ratio:.3}", pal.dark);
+                            }
+                        }
+                        assert!(contrast(pal.text_disabled, pal.button_disabled) >= 4.5);
+                        assert!(contrast(pal.text_disabled, pal.input_disabled) >= 4.5);
+                        let mark = if pal.dark {
+                            Color32::from_rgb(7, 25, 35)
+                        } else {
+                            Color32::WHITE
+                        };
+                        for factor in [0.9, 1.0, 1.08] {
+                            assert!(
+                                contrast(
+                                    mark,
+                                    OpAutoClickerApp::accent_variant(pal.accent, factor)
+                                ) >= 4.5
+                            );
+                        }
+                        for color in [first_color, second_color] {
+                            for intensity in [0.20, 0.25, 0.33] {
+                                assert!(
+                                    contrast(
+                                        Color32::from_rgb(7, 25, 35),
+                                        OpAutoClickerApp::mix_color(
+                                            Color32::WHITE,
+                                            color,
+                                            intensity
+                                        )
+                                    ) >= 4.5
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -8241,7 +10595,7 @@ mod dashboard_layout_tests {
                 let tile = all.iter().find_map(|shape| match shape {
                     Shape::Rect(rect)
                         if rect.fill
-                            == OpAutoClickerApp::modern_section_tile_color(app.palette())
+                            == OpAutoClickerApp::modern_section_tile_color(&app.palette())
                             && icon_area.contains(rect.rect.center()) =>
                     {
                         Some(rect.rect)
@@ -8695,7 +11049,8 @@ mod dashboard_layout_tests {
                         ctx.run(input, |ctx| {
                             app.apply_style(ctx);
                             egui::CentralPanel::default().show(ctx, |ui| {
-                                let pal = app.palette();
+                                let palette = app.palette();
+                                let pal = &palette;
                                 match kind {
                                     "button" => {
                                         if old {
@@ -9290,13 +11645,13 @@ mod dashboard_layout_tests {
                     ui.add_enabled_ui(enabled, |ui| {
                         let checkbox = OpAutoClickerApp::choice_checkbox(
                             ui,
-                            app.palette(),
+                            &app.palette(),
                             checked,
                             "Enable offset",
                         );
                         let radio = OpAutoClickerApp::choice_radio(
                             ui,
-                            app.palette(),
+                            &app.palette(),
                             selected,
                             true,
                             "Fixed position",
@@ -9601,7 +11956,7 @@ mod dashboard_layout_tests {
                         {
                             rects[index] = OpAutoClickerApp::toned_button(
                                 ui,
-                                app.palette(),
+                                &app.palette(),
                                 label,
                                 enabled,
                                 140.0,
@@ -9745,7 +12100,7 @@ mod dashboard_layout_tests {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let response = OpAutoClickerApp::toned_button(
                         ui,
-                        app.palette(),
+                        &app.palette(),
                         label,
                         role.0,
                         width,
