@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+
+- Map fixed-position clicks and macro playback to the whole virtual desktop,
+  including negative monitor origins, and refuse points outside connected
+  displays rather than clicking a different location.
+- Report fast sessions, clean completion, manual stop, panic, dispatch failure
+  and worker loss distinctly, even when the worker finishes between UI frames.
+- Bound settings reads and preserve an oversized, invalid-UTF-8 or unreadable
+  settings file instead of silently replacing it with defaults. Settings shows
+  recovery instructions and saving stays blocked until the app is restarted.
+- Keep a click error or panic visible if a settings save also fails, and pack
+  background mouse-message coordinates without one word corrupting the other.
+
 ## [1.6.0] - 2026-10-29
 
 ### Added

@@ -25,7 +25,7 @@ use crate::config::{
     commit_ui_interval, interval_parts_to_ms, ms_to_interval_parts, ClickType, CoordinateMode,
     EngineConfig, InputMode, MouseButton,
 };
-use crate::engine::{ClickEngine, STATE_PANIC, STATE_RUNNING, STATE_STOPPING};
+use crate::engine::{ClickEngine, SessionOutcome, STATE_RUNNING, STATE_STOPPING};
 use crate::hotkey::{
     self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, AppTheme,
     AppearanceMode, AppearanceStyle, VK_ESCAPE,
@@ -610,6 +610,9 @@ pub struct OpAutoClickerApp {
     // so the disk is never written while nothing changed.
     settings_path: Option<PathBuf>,
     settings_dirty: bool,
+    /// If the existing file could not be read, never overwrite it with
+    /// defaults during this run; the user can repair it before restarting.
+    settings_load_error: Option<String>,
     last_save_error: Option<String>,
     last_save: Instant,
     last_saved_config: EngineConfig,
@@ -725,6 +728,7 @@ impl OpAutoClickerApp {
             last_base_size: Vec2::ZERO,
             settings_path: Self::settings_file_path(),
             settings_dirty: false,
+            settings_load_error: None,
             last_save_error: None,
             last_save: Instant::now(),
             last_saved_config: EngineConfig::default(),
@@ -820,7 +824,7 @@ impl OpAutoClickerApp {
         let Some(path) = Self::settings_file_path() else {
             return MAIN_WINDOW_SIZE;
         };
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Ok(text) = settings::read_settings(&path) else {
             return MAIN_WINDOW_SIZE;
         };
         let (_, prefs) = settings::parse_settings(&text);
@@ -843,8 +847,32 @@ impl OpAutoClickerApp {
         let Some(path) = self.settings_path.clone() else {
             return;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return;
+        let text = match settings::read_settings(&path) {
+            Ok(text) => text,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && matches!(std::fs::symlink_metadata(&path), Err(ref metadata_error) if metadata_error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return;
+            }
+            Err(error) => {
+                // A file that cannot be read (including invalid UTF-8 or an
+                // oversized file) is not a fresh install. Never silently
+                // replace it with defaults during this app session.
+                let detail = format!(
+                    "Could not read {}: {error}. The original file was preserved. Close MacroClicker, repair or move the file, then reopen the app.",
+                    path.display()
+                );
+                self.window_size_was_persisted = true;
+                self.settings_load_error = Some(detail.clone());
+                self.last_save_error = Some(detail.clone());
+                self.set_status(
+                    StatusKind::Warning,
+                    "Settings could not be read; open Settings for details.",
+                );
+                self.log(detail);
+                return;
+            }
         };
         // A file existed, so its size (or its defaults) is the
         // user's to keep: no display-aware first-run upgrade.
@@ -935,13 +963,17 @@ impl OpAutoClickerApp {
         self.commit_interval_editors();
         self.last_save = Instant::now();
         let config_to_save = self.settings_config_to_save();
-        let result = match self.settings_path.as_deref() {
-            Some(path) => settings::write_settings_atomic(
-                path,
-                &settings::serialize_settings(&config_to_save, &self.prefs),
-            )
-            .map_err(|error| error.to_string()),
-            None => Err("No settings path is available.".to_string()),
+        let result = if let Some(error) = &self.settings_load_error {
+            Err(error.clone())
+        } else {
+            match self.settings_path.as_deref() {
+                Some(path) => settings::write_settings_atomic(
+                    path,
+                    &settings::serialize_settings(&config_to_save, &self.prefs),
+                )
+                .map_err(|error| error.to_string()),
+                None => Err("No settings path is available.".to_string()),
+            }
         };
         match result {
             Ok(()) => {
@@ -961,7 +993,9 @@ impl OpAutoClickerApp {
                 if self.last_save_error.as_deref() != Some(error.as_str()) {
                     self.log(format!("Settings not saved: {error}"));
                 }
-                if !self.engine.is_running() && self.status_kind != StatusKind::Panic {
+                if !self.engine.is_running()
+                    && !matches!(self.status_kind, StatusKind::Panic | StatusKind::Error)
+                {
                     self.set_status(
                         StatusKind::Warning,
                         "Settings could not be saved; open Settings for details.",
@@ -975,6 +1009,7 @@ impl OpAutoClickerApp {
 
     fn maybe_autosave(&mut self) {
         if self.settings_dirty
+            && self.settings_load_error.is_none()
             && self.last_save.elapsed() >= Duration::from_millis(SAVE_THROTTLE_MS)
         {
             self.flush_settings();
@@ -1394,6 +1429,8 @@ impl OpAutoClickerApp {
         config.max_clicks = macro_rec::clicks_for_loops(steps.len(), loops);
         match self.engine.start_with_macro(&config, steps) {
             Ok(()) => {
+                // A one-click macro can finish before the next egui frame.
+                self.was_running = true;
                 self.macro_playing = true;
                 self.last_seen_error = None;
                 let count = self.macro_recorder.len();
@@ -1423,10 +1460,80 @@ impl OpAutoClickerApp {
         if let Some(error) = self.engine.last_error() {
             if Some(&error) != self.last_seen_error.as_ref() {
                 self.log(format!("Engine error: {error}"));
-                self.set_status(StatusKind::Error, format!("Error: {error}"));
+                // A nonfatal timer/priority warning must not hide F8 while
+                // the worker is draining. A failed dispatch is reported by
+                // the terminal outcome after it has finished.
+                if self.status_kind != StatusKind::Panic {
+                    self.set_status(StatusKind::Error, format!("Error: {error}"));
+                }
                 self.last_seen_error = Some(error);
             }
         }
+    }
+
+    fn report_session_outcome(&mut self, outcome: SessionOutcome, was_macro: bool) {
+        let count = self.engine.click_count();
+        match outcome {
+            SessionOutcome::Completed => {
+                let label = if was_macro {
+                    "Playback complete"
+                } else {
+                    "Session complete"
+                };
+                self.set_status(
+                    StatusKind::Ready,
+                    format!("{label} — {count} clicks delivered."),
+                );
+                self.log(format!("{label} after {count} clicks."));
+            }
+            SessionOutcome::Stopped => {
+                let label = if was_macro {
+                    "Playback stopped"
+                } else {
+                    "Stopped"
+                };
+                self.set_status(
+                    StatusKind::Ready,
+                    format!("{label} — {count} clicks delivered."),
+                );
+                self.log(format!("{label} after {count} clicks."));
+            }
+            SessionOutcome::Panicked => {
+                self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
+            }
+            SessionOutcome::DispatchFailed => {
+                let error = self.engine.last_error().unwrap_or_else(|| {
+                    "Click delivery failed; the session was aborted.".to_string()
+                });
+                if Some(&error) != self.last_seen_error.as_ref() {
+                    self.log(format!("Engine error: {error}"));
+                }
+                self.last_seen_error = Some(error.clone());
+                self.set_status(StatusKind::Error, format!("Error: {error}"));
+            }
+            SessionOutcome::WorkerLost | SessionOutcome::Pending => {
+                self.set_status(
+                    StatusKind::Error,
+                    "Click worker lost — session aborted. Restart the app before clicking again.",
+                );
+                self.log("Worker thread found dead or ended without a result; session aborted.");
+            }
+        }
+    }
+
+    fn reconcile_session_status(&mut self) {
+        // Use one state snapshot: if the worker finishes immediately after
+        // this read, the next frame will still observe the running-to-idle
+        // transition. A successful start sets was_running immediately.
+        let running = self.engine.is_running();
+        if self.was_running && !running {
+            let was_macro = self.macro_playing;
+            self.macro_playing = false;
+            self.report_session_outcome(self.engine.session_outcome(), was_macro);
+            self.mark_dirty();
+            self.flush_settings();
+        }
+        self.was_running = running;
     }
 
     fn toggle_session(&mut self) {
@@ -1472,6 +1579,8 @@ impl OpAutoClickerApp {
         self.config.target_hwnd = 0;
         match self.engine.start(&self.config) {
             Ok(()) => {
+                // Track the start even if the worker finishes before repaint.
+                self.was_running = true;
                 self.last_seen_error = None;
                 let cps = self.config.target_cps();
                 let pace = if cps < 0.01 {
@@ -3658,7 +3767,10 @@ impl OpAutoClickerApp {
                     .color(pal.text_dim)
                     .small(),
                 );
-                if let Some(error) = &self.last_save_error {
+                if let Some(error) = &self.settings_load_error {
+                    ui.add_space(8.0_f32);
+                    ui.label(egui::RichText::new(error).color(pal.warning).small());
+                } else if let Some(error) = &self.last_save_error {
                     ui.add_space(8.0_f32);
                     ui.label(
                         egui::RichText::new(format!(
@@ -5354,76 +5466,9 @@ impl eframe::App for OpAutoClickerApp {
         // is actually driving, and Start/Stop must recover.
         if self.engine.is_running() && !self.engine.worker_alive() {
             self.engine.force_idle();
-            self.macro_playing = false;
-            self.set_status(
-                StatusKind::Error,
-                "Click worker lost — session aborted. Restart the app before clicking again.",
-            );
-            self.log("Worker thread found dead; engine forced idle.");
+            self.was_running = true;
         }
-        // Detect natural session completion (repeat count reached) so the
-        // status line and persistence react even without a button press.
-        // Manual stops and worker errors keep their own status instead of
-        // being misreported as a clean completion.
-        let was_macro_playback = self.macro_playing;
-        if self.was_running && !self.engine.is_running() && was_macro_playback {
-            self.macro_playing = false;
-            if self.engine.state() != STATE_PANIC {
-                // A manual stop ended the playback early; say so instead of
-                // claiming a clean completion.
-                let verdict = if self.status_kind == StatusKind::Stopping {
-                    "Playback stopped"
-                } else {
-                    "Playback complete"
-                };
-                self.set_status(
-                    StatusKind::Ready,
-                    format!(
-                        "{verdict} — {} clicks delivered.",
-                        self.engine.click_count()
-                    ),
-                );
-                self.log(format!(
-                    "Macro playback finished after {} clicks.",
-                    self.engine.click_count()
-                ));
-            }
-        }
-        if self.was_running && !self.engine.is_running() {
-            let count_reached = !was_macro_playback
-                && self.repeat_limited
-                && self.config.max_clicks > 0
-                && self.engine.click_count() >= self.config.max_clicks;
-            if count_reached && self.engine.state() != STATE_PANIC {
-                self.set_status(
-                    StatusKind::Ready,
-                    format!(
-                        "Session complete — {} clicks delivered.",
-                        self.engine.click_count()
-                    ),
-                );
-                self.log(format!(
-                    "Session finished after {} clicks.",
-                    self.engine.click_count()
-                ));
-            } else if self.status_kind == StatusKind::Stopping {
-                // The worker has fully drained after a manual stop. Without
-                // this confirmation the transient "Stopping…" status would
-                // stay on screen forever — the feedback loop must visibly
-                // close once the engine actually stops.
-                self.set_status(
-                    StatusKind::Ready,
-                    format!("Stopped — {} clicks delivered.", self.engine.click_count()),
-                );
-                self.log(format!(
-                    "Session stopped after {} clicks.",
-                    self.engine.click_count()
-                ));
-            }
-            self.mark_dirty();
-            self.flush_settings();
-        }
-        self.was_running = self.engine.is_running();
+        self.reconcile_session_status();
 
         self.commit_interval_editors();
         self.detect_settings_changes();
@@ -5506,6 +5551,8 @@ mod dashboard_layout_tests {
         app.install_kind = InstallKind::Unknown;
         app.exe_path = None;
         app.settings_path = None;
+        app.settings_load_error = None;
+        app.last_save_error = None;
         app.update_state = UpdateUiState::Available("1.6.0".to_string());
         app.status_text = "Ready.".to_string();
         app
@@ -6275,6 +6322,61 @@ mod dashboard_layout_tests {
                     assert!(app.status_kind == StatusKind::Warning);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn settings_recovery_details_wrap_and_keep_the_reset_control_reachable() {
+        for theme in [
+            AppTheme::Classic,
+            AppTheme::Dark,
+            AppTheme::ModernLight,
+            AppTheme::ModernDark,
+        ] {
+            let size = Vec2::new(420.0, 420.0);
+            let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Classic);
+            app.prefs.theme = theme;
+            app.show_settings = true;
+            app.settings_load_error = Some(format!(
+                "Could not read C:/{}: settings file is not UTF-8. The original file was preserved. Close MacroClicker, repair or move the file, then reopen the app.",
+                "long-profile-name/".repeat(15)
+            ));
+            for _ in 0..8 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            let mut output = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            let title = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == "Settings")
+                .expect("settings title");
+            assert!(screen.contains_rect(title.1));
+            for _ in 0..10 {
+                output = render_dialog(
+                    &mut app,
+                    &ctx,
+                    size,
+                    1.0,
+                    "settings",
+                    vec![
+                        Event::PointerMoved(Pos2::new(210.0, 210.0)),
+                        Event::Scroll(Vec2::new(0.0, -1000.0)),
+                    ],
+                );
+            }
+            let reset = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == "Reset all settings to factory defaults")
+                .expect("reset remains reachable");
+            assert!(
+                screen.contains_rect(reset.1),
+                "{theme:?}: reset outside viewport"
+            );
+            assert!(
+                reset.2.expand(0.5).contains_rect(reset.1),
+                "{theme:?}: reset clipped"
+            );
         }
     }
 
@@ -9054,6 +9156,229 @@ mod dashboard_layout_tests {
     }
 
     #[test]
+    fn sessions_started_after_a_frame_are_tracked_before_the_next_frame() {
+        let mut app = test_app(MainLayout::Classic);
+        app.hours = 0;
+        app.minutes = 10;
+        app.seconds = 0;
+        app.millis = 0;
+        app.handle_start();
+        assert!(app.engine.is_running());
+        assert!(
+            app.was_running,
+            "a quick session must be tracked immediately"
+        );
+        app.engine.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "worker did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+
+        app.was_running = false;
+        assert!(app
+            .macro_recorder
+            .record_click(600_000.0, 50, 60, MouseButton::Right));
+        app.start_macro_playback();
+        assert!(app.engine.is_running());
+        assert!(app.was_running, "a quick macro must be tracked immediately");
+        app.engine.request_stop();
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "macro worker did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+    }
+
+    #[test]
+    fn failed_playback_does_not_claim_to_have_completed() {
+        let dir = scratch("playback-failure-status");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(dir.join("settings.conf"));
+        // An invalid HWND fails before posting any input. The app's playback
+        // flag exercises its completion handling without injecting a click.
+        let config = EngineConfig {
+            base_interval_ms: 1.0,
+            input_mode: InputMode::BackgroundHwnd,
+            target_hwnd: isize::MAX,
+            ..EngineConfig::default()
+        };
+        app.engine.start(&config).expect("test session");
+        app.macro_playing = true;
+        app.was_running = true;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(
+                Instant::now() < deadline,
+                "invalid target did not stop the worker"
+            );
+            std::thread::yield_now();
+        }
+        app.surface_engine_errors();
+        assert!(app.status_kind == StatusKind::Error);
+        app.reconcile_session_status();
+        assert!(app.status_kind == StatusKind::Error);
+        assert!(
+            app.status_text.contains("Target window was lost"),
+            "{}",
+            app.status_text
+        );
+        assert!(!app.macro_playing);
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn off_desktop_playback_reports_the_failure_even_if_it_finishes_before_repaint() {
+        let dir = scratch("off-desktop-macro");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(dir.join("settings.conf"));
+        assert!(app
+            .macro_recorder
+            .record_click(1.0, i64::MAX, i64::MIN, MouseButton::Left));
+        app.macro_until_stopped = false;
+        app.macro_loops = 1;
+        app.start_macro_playback();
+        assert!(app.was_running);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(
+                Instant::now() < deadline,
+                "off-desktop macro did not terminate"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.session_outcome(), SessionOutcome::DispatchFailed);
+        // No intervening surface_engine_errors call: the terminal result must
+        // still expose the error if the worker wins the frame timing race.
+        app.reconcile_session_status();
+        assert!(app.status_kind == StatusKind::Error);
+        assert!(
+            app.status_text.contains("click was not sent"),
+            "{}",
+            app.status_text
+        );
+        assert!(!app.macro_playing);
+        assert!(!app.was_running);
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn off_desktop_fixed_click_fails_without_a_mouse_input() {
+        let dir = scratch("off-desktop-fixed");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(dir.join("settings.conf"));
+        app.hours = 0;
+        app.minutes = 0;
+        app.seconds = 0;
+        app.millis = 1;
+        app.repeat_limited = true;
+        app.config.max_clicks = 1;
+        app.config.coordinate_mode = CoordinateMode::FixedScreen;
+        app.config.fixed_x = i64::MAX;
+        app.config.fixed_y = i64::MIN;
+        app.handle_start();
+        assert!(app.was_running);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(
+                Instant::now() < deadline,
+                "off-desktop click did not terminate"
+            );
+            std::thread::yield_now();
+        }
+        app.reconcile_session_status();
+        assert!(app.status_kind == StatusKind::Error);
+        assert!(
+            app.status_text.contains("click was not sent"),
+            "{}",
+            app.status_text
+        );
+        assert!(!app.was_running);
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stopped_and_panicked_macro_sessions_finish_with_the_correct_status() {
+        let dir = scratch("macro-terminal-stop");
+        for panic in [false, true] {
+            let mut app = test_app(MainLayout::Classic);
+            app.settings_path = Some(dir.join(if panic { "panic.conf" } else { "stop.conf" }));
+            assert!(app
+                .macro_recorder
+                .record_click(600_000.0, 50, 60, MouseButton::Left));
+            app.start_macro_playback();
+            assert!(app.was_running);
+            if panic {
+                app.engine.panic_stop();
+            } else {
+                app.engine.request_stop();
+            }
+            // Simulate an unrelated warning arriving while the worker drains.
+            app.set_status(StatusKind::Warning, "Nonfatal timing warning");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.engine.is_running() {
+                assert!(Instant::now() < deadline, "macro did not drain");
+                std::thread::yield_now();
+            }
+            app.reconcile_session_status();
+            if panic {
+                assert!(app.status_kind == StatusKind::Panic);
+                assert!(app.status_text.contains("Panic stop"));
+            } else {
+                assert!(app.status_kind == StatusKind::Ready);
+                assert!(app.status_text.starts_with("Playback stopped"));
+            }
+            assert!(!app.macro_playing);
+            assert_eq!(app.engine.click_count(), 0, "test must not send input");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_outcomes_are_not_inferred_from_previous_ui_messages() {
+        let mut app = test_app(MainLayout::Classic);
+        // Timer/priority warnings are not terminal failures.
+        app.last_seen_error = Some("timeBeginPeriod was rejected".to_string());
+        app.set_status(StatusKind::Error, "An earlier nonfatal warning");
+        app.report_session_outcome(SessionOutcome::Completed, true);
+        assert!(app.status_kind == StatusKind::Ready);
+        assert!(app.status_text.starts_with("Playback complete"));
+
+        // A status can change while draining: the worker's result is the
+        // source of truth, not whether the old message said "Stopping".
+        app.set_status(StatusKind::Warning, "Another message while stopping");
+        app.report_session_outcome(SessionOutcome::Stopped, true);
+        assert!(app.status_kind == StatusKind::Ready);
+        assert!(app.status_text.starts_with("Playback stopped"));
+        app.report_session_outcome(SessionOutcome::Stopped, false);
+        assert!(app.status_text.starts_with("Stopped"));
+        app.report_session_outcome(SessionOutcome::Panicked, true);
+        assert!(app.status_kind == StatusKind::Panic);
+        app.report_session_outcome(SessionOutcome::WorkerLost, true);
+        assert!(app.status_kind == StatusKind::Error);
+        assert!(app.status_text.contains("worker lost"));
+    }
+
+    #[test]
+    fn failed_settings_save_does_not_hide_a_critical_status() {
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = None;
+        for kind in [StatusKind::Error, StatusKind::Panic] {
+            app.set_status(kind, "Critical session result");
+            app.mark_dirty();
+            assert!(!app.flush_settings());
+            assert!(app.status_kind == kind);
+            assert_eq!(app.status_text, "Critical session result");
+            assert!(app.settings_dirty);
+            assert!(app.last_save_error.is_some());
+        }
+    }
+
+    #[test]
     fn macro_playback_does_not_multiply_recorded_clicks() {
         let mut app = test_app(MainLayout::Classic);
         app.config.click_type = ClickType::Triple;
@@ -9084,6 +9409,54 @@ mod dashboard_layout_tests {
             std::thread::yield_now();
         }
         assert_eq!(app.engine.click_count(), 0, "test must not send input");
+    }
+
+    #[test]
+    fn unreadable_settings_are_preserved_instead_of_overwritten_by_defaults() {
+        let dir = scratch("unreadable-settings");
+        for (name, original) in [
+            (
+                "oversized.conf",
+                vec![b'x'; settings::MAX_SETTINGS_BYTES + 1],
+            ),
+            ("invalid-utf8.conf", vec![0xff, 0xfe, b'X']),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, &original).expect("original file");
+            let mut app = test_app(MainLayout::Classic);
+            app.settings_path = Some(path.clone());
+            app.load_persisted();
+            assert!(app.settings_load_error.is_some());
+            assert!(app.status_kind == StatusKind::Warning);
+            assert!(app.status_text.contains("could not be read"));
+            app.prefs.theme = AppTheme::ModernDark;
+            app.mark_dirty();
+            assert!(!app.flush_settings());
+            assert!(app.settings_dirty);
+            assert_eq!(std::fs::read(&path).expect("file preserved"), original);
+            // Closing or explicitly resetting must not quietly erase the file.
+            app.reset_to_defaults();
+            eframe::App::on_exit(&mut app, None);
+            assert_eq!(
+                std::fs::read(&path).expect("file still preserved"),
+                original
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_missing_settings_file_remains_a_writable_fresh_install() {
+        let dir = scratch("missing-settings");
+        let path = dir.join("settings.conf");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(path.clone());
+        app.load_persisted();
+        assert!(app.settings_load_error.is_none());
+        app.mark_dirty();
+        assert!(app.flush_settings());
+        assert!(path.is_file());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -39,7 +39,7 @@ cargo run --release
 cargo test --release
 ```
 
-Eleven integration test binaries run platform-independent logic (135 test
+Twelve integration test binaries run platform-independent logic (140 test
 cases, including the self-update module's fault-injection cases). Windows
 also runs the dashboard and click-worker unit tests:
 
@@ -47,6 +47,9 @@ also runs the dashboard and click-worker unit tests:
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
   snapshot round trip and concurrent coherent reads, h/m/s/ms interval helpers, random-offset validation,
   long-interval commits, and the 4.1 baseline defaults.
+- `coordinates_tests` — pixel round trips across representative sizes and
+  every supported axis extent, negative origins, bounds and overflow checks,
+  and independent signed mouse-message coordinate words.
 - `humanize_tests` — Box-Muller determinism, seeded RNG reproducibility,
   Gaussian mean/sigma over large samples, zero-sigma exactness, clamp
   guarantees, and the uniform +/- random-offset bounds and distribution.
@@ -73,7 +76,8 @@ also runs the dashboard and click-worker unit tests:
   theme for retired keys, legacy `dark_mode` migration precedence,
   `ui_scale` clamping and window-size round trip, clamping to
   [560x456, 4x that], per-dimension garbage/non-finite tolerance, and
-  complete-file replacement and failed-write recovery.
+  complete-file replacement, failed-write recovery, bounded reads and
+  invalid UTF-8 rejection.
 - `icon_tests` — dimensions, transparent rounded corners, solid accent
   center, two-axis symmetry, the presence of both accent and background
   pixels, anti-aliased edges with a fully opaque core, and byte-for-byte
@@ -241,7 +245,10 @@ bar agree.
 - **Cursor position** (full width) — Current location (default) or Pick
   location radio, a real gray **Pick location** button that captures the next
   left-click anywhere on screen via `GetCursorPos` (Esc cancels, the button
-  doubles as "Cancel pick" while armed), plus white X/Y boxes.
+  doubles as "Cancel pick" while armed), plus white X/Y boxes. Fixed points
+  and recorded macro points use the full virtual desktop; if a point no
+  longer lies on a connected display, the session stops with an error instead
+  of clicking elsewhere.
 - **2x2 push-button grid** — **Start (F6)** and **Stop (F6)** (Stop is
   greyed out until a session is running; Start is disabled while running or
   while the interval is invalid), then **Hotkey setting** and
@@ -318,7 +325,11 @@ Settings persist automatically to
 `%APPDATA%\op-auto-clicker\settings.conf` (a hand-editable, tolerant
 key=value document) and reload on launch. A complete, uniquely named
 temporary file is synced and atomically renamed over the old file; a
-failed save stays dirty, is reported, and is retried. An invalid random
+failed save stays dirty, is reported, and is retried. Reads are limited to
+1 MiB. If an existing file cannot be read, is not UTF-8, or exceeds that
+limit, it is preserved rather than overwritten: Settings shows its location
+and asks you to close the app, repair or move the file, and reopen it. Saving
+is blocked for that session, including on reset and exit. An invalid random
 range is saved as zero instead of invalidating unrelated settings. An
 update will not restart while settings cannot be saved. A stale window handle from
 a previous session is never reused.
@@ -338,6 +349,7 @@ a previous session is never reused.
 | `src/settings.rs` | Dependency-free key=value serialization, tolerant parsing and atomic settings writes |
 | `src/telemetry.rs` | Lock-free SPSC ring buffer over atomic `Atom` slots (`Send + Sync`, no `unsafe`), drop-newest back pressure, sliding-window statistics |
 | `src/config.rs` | Configuration struct, validation, h/m/s/ms helpers and the all-atomic runtime snapshot |
+| `src/coordinates.rs` | Bounded virtual-desktop normalization and mouse-message coordinate packing |
 | `src/update.rs` | Pure update decisions: version ordering, release/asset JSON scanning (tag, size, SHA-256 digest), validated release/download/redirect URLs, refresh policy, error headlines and a dependency-free streaming SHA-256 |
 | `src/self_update.rs` | Installation classification and verified self-replacement: guarded/cancellable Git fast-forward, PE and fingerprint checks, per-attempt swap, rollback and recovery preservation |
 | `src/window_layout.rs` | Pure classic/portrait/wide composition selection, hysteresis and proportional fit arithmetic |
@@ -368,9 +380,11 @@ a previous session is never reused.
 
 - Global mode submits arrayed `INPUT` structures to `SendInput`, including a
   two-element move-plus-down array for fixed coordinates using
-  `MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE` with virtual-screen normalized
-  0..65535 mapping. Left, right and middle buttons use their respective
-  down/up flags; the injected count is checked against the request.
+  `MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK` with
+  virtual-desktop normalized 0..65535 mapping. Points outside connected
+  displays, invalid desktop metrics, and axes exceeding the absolute input
+  precision limit fail before the button-down is sent. Left, right and middle
+  buttons use their respective down/up flags; the injected count is checked.
 - The engine-level background delivery path (retained in `src/engine.rs`
   and `src/win32.rs`, not exposed in the UI) validates the HWND, caches
   the client rectangle in atomics
@@ -539,3 +553,14 @@ a previous session is never reused.
     artifact outside this checkout must offer only the browser
     download, and a portable copy in a read-only folder must fail
     cleanly with the current version untouched.
+19. With a disposable blank target on each display, try fixed-position clicks
+    and a one-step recording at corners and interior points, including a
+    display left of or above the primary one and mixed DPI scales. Confirm
+    the correct pixel is clicked. Disconnect a display or choose coordinates
+    outside all displays: the worker must stop with a clear error and must
+    not click the old cursor position. Check quick finite sessions and macros,
+    Stop and F8 for their distinct terminal statuses.
+20. Back up `%APPDATA%\op-auto-clicker\settings.conf`, then use a disposable
+    oversized or invalid-UTF-8 settings file. Reopen the app, check the
+    recovery instructions in Settings, and verify reset and exit do not
+    overwrite that file. Close the app, restore the backup and reopen it.

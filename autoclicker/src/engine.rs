@@ -5,7 +5,7 @@
 //! parks on a manual-reset event while idle and runs a QPC spin schedule while
 //! active. No sleep call exists anywhere in the active click path.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -20,14 +20,55 @@ use crate::timing::{self, ScopedTimerResolution, SpinResult};
 use crate::win32::{
     self, make_lparam, make_mouse_input, MK_LBUTTON, MK_MBUTTON, MK_RBUTTON, MOUSEEVENTF_ABSOLUTE,
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
-    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN,
+    WM_RBUTTONUP,
 };
 
 pub const STATE_IDLE: i32 = 0;
 pub const STATE_RUNNING: i32 = 1;
 pub const STATE_STOPPING: i32 = 2;
 pub const STATE_PANIC: i32 = 3;
+
+/// The terminal result is separate from warnings such as a rejected timer
+/// resolution or priority request. It is published before the worker's idle
+/// transition so the UI never has to infer success from a status message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SessionOutcome {
+    Pending = 0,
+    Completed = 1,
+    Stopped = 2,
+    Panicked = 3,
+    DispatchFailed = 4,
+    WorkerLost = 5,
+}
+
+impl SessionOutcome {
+    fn at_session_end(dispatch_failed: bool, panicked: bool, stopped: bool) -> Self {
+        if dispatch_failed {
+            // A failed release is important even when F8 was pressed too.
+            Self::DispatchFailed
+        } else if panicked {
+            Self::Panicked
+        } else if stopped {
+            Self::Stopped
+        } else {
+            Self::Completed
+        }
+    }
+
+    fn from_atomic(value: u8) -> Self {
+        match value {
+            1 => Self::Completed,
+            2 => Self::Stopped,
+            3 => Self::Panicked,
+            4 => Self::DispatchFailed,
+            5 => Self::WorkerLost,
+            _ => Self::Pending,
+        }
+    }
+}
 
 /// Gap between the down/up bursts of a double or triple click. Spun on the
 /// QPC deadline (never a sleep) so stop and panic flags stay responsive.
@@ -76,6 +117,7 @@ struct Shared {
     stop: Arc<AtomicBool>,
     panic: Arc<AtomicBool>,
     state: Arc<AtomicI32>,
+    outcome: AtomicU8,
     /// Serializes starts, stop requests, and the worker's final state
     /// transition. Never locked inside the active click loop.
     session_gate: Mutex<()>,
@@ -122,6 +164,7 @@ impl ClickEngine {
             stop: Arc::new(AtomicBool::new(false)),
             panic: Arc::new(AtomicBool::new(false)),
             state: Arc::new(AtomicI32::new(STATE_IDLE)),
+            outcome: AtomicU8::new(SessionOutcome::Pending as u8),
             session_gate: Mutex::new(()),
             config: Arc::new(AtomicConfigSnapshot::default()),
             session_config: Mutex::new(EngineConfig::default()),
@@ -181,6 +224,7 @@ impl ClickEngine {
             );
         }
         let previous_state = self.state();
+        let previous_outcome = self.session_outcome();
         *lock_recovering(&self.shared.macro_steps) = steps;
         self.shared.telemetry.reset();
         self.shared.start_tick.store(0, Ordering::Release);
@@ -191,9 +235,15 @@ impl ClickEngine {
         self.shared.panic.store(false, Ordering::Release);
         *lock_recovering(&self.shared.session_config) = config.clone();
         self.shared.config.store(config);
+        self.shared
+            .outcome
+            .store(SessionOutcome::Pending as u8, Ordering::Release);
         self.shared.state.store(STATE_RUNNING, Ordering::Release);
         if let Err(error) = win32::set_event(self.wake_handle) {
             self.shared.stop.store(true, Ordering::Release);
+            self.shared
+                .outcome
+                .store(previous_outcome as u8, Ordering::Release);
             self.shared.state.store(previous_state, Ordering::Release);
             return Err(format!("Could not wake click worker: {error}"));
         }
@@ -235,6 +285,10 @@ impl ClickEngine {
 
     pub fn state(&self) -> i32 {
         self.shared.state.load(Ordering::Acquire)
+    }
+
+    pub fn session_outcome(&self) -> SessionOutcome {
+        SessionOutcome::from_atomic(self.shared.outcome.load(Ordering::Acquire))
     }
 
     pub fn click_count(&self) -> u64 {
@@ -280,6 +334,9 @@ impl ClickEngine {
     pub fn force_idle(&self) {
         let _gate = lock_recovering(&self.shared.session_gate);
         self.shared.stop.store(true, Ordering::Release);
+        self.shared
+            .outcome
+            .store(SessionOutcome::WorkerLost as u8, Ordering::Release);
         self.shared.state.store(STATE_IDLE, Ordering::Release);
     }
 
@@ -402,7 +459,13 @@ enum Phase {
     Up,
 }
 
-fn dispatch_global(config: &EngineConfig, phase: Phase) -> Result<(), String> {
+/// Build the whole input burst before sending any part of it. In particular,
+/// an invalid fixed point must never send the button-down at the old cursor.
+fn global_inputs(
+    config: &EngineConfig,
+    phase: Phase,
+    normalize: impl FnOnce(i64, i64) -> Result<(i32, i32), String>,
+) -> Result<Vec<INPUT>, String> {
     let (down_flag, up_flag) = match config.mouse_button {
         MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -412,11 +475,12 @@ fn dispatch_global(config: &EngineConfig, phase: Phase) -> Result<(), String> {
         Phase::Move => Vec::new(), // moves are folded into the down burst
         Phase::Down => {
             if config.coordinate_mode == CoordinateMode::FixedScreen {
+                let (x, y) = normalize(config.fixed_x, config.fixed_y)?;
                 vec![
                     make_mouse_input(
-                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
-                        win32::normalize_virtual_x(config.fixed_x),
-                        win32::normalize_virtual_y(config.fixed_y),
+                        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                        x,
+                        y,
                     ),
                     make_mouse_input(down_flag, 0, 0),
                 ]
@@ -426,6 +490,11 @@ fn dispatch_global(config: &EngineConfig, phase: Phase) -> Result<(), String> {
         }
         Phase::Up => vec![make_mouse_input(up_flag, 0, 0)],
     };
+    Ok(inputs)
+}
+
+fn dispatch_global(config: &EngineConfig, phase: Phase) -> Result<(), String> {
+    let inputs = global_inputs(config, phase, win32::normalize_virtual_point)?;
     if inputs.is_empty() {
         return Ok(());
     }
@@ -456,6 +525,7 @@ fn run_click_session(shared: &Shared) {
     let mut next_deadline = session_start;
     let mut previous_completion: Option<i64> = None;
     let mut sequence: u64 = 0;
+    let mut dispatch_failed = false;
     let mut last_config = lock_recovering(&shared.session_config).clone();
 
     while !shared.stop.load(Ordering::Acquire) && !shared.panic.load(Ordering::Acquire) {
@@ -568,6 +638,7 @@ fn run_click_session(shared: &Shared) {
 
         if let Some(error) = burst_failed {
             publish_error(shared, error);
+            dispatch_failed = true;
             break;
         }
         if interrupted {
@@ -602,6 +673,9 @@ fn run_click_session(shared: &Shared) {
 
     let _gate = lock_recovering(&shared.session_gate);
     let panicked = shared.panic.load(Ordering::Acquire);
+    let stopped = shared.stop.load(Ordering::Acquire);
+    let outcome = SessionOutcome::at_session_end(dispatch_failed, panicked, stopped);
+    shared.outcome.store(outcome as u8, Ordering::Release);
     shared.state.store(
         if panicked { STATE_PANIC } else { STATE_IDLE },
         Ordering::Release,
@@ -632,6 +706,98 @@ mod tests {
     }
 
     #[test]
+    fn terminal_outcome_prioritizes_failed_release_and_panic() {
+        assert_eq!(
+            SessionOutcome::at_session_end(false, false, false),
+            SessionOutcome::Completed
+        );
+        assert_eq!(
+            SessionOutcome::at_session_end(false, false, true),
+            SessionOutcome::Stopped
+        );
+        assert_eq!(
+            SessionOutcome::at_session_end(false, true, true),
+            SessionOutcome::Panicked
+        );
+        assert_eq!(
+            SessionOutcome::at_session_end(true, false, false),
+            SessionOutcome::DispatchFailed
+        );
+        assert_eq!(
+            SessionOutcome::at_session_end(true, true, true),
+            SessionOutcome::DispatchFailed
+        );
+    }
+
+    #[test]
+    fn fixed_screen_input_is_batched_for_the_virtual_desktop() {
+        for (button, down_flag, up_flag) in [
+            (MouseButton::Left, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+            (
+                MouseButton::Right,
+                MOUSEEVENTF_RIGHTDOWN,
+                MOUSEEVENTF_RIGHTUP,
+            ),
+            (
+                MouseButton::Middle,
+                MOUSEEVENTF_MIDDLEDOWN,
+                MOUSEEVENTF_MIDDLEUP,
+            ),
+        ] {
+            let config = EngineConfig {
+                coordinate_mode: CoordinateMode::FixedScreen,
+                fixed_x: -1_234,
+                fixed_y: 567,
+                mouse_button: button,
+                ..EngineConfig::default()
+            };
+            let inputs = global_inputs(&config, Phase::Down, |x, y| {
+                assert_eq!((x, y), (-1_234, 567));
+                Ok((12_345, 23_456))
+            })
+            .expect("valid point");
+            assert_eq!(inputs.len(), 2);
+            // SAFETY: make_mouse_input initializes this union with the mi member.
+            let movement = unsafe { inputs[0].Anonymous.mi };
+            // SAFETY: make_mouse_input initializes this union with the mi member.
+            let down = unsafe { inputs[1].Anonymous.mi };
+            assert_eq!(
+                movement.dwFlags,
+                MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+            );
+            assert_eq!((movement.dx, movement.dy), (12_345, 23_456));
+            assert_eq!(down.dwFlags, down_flag);
+            let up = global_inputs(&config, Phase::Up, |_, _| panic!("release must not move"))
+                .expect("release");
+            // SAFETY: make_mouse_input initializes this union with the mi member.
+            assert_eq!(unsafe { up[0].Anonymous.mi }.dwFlags, up_flag);
+            assert!(
+                global_inputs(&config, Phase::Down, |_, _| Err("off-screen".to_string())).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn current_cursor_input_does_not_require_a_desktop_point() {
+        let config = EngineConfig::default();
+        let down = global_inputs(&config, Phase::Down, |_, _| {
+            panic!("cursor mode must not normalize")
+        })
+        .expect("current-cursor down");
+        assert_eq!(down.len(), 1);
+        // SAFETY: make_mouse_input initializes this union with the mi member.
+        assert_eq!(
+            unsafe { down[0].Anonymous.mi }.dwFlags,
+            MOUSEEVENTF_LEFTDOWN
+        );
+        let movement = global_inputs(&config, Phase::Move, |_, _| {
+            panic!("move must not normalize")
+        })
+        .expect("empty move");
+        assert!(movement.is_empty());
+    }
+
+    #[test]
     fn stopping_is_busy_and_idle_stop_does_not_strand_the_engine() {
         let engine = ClickEngine::new();
         engine.request_stop();
@@ -643,6 +809,7 @@ mod tests {
         assert!(engine.start(&safe_config()).is_ok());
         engine.request_stop();
         wait_until(|| !engine.is_running(), "stopped worker never became idle");
+        assert_eq!(engine.session_outcome(), SessionOutcome::Stopped);
     }
 
     #[test]
@@ -692,10 +859,13 @@ mod tests {
         engine.panic_stop();
         wait_until(|| !engine.is_running(), "panic did not drain");
         assert_eq!(engine.state(), STATE_PANIC);
+        assert_eq!(engine.session_outcome(), SessionOutcome::Panicked);
         assert!(engine.start(&config).is_ok());
+        assert_eq!(engine.session_outcome(), SessionOutcome::Pending);
         engine.request_stop();
         wait_until(|| !engine.is_running(), "restart after panic did not stop");
         assert_eq!(engine.state(), STATE_IDLE);
+        assert_eq!(engine.session_outcome(), SessionOutcome::Stopped);
         assert_eq!(engine.click_count(), 0);
     }
 }

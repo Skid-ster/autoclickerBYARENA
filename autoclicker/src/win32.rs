@@ -14,7 +14,7 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, BOOL, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, WAIT_FAILED,
     WAIT_OBJECT_0,
 };
-use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
+use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, MonitorFromPoint, MONITOR_DEFAULTTONULL};
 use windows_sys::Win32::Networking::WinHttp::{
     WinHttpAddRequestHeaders, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
     WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
@@ -37,7 +37,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SendMessageTimeoutW, SW_SHOWNORMAL, WNDENUMPROC,
 };
 
+use crate::coordinates::{self, ABSOLUTE_COORDINATE_COUNT};
 use crate::hotkey::PANIC_VK;
+
+pub use crate::coordinates::make_lparam;
 
 pub const INPUT_MOUSE: u32 = 0;
 pub const MOUSEEVENTF_MOVE: u32 = 0x0001;
@@ -47,6 +50,7 @@ pub const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
 pub const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
 pub const MOUSEEVENTF_MIDDLEDOWN: u32 = 0x0020;
 pub const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
+pub const MOUSEEVENTF_VIRTUALDESK: u32 = 0x4000;
 pub const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
 
 pub const WM_MOUSEMOVE: u32 = 0x0200;
@@ -345,24 +349,40 @@ pub fn system_metrics(index: i32) -> i32 {
     unsafe { GetSystemMetrics(index) }
 }
 
-pub fn normalize_virtual_x(screen_x: i64) -> i32 {
+/// Normalize a physical screen point for absolute virtual-desktop input.
+/// Refuse to dispatch if the display layout changed since a point was picked
+/// or recorded; otherwise Windows could clamp a click to an unintended place.
+pub fn normalize_virtual_point(screen_x: i64, screen_y: i64) -> Result<(i32, i32), String> {
     let width = system_metrics(SM_CXVIRTUALSCREEN);
-    let origin = system_metrics(SM_XVIRTUALSCREEN);
-    if width <= 1 {
-        return 0;
-    }
-    let relative = screen_x - origin as i64;
-    (relative as f64 * 65535.0 / (width - 1) as f64) as i32
-}
-
-pub fn normalize_virtual_y(screen_y: i64) -> i32 {
     let height = system_metrics(SM_CYVIRTUALSCREEN);
-    let origin = system_metrics(SM_YVIRTUALSCREEN);
-    if height <= 1 {
-        return 0;
+    let left = system_metrics(SM_XVIRTUALSCREEN);
+    let top = system_metrics(SM_YVIRTUALSCREEN);
+    if width <= 0 || height <= 0 {
+        return Err(
+            "Could not read the virtual desktop dimensions; click was not sent.".to_string(),
+        );
     }
-    let relative = screen_y - origin as i64;
-    (relative as f64 * 65535.0 / (height - 1) as f64) as i32
+    if width > ABSOLUTE_COORDINATE_COUNT || height > ABSOLUTE_COORDINATE_COUNT {
+        return Err("The virtual desktop exceeds absolute input precision; fixed-position clicks are unavailable.".to_string());
+    }
+    let normalized = coordinates::normalize_axis(screen_x, left, width)
+        .zip(coordinates::normalize_axis(screen_y, top, height));
+    let Some(normalized) = normalized else {
+        return Err(format!("Screen position ({screen_x}, {screen_y}) is outside the virtual desktop; click was not sent."));
+    };
+    let point = match (i32::try_from(screen_x), i32::try_from(screen_y)) {
+        (Ok(x), Ok(y)) => POINT { x, y },
+        _ => {
+            return Err(
+                "Screen position cannot be represented by Windows; click was not sent.".to_string(),
+            )
+        }
+    };
+    // SAFETY: POINT is passed by value; the null-on-miss flag has no side effects.
+    if unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) } == 0 {
+        return Err(format!("Screen position ({screen_x}, {screen_y}) is not on a connected display; click was not sent."));
+    }
+    Ok(normalized)
 }
 
 pub fn post_message(hwnd: isize, message: u32, wparam: usize, lparam: isize) -> io::Result<()> {
@@ -410,11 +430,6 @@ pub fn send_message_timeout(
         return Err(last_os_error("SendMessageTimeoutW failed"));
     }
     Ok(())
-}
-
-pub fn make_lparam(x: i32, y: i32) -> isize {
-    let packed = (x as u32) | ((y as u32) << 16);
-    packed as i32 as isize
 }
 
 // --------------------------------------------------------------- networking

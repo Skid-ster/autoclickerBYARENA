@@ -5,6 +5,49 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
+## Unreleased stability hardening (source only)
+
+Fixed-position and recorded macro moves now use the virtual-desktop flag,
+with checked 16-bit normalization and a connected-display check before any
+button-down. Out-of-range points and invalid metrics stop the session rather
+than clicking elsewhere. Mouse-message coordinate words are packed separately.
+The worker publishes a terminal outcome independently of timing/priority
+warnings; the UI tracks a successful start immediately and reports completion,
+manual stop, panic, dispatch failure and worker loss without guessing from an
+old status string. Settings reads are capped at 1 MiB. An unreadable, invalid
+UTF-8 or oversized existing file is preserved, with recovery instructions and
+saving blocked until restart. Critical click errors and panic statuses are not
+replaced by a settings-save warning.
+
+Local verification with Rust 1.88.0:
+
+- All **140 tests** in the 12 standalone suites passed with `rustc --test
+  -D warnings`. The new coordinate suite checks representative desktop sizes,
+  all supported axis extents at their edges and middle, negative origins,
+  extreme values and mouse-message word isolation. These checks model the
+  65,536-based input mapping; they do not exercise Windows input injection.
+- All **81 actual-egui app/worker tests** passed with an eframe stub and
+  simulated Win32/input/timing. Five updater tests overlap the standalone
+  count. New regressions exercise fast starts, failed off-desktop fixed clicks
+  and macro playback, manual stop, panic, terminal outcome precedence,
+  settings-file preservation and the recovery notice's layout. The shim
+  sends no real mouse input. Five race/failure tests each passed 30 further
+  repetitions; the existing 200-handoff stop/restart test passed 20 further
+  repetitions (4,000 simulated handoffs).
+- Windows-GNU all-target source checking and Clippy with `--no-deps -D
+  warnings` passed using the real application, timing, Win32 sources, egui
+  and windows-sys bindings, with eframe stubbed. Linux harness Clippy,
+  formatting and `git diff --check` also passed. The Windows target was not
+  linked or run in this local check; dependency-wrapper warnings were not
+  project warnings.
+
+The appearance, controls, explicit updater, QPC spin schedule and batched
+`SendInput` design are unchanged. Native Windows CI and hands-on Windows tests
+are separate from these local checks. In particular, real multi-monitor and
+mixed-DPI input placement, display disconnects, focus behavior and actual
+update/relaunch still require interactive verification. No new release is
+implied by this source-only work.
+
 ## Classic and Modern appearances: v1.6.0
 
 The source now offers Classic and Modern styles, each in Light and Dark,
