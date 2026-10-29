@@ -2057,7 +2057,7 @@ impl OpAutoClickerApp {
                     Color32::from_rgb(124, 160, 170)
                 };
                 ui.painter()
-                    .rect_stroke(rect, card_rounding, Stroke::new(1.0, rim));
+                    .rect_stroke(rect, card_rounding, Stroke::new(1.0_f32, rim));
             }
             let painter = ui.painter_at(rect);
             Self::paint_section_icon(
@@ -2383,7 +2383,7 @@ impl OpAutoClickerApp {
             painter.rect_stroke(
                 face_rect,
                 rounding,
-                Stroke::new(1.0, Color32::from_white_alpha(50)),
+                Stroke::new(1.0_f32, Color32::from_white_alpha(50)),
             );
         } else {
             painter.rect(face_rect, rounding, fill, Stroke::new(1.0_f32, border));
@@ -3176,7 +3176,7 @@ impl OpAutoClickerApp {
                 ui.painter().rect_stroke(
                     settings_response.rect.shrink(2.0),
                     Rounding::same(6.0),
-                    Stroke::new(1.2, pal.accent),
+                    Stroke::new(1.2_f32, pal.accent),
                 );
             }
             if settings_response.clicked() {
@@ -3296,7 +3296,7 @@ impl OpAutoClickerApp {
                 ui.painter().rect_stroke(
                     updates_response.rect.shrink(2.0),
                     Rounding::same(6.0),
-                    Stroke::new(1.2, pal.accent),
+                    Stroke::new(1.2_f32, pal.accent),
                 );
             }
             if show_update_badge {
@@ -4321,7 +4321,7 @@ impl OpAutoClickerApp {
             ui.painter().rect_stroke(
                 response.rect.shrink(2.0),
                 Rounding::same(6.0),
-                Stroke::new(1.2, if primary { plain_color } else { pal.accent }),
+                Stroke::new(1.2_f32, if primary { plain_color } else { pal.accent }),
             );
         }
         if elided && enabled {
@@ -8021,7 +8021,7 @@ mod dashboard_layout_tests {
                                                 false,
                                                 egui::Button::new(galley)
                                                     .fill(pal.button_disabled)
-                                                    .stroke(Stroke::new(1.0, pal.button_border))
+                                                    .stroke(Stroke::new(1.0_f32, pal.button_border))
                                                     .rounding(Rounding::same(if pal.modern {
                                                         8.0
                                                     } else {
