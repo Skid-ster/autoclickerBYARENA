@@ -181,7 +181,7 @@ the update before the program file is replaced.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 133 standalone tests over platform-independent modules, plus Windows
+- 142 standalone tests over platform-independent modules, plus Windows
   app and worker tests and a CI workflow (format check, clippy with warnings
   denied, tests, release build and binary artifact), and a generated crosshair application icon.
 
