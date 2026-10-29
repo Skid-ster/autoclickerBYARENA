@@ -52,18 +52,26 @@ Executed in the Linux sandbox with Rust 1.88:
   engine shims. The GitHub-source dependencies emitted their own warnings.
 - An isolated local Git repository exercised the actual source updater's
   fast-forward, wrong destination manifest refusal, dirty-tree guard, and
-  pre-cancellation. Its fetch URL was redirected to the local fixture;
-  this was not a Git for Windows or GitHub network test.
+  pre-cancellation. A separate fixture used the published v1.5.0 source
+  updater to fast-forward a clean checkout to a synthetic v1.5.1 tag and
+  validate its manifest. Fetches were redirected to local fixtures; these
+  were not Git for Windows or GitHub network tests.
 - A simulated-input Win32 shim exercised the actual engine's single and
   double bursts, fixed-coordinate input arrays, panic release during a
   hold, and two loops of a recorded macro. No real mouse input was sent.
 
-These local checks preceded the candidate's Windows CI run, and no real
-Windows interaction was performed in this sandbox. A passing Windows CI
-run is required for the release. Hands-on resizing, SendInput/F6/F8,
-settings, WinHTTP, Git for Windows, and update/relaunch and rollback
-acceptance remain separate checks. The prior v1.5.0 CI applies only to
-that shipped commit.
+The first v1.5.1 candidate commit `a635d0e84becd581f04fa27b4968ade6d37e09f6`
+passed [Windows MSVC CI run 40803408176, job 123216569011](https://github.com/Skid-ster/autoclickerBYARENA/actions/runs/40803408176/job/123216569011):
+format, Clippy with warnings denied, tests, release build, GUI-subsystem and
+version-resource checks, and artifact upload all completed successfully.
+The binary metadata annotation reported GUI subsystem 2, ProductName
+MacroClicker, FileVersion 1.5.1 and 3,910,144 bytes. Publishing was skipped
+on the pull request, as intended; the later tag workflow publishes the release.
+
+No real Windows interaction was performed in the sandbox. Hands-on resizing,
+SendInput/F6/F8, settings, WinHTTP, Git for Windows, and update/relaunch and
+rollback acceptance remain separate checks. The prior v1.5.0 CI applies only
+to that shipped commit.
 
 ## Professional release and one-click update round (shipped): v1.5.0
 
