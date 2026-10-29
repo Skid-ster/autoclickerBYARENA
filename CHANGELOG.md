@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-10-29
+
+### Changed
+
+- Polished Modern Light and Dark with midnight-slate/cool-porcelain surfaces,
+  layered card headers, clearer type hierarchy using the bundled Outfit Medium
+  face, and a refined Start mark. Checkbox and radio choices now have distinct
+  silhouettes, selected states and visible keyboard focus. Modern also shows
+  `0.0 s` rather than negative zero for an empty recording. The approved
+  responsive layouts and Classic/previous appearances remain unchanged.
+
 ## [1.7.0] - 2026-10-29
 
 ### Changed
@@ -195,7 +206,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   precision QPC click engine, Record & Playback, global hotkeys, themes,
   resizable/scaling window, persistent settings, and Windows CI releases.
 
-[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.1...v1.5.2

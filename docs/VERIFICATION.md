@@ -5,6 +5,60 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
+## v1.8.0: Modern visual polish
+
+Modern Light and Dark use cooler porcelain/midnight-slate surfaces, subtly
+layered card headers, a medium-weight Outfit face for section titles and
+important actions, supporting-label hierarchy and a refined Start mark.
+Checkboxes and radio choices use different silhouettes and selected, hover,
+press and focus treatments. Their original egui widgets still own interaction
+and accessibility; the marks do not add hit targets. The empty recording
+summary in Modern displays `0.0 s`, not negative zero. The dashboard's
+approved responsive compositions, Classic and the previous appearances are
+retained. The bundled regular and medium fonts share the existing offline OFL
+notice.
+
+Local verification with Rust 1.88.0:
+
+- **85 actual-egui app/worker tests** passed using a stub eframe and simulated
+  Win32/input/timing. Five self-updater fault tests overlap the **141 standalone
+  tests** across 12 suites, which also passed with `rustc -D warnings`. New
+  checks cover first-frame font fallback and switching Classic/Modern, empty
+  and populated recording summaries, and Modern checkbox/radio selection,
+  hover, press, disabled appearance, focus, Space and click/accessibility
+  events at four pixel densities. Existing layout, navigation, updater, input
+  and worker regressions remain enabled. Release preparation added a v1.7.0 to
+  v1.8.0 metadata fixture; **142 standalone tests** then passed across the same
+  12 suites with `rustc -D warnings`. Probes built from the v1.7.0 and candidate
+  parser sources evaluated that fixture as Available and UpToDate respectively,
+  with identical size and digest metadata.
+- Contrast checks cover the header title against its new wash; selected choice
+  marks at rest, hover and press; and the Start mark against the composited
+  medallion and gradient. These and the existing text/status checks require
+  at least 4.5:1; tested input/button outlines require at least 3:1. This is
+  not an application-wide accessibility-conformance claim.
+- A before/after actual-egui comparison covered **140 cases** (seven themes,
+  five compositions and four pixel densities): stroked rectangular frames and
+  non-heading/non-action text retained their geometry. Heading/action text
+  and purely painted details were intentionally restyled inside their existing
+  surfaces. **15 Classic/legacy CPU rasters** (five themes, compact, portrait
+  and wide) matched the original source byte-for-byte. Modern compact,
+  slender, wide, Settings, Updates and Record & Playback rasters were inspected;
+  these are software simulations, not Windows screenshots.
+- Formatting, `git diff --check`, Linux harness Clippy, and Windows-GNU
+  all-target source checking and Clippy with project warnings denied passed.
+  The Windows check uses the real Win32 and timing sources with an eframe stub;
+  it did not link or run a Windows binary.
+- Before the version bump, PR #40 commit `caa8815` passed [Windows CI run
+  40940748192](https://github.com/Skid-ster/autoclickerBYARENA/actions/runs/40940748192/job/123683169337),
+  including formatting, Clippy with warnings denied, tests, release-mode build,
+  GUI metadata verification and artifact upload. That build reported version
+  1.7.0; the release-prepared commit is checked by the PR and tag workflows.
+
+Actual Windows interaction, rendering, screen-reader integration, mixed-DPI
+behavior, real input injection and update/relaunch remain to be checked by hand.
+The previously published v1.7.0 binary does not include this visual polish.
+
 ## v1.7.0: Modern visual refinement
 
 Modern Light and Dark use a cohesive porcelain/blue-ink palette, compact
