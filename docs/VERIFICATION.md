@@ -5,6 +5,54 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
+## Very tall window correction and scale-picker removal: v1.5.2
+
+A 556x1388 screenshot from the published v1.5.1 showed that the 400x600
+portrait canvas still became width-limited: controls stopped growing and
+large gaps appeared between cards and above the footer. The new narrower
+portrait compositions reflow controls and use the additional height for
+zoom. For a simulated 556x1360 inner viewport, the chosen fit is about
+1.94x instead of the old portrait canvas's 1.39x. Remaining portrait
+height is balanced within cards after small bounded gaps. The manual
+percentage picker is removed; the automatic-adaptation toggle and legacy
+`ui_scale` values remain compatible. Secondary windows temporarily use a
+fitting zoom, with window floors and saved sizes based on the actual applied
+zoom rather than the dashboard target. Secondary windows can scroll unusually
+long notices, and long status/version text is elided with full text on hover.
+The native minimum is re-declared after a DPI change without requesting an
+inner resize; the application's settings file remains authoritative rather
+than a second eframe window/egui-memory store.
+
+Executed locally with Rust 1.88:
+
+- 133 tests across the 11 standalone integration suites, compiled with
+  `rustc -D warnings`, including old settings values and the full range of
+  portrait layout transitions in both resize directions.
+- 43 integrated tests using actual egui 0.27.2, the application and the
+  click engine, with eframe, Windows event/input and timing shims. The
+  geometry matrix covers 12 viewport shapes, five themes, four pixel
+  densities and the F24/Space hotkeys. A 560-pixel-wide height sweep
+  checks card gaps, footer position and no clipping through 2160 pixels;
+  dialog tests exercise all four windows, controls, zoom restoration,
+  resizing, reset and legacy scales. New regressions cover long errors,
+  status hover, update labels and DPI floor commands at six legacy scales
+  with and without a dialog. These are egui-frame simulations, not native
+  Windows interactions. The input shim sends no real clicks. Five updater
+  fault tests are also included in the standalone suite count.
+- Windows-GNU all-targets source check and project Clippy with warnings
+  denied against the real entry point, application, engine, timing, Win32
+  sources, egui 0.27.2 and `windows-sys` 0.52.0, with eframe stubbed.
+  No executable was linked or run; local path dependencies emitted their
+  own warnings. The Linux headless harness also passed project Clippy.
+- A software rasterization of actual egui output at the screenshot-like
+  size was inspected to supplement the numeric geometry checks; it is not
+  a Windows screenshot or a native GPU rendering.
+
+These local checks do not establish real Windows resize feel, Snap, mixed-DPI
+transitions, actual input, or update/relaunch behavior. Windows MSVC CI is the
+build gate; hands-on Windows acceptance remains separate. The previously
+published v1.5.1 binary does not contain the v1.5.2 layout correction.
+
 ## Tall-window and stability round: v1.5.1 candidate
 
 A screenshot of a narrow, vertically stretched window exposed a fit

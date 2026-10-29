@@ -56,6 +56,27 @@ fn full_round_trip_preserves_every_field() {
 }
 
 #[test]
+fn legacy_scale_values_and_auto_resize_preferences_survive_round_trip() {
+    for percent in hotkey::UI_SCALE_OPTIONS {
+        for enabled in [true, false] {
+            let old_file = format!(
+                "[ui]\ntheme=dark\nui_scale={percent}\nauto_scale={enabled}\n\
+                 window_width=560\nwindow_height=1360\nunknown_future_key=ignored\n"
+            );
+            let (config, prefs) = parse_settings(&old_file);
+            assert_eq!(prefs.ui_scale_percent, percent);
+            assert_eq!(prefs.auto_scale, enabled);
+            assert_eq!(prefs.theme, AppTheme::Dark);
+            assert_eq!((prefs.window_width, prefs.window_height), (560, 1360));
+            let new_file = serialize_settings(&config, &prefs);
+            let (restored_config, restored_prefs) = parse_settings(&new_file);
+            assert_eq!(restored_config, config);
+            assert_eq!(restored_prefs, prefs);
+        }
+    }
+}
+
+#[test]
 fn unknown_keys_sections_and_comments_are_ignored() {
     let document = "\
 # a comment

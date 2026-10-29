@@ -12,7 +12,7 @@ dialog layout in a modern card surface (the visual language of its
 Updates window: rounded elevated cards, an accent primary **Start**,
 soft shadows) — a naturally resizable window whose classic
 560x456 size is the enforced minimum (with five
-persisted themes, a 75–200 % window scale and a remembered window size)
+persisted themes, automatic scaling and a remembered window size)
 with group cards, numeric fields and push buttons, nothing
 scrolled: Hours/Mins/Secs/Milliseconds interval with the 4.1 random-offset
 row, mouse button and click-type pickers, repeat rules, cursor position
@@ -36,7 +36,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Drift-free absolute QPC schedule with bounded catch-up | No | Yes |
 | Dedicated panic key (F8) always reserved | No | Yes |
 | Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
-| Five themes + 75–200 % window scaling | No | Yes |
+| Five themes + automatic window scaling | No | Yes |
 | Built-in updates against GitHub releases | No | Yes — one click downloads, SHA-256-verifies, installs and restarts |
 | Open source with Windows CI and automated tests | No | Yes |
 
@@ -53,8 +53,8 @@ later closed builds are not public, so no stronger claim is made.
 Download the ready-to-run **`macro_clicker.exe`** from the
 [latest GitHub release](https://github.com/Skid-ster/autoclickerBYARENA/releases/latest).
 Every version tag is compiled by the Windows CI workflow (format check,
-clippy with warnings denied, 128 standalone tests plus Windows app and
-worker tests, release build, and embedded version/GUI-subsystem verification).
+clippy with warnings denied, standalone tests plus Windows app and worker
+tests, release build, and embedded version/GUI-subsystem verification).
 Releases also include `SHA256SUMS.txt` for offline verification. CI refuses a version tag
 unless the tag, Cargo package version, and EXE FileVersion agree.
 
@@ -113,12 +113,15 @@ the update before the program file is replaced.
   dragged back down without restarting. Total zoom is capped at
   280 %. Panoramic
   windows rearrange the middle groups three-across with a single row
-  of action buttons; tall, narrow windows reflow interval fields into two
-  rows and stack the middle groups so their controls can grow. The layout
-  itself stretches to the window's full height, groups flowing from the top with the status and
-  buttons riding at the bottom edge, so a big window is filled at
-  any size or resolution, never a small dialog marooned in empty
-  space. A first run (no settings file yet) on a display larger than
+  of action buttons. Tall windows use progressively narrower compositions:
+  interval fields reflow, the middle groups stack, and the controls grow
+  instead of leaving large gaps between sections or above the footer.
+  Remaining height is balanced within the cards. At very large sizes the
+  280 % zoom cap still applies. Secondary windows temporarily use a
+  fitting zoom when needed, then restore the dashboard zoom on close;
+  unusually long messages scroll or reveal their full text on hover.
+  The minimum window size is refreshed across different display DPI
+  settings without requesting a resize. A first run (no settings file yet) on a display larger than
   the 1080p reference opens proportionally larger once; every saved
   size is respected exactly. A Settings toggle turns the adaptation
   off. The size you choose is remembered across restarts.
@@ -140,15 +143,13 @@ the update before the program file is replaced.
   exact buttons, positions and delays, drift-free, loop N times or until
   stopped, and F8 panic-stops instantly mid-playback. Up to 2048 steps
   per macro.
-- **Five themes + window scaling** — a **Settings…** button in the
-  bottom-right corner opens a Settings window with a theme picker (Classic
-  light, Dark, Midnight OLED, Terminal green and the modern Aurora — every one tuned to a
-  WCAG 4.5:1 contrast floor for all text, status and accent colors) and a
-  window-scale picker (75–200 %): the whole UI zooms and the window only
-  ever grows — and only if the controls would otherwise no longer fit —
-  so a size you chose by dragging is never forced back down. Both choices restyle
-  every window (main screen, Hotkey dialog and Settings window), are
-  remembered across restarts, and all themes share the exact same layout,
+- **Five themes + automatic scaling** — **Settings…** offers Classic
+  light, Dark, Midnight OLED, Terminal green and Aurora, each tuned to a
+  WCAG 4.5:1 contrast floor for text, status and accent colors. The
+  window adapts automatically when resized; the former manual percentage
+  picker is gone. Automatic adaptation can still be switched off, and old
+  saved scale values remain compatible. Themes and preferences are
+  remembered across restarts, and all themes share the same layout,
   so switching never moves a control. Every theme renders the groups as
   elevated cards (Classic's are white on the light-gray dialog, like the
   Updates window's plate) over their sunken fields and status plate, and
@@ -186,7 +187,7 @@ the update before the program file is replaced.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 128 standalone tests over platform-independent modules, plus Windows
+- 133 standalone tests over platform-independent modules, plus Windows
   app and worker tests and a CI workflow (format check, clippy with warnings
   denied, tests, release build and binary artifact), and a generated crosshair application icon.
 

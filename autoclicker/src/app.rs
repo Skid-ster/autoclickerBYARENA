@@ -6,10 +6,9 @@
 //! the classic OP Auto Clicker 4.x screen: four group cards (Click
 //! interval, Click options, Click repeat, Cursor position) above the
 //! authentic 2x2 grid of push buttons. The classic 560x456 size is the
-//! enforced minimum; a larger window scales the whole dialog uniformly
-//! to fit (and rearranges it three-abreast when panoramic), so every
-//! control stays proportional and visible at every reachable window
-//! size. There is no diagnostics surface: every control on screen
+//! enforced minimum; larger windows scale and reflow the dashboard to
+//! fit, using stacked portrait or three-abreast panoramic compositions.
+//! There is no diagnostics surface: every control on screen
 //! configures clicking, and the engine's telemetry stays an internal,
 //! test-verified concern.
 //!
@@ -30,7 +29,7 @@ use crate::config::{
 use crate::engine::{ClickEngine, STATE_PANIC, STATE_RUNNING, STATE_STOPPING};
 use crate::hotkey::{
     self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, AppTheme,
-    UI_SCALE_OPTIONS, VK_ESCAPE,
+    VK_ESCAPE,
 };
 use crate::macro_rec::{self, MacroRecorder};
 use crate::self_update::{self, InstallKind, UpdatePaths};
@@ -228,10 +227,10 @@ static AURORA_PALETTE: Palette = Palette {
 
 /// Fit-independent floor size of the main window: the exact classic
 /// footprint in points with the window-driven fit at 1.0. The size
-/// actually declared to the OS divides this by the displayed fit
-/// (`live_window_floor`), because egui-winit multiplies a declared
+/// actually declared to the OS divides this by the applied fit
+/// (`live_window_floor_for`), because egui-winit multiplies a declared
 /// minimum by the total zoom when converting it to physical pixels.
-/// That keeps the physical floor tied to the user's percentage alone,
+/// That keeps the physical floor tied to any legacy scale alone,
 /// so enlarging the window can never strand it above a minimum created
 /// by the transient fit. Larger sizes are restored from the persisted
 /// preferences.
@@ -247,10 +246,8 @@ pub const MAIN_WINDOW_SIZE: [f32; 2] = [
 /// maximized window never produces comically wide buttons.
 const MAIN_CONTENT_MAX_WIDTH: f32 = 736.0_f32;
 
-/// Most extra height each breathing gap absorbs before the remaining
-/// height gathers above the status strip. The cap keeps neighbouring
-/// clusters visually related without letting one spring dominate a
-/// tall window.
+/// Maximum extra gap in the classic and wide compositions. Portrait
+/// compositions use a smaller cap and distribute the rest inside cards.
 const MAIN_GAP_EXTRA_MAX: f32 = 72.0_f32;
 
 /// Widest content column in the wide layout. Three group boxes across
@@ -267,9 +264,13 @@ const MAIN_WIDE_FILL_HEIGHT: f32 = 372.0_f32;
 /// Portrait cards are stacked and interval/position controls reflow into
 /// two rows, so their width remains legible as the total zoom grows.
 const MAIN_CONTENT_MAX_WIDTH_PORTRAIT: f32 = 480.0_f32;
-/// Natural portrait-column height (including margins); surplus is distributed
-/// through the same bounded rhythm as the classic and panoramic layouts.
+/// Natural portrait-column height (including margins); surplus uses
+/// the bounded portrait rhythm shared with the narrower compositions.
 const MAIN_PORTRAIT_FILL_HEIGHT: f32 = 596.0_f32;
+/// Narrower portrait compositions reflow more controls onto their own
+/// rows, letting height contribute to zoom instead of enormous gaps.
+const MAIN_NARROW_FILL_HEIGHT: f32 = 660.0_f32;
+const MAIN_SLENDER_FILL_HEIGHT: f32 = 710.0_f32;
 
 /// Reference display for the one-time display-aware opening size:
 /// on a fresh install the classic dialog opens occupying the same
@@ -480,9 +481,12 @@ pub struct OpAutoClickerApp {
     // Apply the persisted window size once (at startup and after a
     // factory reset) as soon as the zoom factor has settled.
     restore_window_size: bool,
+    // The native minimum is expressed in physical pixels by egui-winit;
+    // track display density so it can be re-declared after a DPI change.
+    last_native_pixels_per_point: Option<f32>,
     // Live-size observation stays paused until this instant so the
-    // transient point sizes seen while a zoom or restore resize is in
-    // flight are never mistaken for a size the user chose. The deadline
+    // transient point sizes seen while a zoom, DPI change, or restore
+    // resize is in flight are never mistaken for a size the user chose. The deadline
     // always resolves: observation resumes whether or not the OS granted
     // the exact requested size.
     window_settle_until: Instant,
@@ -500,7 +504,8 @@ pub struct OpAutoClickerApp {
     // percentage). The total egui zoom is the user's percentage
     // times this factor.
     auto_zoom: f32,
-    // The fit factor actually driving the egui zoom right now. When
+    // The dashboard's displayed fit factor. Secondary windows may
+    // temporarily apply a smaller actual egui zoom. When
     // `adapt_to_window_size` adopts a larger `auto_zoom`, this eases
     // toward it over ~180 ms instead of snapping, so an enlargement
     // lands as one smooth zoom. A smaller fit is applied at once so
@@ -516,13 +521,9 @@ pub struct OpAutoClickerApp {
     // machinery is idle again — so easing can never feed back into
     // the fit, the persisted size, or itself.
     zoom_transition: Option<(f64, f32)>,
-    // The user percentage for which `auto_zoom` was last derived.
-    // The fit factor is defined relative to that percentage, so a
-    // Settings change must re-derive it from the invariant neutral
-    // window size before a new total zoom is applied; leaving the old
-    // factor in place for even one bookkeeping pass would multiply
-    // the old fit by the new percentage and could grow the window to
-    // satisfy a floor that the current physical window already meets.
+    // The legacy scale for which `auto_zoom` was last derived. A reset
+    // can change it, so the fit is re-derived from the invariant neutral
+    // window size before applying the new total zoom.
     applied_user_factor: f32,
     // Shape-aware classic, portrait, or panoramic composition.
     main_layout: MainLayout,
@@ -640,6 +641,7 @@ impl OpAutoClickerApp {
             window_size_was_persisted: false,
             pending_resize: false,
             restore_window_size: true,
+            last_native_pixels_per_point: None,
             window_settle_until: Instant::now(),
             row_group_height: 60.0_f32,
             interval_group_widths: [0.0_f32; 4],
@@ -1459,10 +1461,6 @@ impl OpAutoClickerApp {
         Vec2::new(width, height)
     }
 
-    fn live_window_floor(&self) -> Vec2 {
-        Self::live_window_floor_for(self.displayed_auto_zoom)
-    }
-
     /// How spare window height is spent. The groups always flow from
     /// the top of the panel, exactly as they do at the floor size;
     /// surplus height first loosens every breathing gap between the
@@ -1491,6 +1489,25 @@ impl OpAutoClickerApp {
         let gap_extra = (extra / (gaps + 1.0_f32)).min(MAIN_GAP_EXTRA_MAX);
         let spring = (extra - gaps * gap_extra).max(0.0_f32);
         (gap_extra, spring)
+    }
+
+    /// In a width-limited portrait, use excess space within the four
+    /// cards rather than letting one enormous spring separate the footer.
+    /// The progressively narrower canvases do the actual zoom/reflow;
+    /// this only balances the remaining space when width limits the fit.
+    fn portrait_vertical_rhythm(window_height: f32, fill_height: f32) -> (f32, f32, f32) {
+        const MAX_PORTRAIT_GAP: f32 = 8.0_f32;
+        if !window_height.is_finite() || !fill_height.is_finite() {
+            return (0.0_f32, 0.0_f32, 0.0_f32);
+        }
+        let extra = (window_height - fill_height).max(0.0_f32);
+        let gap = (extra / 5.0_f32).min(MAX_PORTRAIT_GAP);
+        let remaining = (extra - 4.0_f32 * gap).max(0.0_f32);
+        let spring = remaining.min(MAX_PORTRAIT_GAP);
+        // Reserve a point per card for rounding so the footer still
+        // fits at every pixel density.
+        let extra_per_card = ((remaining - spring) / 4.0_f32 - 1.0_f32).max(0.0_f32);
+        (gap, spring, extra_per_card)
     }
 
     /// Shared, platform-independent fit and shape logic uses neutral points.
@@ -1568,8 +1585,12 @@ impl OpAutoClickerApp {
         // at a 2.8x fit a perfectly valid floor window is only
         // 200x163 live points, and testing the live size against
         // 560x456 would discard real user-chosen sizes.
+        // A secondary window may temporarily lower the applied zoom to
+        // fit. Persist the actual viewport size, not the dashboard target.
+        let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
+        let applied_auto_zoom = ctx.zoom_factor() / user_factor;
         let (base_width, base_height) =
-            hotkey::fit_independent_window_size((size.x, size.y), self.displayed_auto_zoom);
+            hotkey::fit_independent_window_size((size.x, size.y), applied_auto_zoom);
         // The OS minimum is enforced in physical pixels, so the
         // converted size can land a fraction below the floor after
         // rounding; allow that much slack, and treat anything further
@@ -1591,15 +1612,10 @@ impl OpAutoClickerApp {
         }
     }
 
-    /// Re-derives the window fit after the user's own percentage
-    /// changes. The neutral size (live points x the total zoom still
-    /// applied from the previous percentage) is the physical window
-    /// measure that does not change when the percentage does, so the
-    /// new auto factor can be solved from it immediately. This must
-    /// happen before the generic zoom bookkeeping: with a stale fit,
-    /// choosing 200 % in a large window would briefly ask for
-    /// 200 % x the old fit and the floor-guard would then grow the
-    /// physical window to satisfy that phantom zoom.
+    /// Re-derives the fit if a legacy saved scale changes, for example
+    /// when restoring defaults. The neutral size (live points times the
+    /// applied zoom) is unchanged by the scale decision, so the fit can
+    /// be solved without growing the physical window from a stale factor.
     fn sync_fit_for_user_factor(&mut self, ctx: &egui::Context, user_factor: f32) {
         if self.prefs.auto_scale {
             let (size, minimized) = ctx.input(|i| (i.screen_rect.size(), i.viewport().minimized));
@@ -1794,6 +1810,7 @@ impl OpAutoClickerApp {
         pal: &Palette,
         title: &str,
         min_height: f32,
+        extra_vertical: f32,
         add: impl FnOnce(&mut egui::Ui) -> R,
     ) -> (R, f32) {
         let shadow_slot = if pal.face != Color32::BLACK {
@@ -1808,8 +1825,8 @@ impl OpAutoClickerApp {
             .inner_margin(Margin {
                 left: 12.0_f32,
                 right: 12.0_f32,
-                top: 18.0_f32,
-                bottom: 12.0_f32,
+                top: 18.0_f32 + extra_vertical / 2.0_f32,
+                bottom: 12.0_f32 + extra_vertical / 2.0_f32,
             })
             .show(ui, |ui| {
                 let claim_width = ui.available_width();
@@ -2051,10 +2068,35 @@ impl OpAutoClickerApp {
 
     // ------------------------------------------------------------- the screen
 
-    fn draw_interval_group(&mut self, ui: &mut egui::Ui) {
+    fn draw_interval_group(&mut self, ui: &mut egui::Ui, extra_vertical: f32) {
         let pal = self.palette();
-        let _ = Self::group_box(ui, pal, "Click interval", 0.0_f32, |ui| {
-            if self.main_layout == MainLayout::Portrait {
+        let _ = Self::group_box(ui, pal, "Click interval", 0.0_f32, extra_vertical, |ui| {
+            if self.main_layout == MainLayout::Slender {
+                // Stacked unit labels allow two fields per row even on the
+                // slimmest canvas, without abbreviating milliseconds.
+                Grid::new("slender_interval_fields")
+                    .num_columns(2)
+                    .spacing(Vec2::new(12.0_f32, 6.0_f32))
+                    .show(ui, |ui| {
+                        for (index, (label, value, max)) in [
+                            ("hours", &mut self.hours, 99),
+                            ("mins", &mut self.minutes, 59),
+                            ("secs", &mut self.seconds, 59),
+                            ("milliseconds", &mut self.millis, 999),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(label).color(pal.text));
+                                Self::numeric_field(ui, value, max, 56.0_f32);
+                            });
+                            if index % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+            } else if self.main_layout.is_portrait() {
                 // Four units need two rows at this width. Grid columns keep
                 // the fields and their labels aligned without clipping.
                 Grid::new("portrait_interval_fields")
@@ -2112,28 +2154,41 @@ impl OpAutoClickerApp {
                 self.interval_group_widths = measured;
             }
             ui.add_space(7.0_f32);
-            ui.horizontal(|ui| {
-                let mut enabled = self.prefs.random_offset_enabled;
-                if ui.checkbox(&mut enabled, "Random offset ±").changed() {
-                    self.prefs.random_offset_enabled = enabled;
-                    if enabled && self.offset_ms <= 0.0 {
-                        // The reference 4.1 build shows 40 ms by default.
-                        self.offset_ms = 40.0;
-                    }
-                    self.mark_dirty();
-                }
-                ui.add_enabled_ui(enabled, |ui| {
-                    ui.add_sized(
-                        [72.0_f32, 22.0_f32],
-                        egui::DragValue::new(&mut self.offset_ms)
-                            .speed(1.0)
-                            .clamp_range(0.0..=10_000.0)
-                            .fixed_decimals(1),
-                    );
+            if self.main_layout.is_compact_portrait() {
+                let enabled = self.random_offset_checkbox(ui);
+                ui.horizontal(|ui| self.random_offset_value(ui, pal, enabled));
+            } else {
+                ui.horizontal(|ui| {
+                    let enabled = self.random_offset_checkbox(ui);
+                    self.random_offset_value(ui, pal, enabled);
                 });
-                ui.label(egui::RichText::new("milliseconds").color(pal.text));
-            });
+            }
         });
+    }
+
+    fn random_offset_checkbox(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut enabled = self.prefs.random_offset_enabled;
+        if ui.checkbox(&mut enabled, "Random offset ±").changed() {
+            self.prefs.random_offset_enabled = enabled;
+            if enabled && self.offset_ms <= 0.0 {
+                self.offset_ms = 40.0;
+            }
+            self.mark_dirty();
+        }
+        enabled
+    }
+
+    fn random_offset_value(&mut self, ui: &mut egui::Ui, pal: &Palette, enabled: bool) {
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.add_sized(
+                [72.0_f32, 22.0_f32],
+                egui::DragValue::new(&mut self.offset_ms)
+                    .speed(1.0)
+                    .clamp_range(0.0..=10_000.0)
+                    .fixed_decimals(1),
+            );
+        });
+        ui.label(egui::RichText::new("milliseconds").color(pal.text));
     }
 
     fn options_group_contents(&mut self, ui: &mut egui::Ui, pal: &Palette) {
@@ -2142,53 +2197,75 @@ impl OpAutoClickerApp {
             .spacing(Vec2::new(8.0_f32, 9.0_f32))
             .show(ui, |ui| {
                 ui.label(egui::RichText::new("Mouse button:").color(pal.text));
-                egui::ComboBox::from_id_source("mouse_button_combo")
-                    .width(ui.available_width())
-                    .selected_text(self.config.mouse_button.label())
-                    .show_ui(ui, |ui| {
-                        for button in MouseButton::all() {
-                            ui.selectable_value(
-                                &mut self.config.mouse_button,
-                                button,
-                                button.label(),
-                            );
-                        }
-                    });
+                self.mouse_button_selector(ui);
                 ui.end_row();
 
                 ui.label(egui::RichText::new("Click type:").color(pal.text));
-                egui::ComboBox::from_id_source("click_type_combo")
-                    .width(ui.available_width())
-                    .selected_text(self.config.click_type.label())
-                    .show_ui(ui, |ui| {
-                        for kind in ClickType::all() {
-                            ui.selectable_value(&mut self.config.click_type, kind, kind.label());
-                        }
-                    });
+                self.click_type_selector(ui);
                 ui.end_row();
+            });
+    }
+
+    fn mouse_button_selector(&mut self, ui: &mut egui::Ui) {
+        let width = if self.main_layout == MainLayout::Slender {
+            70.0_f32
+        } else {
+            ui.available_width()
+        };
+        egui::ComboBox::from_id_source("mouse_button_combo")
+            .width(width)
+            .selected_text(self.config.mouse_button.label())
+            .show_ui(ui, |ui| {
+                for button in MouseButton::all() {
+                    ui.selectable_value(&mut self.config.mouse_button, button, button.label());
+                }
+            });
+    }
+
+    fn click_type_selector(&mut self, ui: &mut egui::Ui) {
+        let width = if self.main_layout == MainLayout::Slender {
+            70.0_f32
+        } else {
+            ui.available_width()
+        };
+        egui::ComboBox::from_id_source("click_type_combo")
+            .width(width)
+            .selected_text(self.config.click_type.label())
+            .show_ui(ui, |ui| {
+                for kind in ClickType::all() {
+                    ui.selectable_value(&mut self.config.click_type, kind, kind.label());
+                }
             });
     }
 
     fn repeat_group_contents(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         ui.horizontal(|ui| {
+            if self.main_layout == MainLayout::Slender {
+                // The longest supported count still fits beside its radio
+                // and unit label when the two gaps are slightly tighter.
+                ui.spacing_mut().item_spacing.x = 3.0_f32;
+            }
             ui.radio_value(&mut self.repeat_limited, true, "Repeat");
-            ui.add_enabled_ui(self.repeat_limited, |ui| {
-                if self.repeat_limited && self.config.max_clicks == 0 {
-                    self.config.max_clicks = 1;
-                }
-                ui.add_sized(
-                    [76.0_f32, 22.0_f32],
-                    egui::DragValue::new(&mut self.config.max_clicks)
-                        .clamp_range(1..=1_000_000_000),
-                );
-            });
-            ui.label(egui::RichText::new("times").color(pal.text));
+            self.repeat_count_editor(ui, pal);
         });
         ui.add_space(4.0_f32);
         ui.radio_value(&mut self.repeat_limited, false, "Repeat until stopped");
         if !self.repeat_limited {
             self.config.max_clicks = 0;
         }
+    }
+
+    fn repeat_count_editor(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        ui.add_enabled_ui(self.repeat_limited, |ui| {
+            if self.repeat_limited && self.config.max_clicks == 0 {
+                self.config.max_clicks = 1;
+            }
+            ui.add_sized(
+                [76.0_f32, 22.0_f32],
+                egui::DragValue::new(&mut self.config.max_clicks).clamp_range(1..=1_000_000_000),
+            );
+        });
+        ui.label(egui::RichText::new("times").color(pal.text));
     }
 
     fn pick_location_button(&mut self, ui: &mut egui::Ui, pal: &Palette) {
@@ -2289,26 +2366,39 @@ impl OpAutoClickerApp {
         let row_height = self.row_group_height.max(0.0_f32);
         let mut taller_natural = 0.0_f32;
         ui.columns(2, |columns| {
-            let (_, left_natural) =
-                Self::group_box(&mut columns[0], pal, "Click options", row_height, |ui| {
-                    self.options_group_contents(ui, pal)
-                });
-            let (_, right_natural) =
-                Self::group_box(&mut columns[1], pal, "Click repeat", row_height, |ui| {
-                    self.repeat_group_contents(ui, pal)
-                });
+            let (_, left_natural) = Self::group_box(
+                &mut columns[0],
+                pal,
+                "Click options",
+                row_height,
+                0.0_f32,
+                |ui| self.options_group_contents(ui, pal),
+            );
+            let (_, right_natural) = Self::group_box(
+                &mut columns[1],
+                pal,
+                "Click repeat",
+                row_height,
+                0.0_f32,
+                |ui| self.repeat_group_contents(ui, pal),
+            );
             taller_natural = left_natural.max(right_natural);
         });
         self.store_row_group_height(taller_natural);
     }
 
-    fn draw_portrait_options_and_repeat(&mut self, ui: &mut egui::Ui, gap_extra: f32) {
+    fn draw_portrait_options_and_repeat(
+        &mut self,
+        ui: &mut egui::Ui,
+        gap_extra: f32,
+        extra_vertical: f32,
+    ) {
         let pal = self.palette();
-        let _ = Self::group_box(ui, pal, "Click options", 0.0_f32, |ui| {
+        let _ = Self::group_box(ui, pal, "Click options", 0.0_f32, extra_vertical, |ui| {
             self.options_group_contents(ui, pal)
         });
         ui.add_space(7.0_f32 + gap_extra);
-        let _ = Self::group_box(ui, pal, "Click repeat", 0.0_f32, |ui| {
+        let _ = Self::group_box(ui, pal, "Click repeat", 0.0_f32, extra_vertical, |ui| {
             self.repeat_group_contents(ui, pal)
         });
     }
@@ -2321,28 +2411,40 @@ impl OpAutoClickerApp {
         let row_height = self.row_group_height.max(0.0_f32);
         let mut tallest_natural = 0.0_f32;
         ui.columns(3, |columns| {
-            let (_, options_natural) =
-                Self::group_box(&mut columns[0], pal, "Click options", row_height, |ui| {
-                    self.options_group_contents(ui, pal)
-                });
-            let (_, repeat_natural) =
-                Self::group_box(&mut columns[1], pal, "Click repeat", row_height, |ui| {
-                    self.repeat_group_contents(ui, pal)
-                });
-            let (_, position_natural) =
-                Self::group_box(&mut columns[2], pal, "Cursor position", row_height, |ui| {
-                    self.position_group_contents(ui, pal, true)
-                });
+            let (_, options_natural) = Self::group_box(
+                &mut columns[0],
+                pal,
+                "Click options",
+                row_height,
+                0.0_f32,
+                |ui| self.options_group_contents(ui, pal),
+            );
+            let (_, repeat_natural) = Self::group_box(
+                &mut columns[1],
+                pal,
+                "Click repeat",
+                row_height,
+                0.0_f32,
+                |ui| self.repeat_group_contents(ui, pal),
+            );
+            let (_, position_natural) = Self::group_box(
+                &mut columns[2],
+                pal,
+                "Cursor position",
+                row_height,
+                0.0_f32,
+                |ui| self.position_group_contents(ui, pal, true),
+            );
             tallest_natural = options_natural.max(repeat_natural).max(position_natural);
         });
         self.store_row_group_height(tallest_natural);
     }
 
-    fn draw_position_group(&mut self, ui: &mut egui::Ui) {
+    fn draw_position_group(&mut self, ui: &mut egui::Ui, extra_vertical: f32) {
         let pal = self.palette();
-        let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, |ui| {
-            if self.main_layout == MainLayout::Portrait {
-                ui.horizontal(|ui| {
+        let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, extra_vertical, |ui| {
+            if self.main_layout.is_portrait() {
+                if self.main_layout == MainLayout::Slender {
                     ui.radio_value(
                         &mut self.config.coordinate_mode,
                         CoordinateMode::CurrentCursor,
@@ -2353,12 +2455,30 @@ impl OpAutoClickerApp {
                         CoordinateMode::FixedScreen,
                         "Pick location",
                     );
-                });
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.radio_value(
+                            &mut self.config.coordinate_mode,
+                            CoordinateMode::CurrentCursor,
+                            "Current location",
+                        );
+                        ui.radio_value(
+                            &mut self.config.coordinate_mode,
+                            CoordinateMode::FixedScreen,
+                            "Pick location",
+                        );
+                    });
+                }
                 ui.add_space(4.0_f32);
-                ui.horizontal(|ui| {
+                if self.main_layout.is_compact_portrait() {
                     self.pick_location_button(ui, pal);
-                    self.fixed_xy_fields(ui);
-                });
+                    ui.horizontal(|ui| self.fixed_xy_fields(ui));
+                } else {
+                    ui.horizontal(|ui| {
+                        self.pick_location_button(ui, pal);
+                        self.fixed_xy_fields(ui);
+                    });
+                }
             } else {
                 self.position_group_contents(ui, pal, false);
             }
@@ -2428,7 +2548,12 @@ impl OpAutoClickerApp {
     }
 
     fn record_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
-        let response = Self::classic_button(ui, pal, "Record & Playback", true, width)
+        let label = if self.main_layout == MainLayout::Slender {
+            "Record / Play"
+        } else {
+            "Record & Playback"
+        };
+        let response = Self::classic_button(ui, pal, label, true, width)
             .on_hover_text("Record your own clicks and play them back as a macro");
         if response.clicked() {
             self.show_macro_window = true;
@@ -2469,6 +2594,22 @@ impl OpAutoClickerApp {
         }
     }
 
+    /// A single-line label that keeps its full text for accessibility
+    /// and tooltips while remaining inside a fixed-width control.
+    fn truncated_galley(
+        ui: &egui::Ui,
+        text: egui::RichText,
+        max_width: f32,
+    ) -> std::sync::Arc<egui::Galley> {
+        let mut job = egui::WidgetText::from(text).into_layout_job(
+            ui.style(),
+            egui::FontSelection::Default,
+            egui::Align::Center,
+        );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0_f32));
+        ui.fonts(|fonts| fonts.layout_job(job))
+    }
+
     fn draw_footer_actions(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().button_padding = Vec2::new(8.0_f32, 2.0_f32);
@@ -2482,7 +2623,7 @@ impl OpAutoClickerApp {
             .rounding(Rounding::same(5.0_f32));
             let settings_response = ui
                 .add(button)
-                .on_hover_text("Theme, interface scale, clicking behaviour and the session log");
+                .on_hover_text("Theme, automatic layout, clicking behaviour and the session log");
             if settings_response.clicked() {
                 self.show_settings = true;
             }
@@ -2547,14 +2688,17 @@ impl OpAutoClickerApp {
             } else {
                 (updates_label, updates_color, updates_stroke, updates_hover)
             };
-            let updates_button = egui::Button::new(
+            let update_text = Self::truncated_galley(
+                ui,
                 egui::RichText::new(updates_label)
                     .size(12.0_f32)
                     .color(updates_color),
-            )
-            .fill(pal.button)
-            .stroke(Stroke::new(1.0_f32, updates_stroke))
-            .rounding(Rounding::same(5.0_f32));
+                ui.available_width() - 2.0_f32 * ui.spacing().button_padding.x,
+            );
+            let updates_button = egui::Button::new(update_text)
+                .fill(pal.button)
+                .stroke(Stroke::new(1.0_f32, updates_stroke))
+                .rounding(Rounding::same(5.0_f32));
             let updates_response = ui.add(updates_button).on_hover_text(updates_hover);
             if updates_response.clicked() {
                 self.show_updates = true;
@@ -2563,6 +2707,17 @@ impl OpAutoClickerApp {
                 }
             }
         });
+    }
+
+    fn any_dialog_open(&self) -> bool {
+        self.show_settings || self.show_updates || self.show_hotkey_dialog || self.show_macro_window
+    }
+
+    /// Leave room for the native egui window's title and margins. Long
+    /// diagnostics can then scroll instead of pushing the close button
+    /// or the bottom actions outside a short viewport.
+    fn dialog_content_height(ctx: &egui::Context) -> f32 {
+        (ctx.screen_rect().height() - 48.0_f32).max(1.0_f32)
     }
 
     // ---------------------------------------------------------- hotkey dialog
@@ -2575,6 +2730,8 @@ impl OpAutoClickerApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
+            .max_height(Self::dialog_content_height(ctx))
+            .vscroll(true)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .default_width(340.0_f32)
             .show(ctx, |ui| {
@@ -2634,6 +2791,8 @@ impl OpAutoClickerApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
+            .max_height(Self::dialog_content_height(ctx))
+            .vscroll(true)
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .default_width(360.0_f32)
             .show(ctx, |ui| {
@@ -2747,6 +2906,8 @@ impl OpAutoClickerApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
+            .max_height(Self::dialog_content_height(ctx))
+            .vscroll(true)
             .default_width(280.0_f32)
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new("Theme").color(pal.text).strong());
@@ -2771,34 +2932,6 @@ impl OpAutoClickerApp {
                     .small(),
                 );
                 ui.add_space(10.0_f32);
-                ui.label(egui::RichText::new("Window scale").color(pal.text).strong());
-                egui::ComboBox::from_id_source("settings_scale")
-                    .width(220.0_f32)
-                    .selected_text(format!("{} %", self.prefs.ui_scale_percent))
-                    .show_ui(ui, |ui| {
-                        for percent in UI_SCALE_OPTIONS {
-                            if ui
-                                .selectable_value(
-                                    &mut self.prefs.ui_scale_percent,
-                                    percent,
-                                    format!("{percent} %"),
-                                )
-                                .changed()
-                            {
-                                self.mark_dirty();
-                            }
-                        }
-                    });
-                ui.label(
-                    egui::RichText::new(
-                        "You can also drag any window edge or corner: the chosen size \
-                         is remembered, and a scale change only enlarges the window \
-                         if the controls would otherwise no longer fit.",
-                    )
-                    .color(pal.text_dim)
-                    .small(),
-                );
-                ui.add_space(6.0_f32);
                 if ui
                     .checkbox(
                         &mut self.prefs.auto_scale,
@@ -2823,8 +2956,7 @@ impl OpAutoClickerApp {
                     egui::RichText::new(
                         "The interface scales as the window grows or shrinks. \
                          Tall windows stack the controls; panoramic windows \
-                         arrange them side by side. The fit multiplies with \
-                         the percentage above.",
+                         arrange them side by side.",
                     )
                     .color(pal.text_dim)
                     .small(),
@@ -3419,14 +3551,24 @@ impl OpAutoClickerApp {
         };
         let text = egui::RichText::new(label).color(plain_color).size(13.0_f32);
         let text = if primary { text.strong() } else { text };
-        ui.add_enabled(
+        let galley =
+            Self::truncated_galley(ui, text, width - 2.0_f32 * ui.spacing().button_padding.x);
+        let elided = galley.elided;
+        let response = ui.add_enabled(
             enabled,
-            egui::Button::new(text)
+            egui::Button::new(galley)
                 .fill(fill)
                 .stroke(Stroke::new(1.0_f32, border))
                 .rounding(Rounding::same(5.0_f32))
                 .min_size(Vec2::new(width, height)),
-        )
+        );
+        if elided && enabled {
+            response.on_hover_text(label)
+        } else if elided {
+            response.on_disabled_hover_text(label)
+        } else {
+            response
+        }
     }
 
     /// State glyph for the Updates status card: a spinner while the
@@ -3694,6 +3836,8 @@ impl OpAutoClickerApp {
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
+        .max_height(Self::dialog_content_height(ctx))
+        .vscroll(true)
         .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         .default_width(364.0_f32)
         .min_width(340.0_f32)
@@ -3720,11 +3864,14 @@ impl OpAutoClickerApp {
                     ui.horizontal_top(|ui| {
                         Self::paint_update_status_icon(ui, pal, &state);
                         ui.vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new(&heading)
-                                    .color(pal.text)
-                                    .size(15.0_f32)
-                                    .strong(),
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&heading)
+                                        .color(pal.text)
+                                        .size(15.0_f32)
+                                        .strong(),
+                                )
+                                .truncate(true),
                             );
                             ui.label(
                                 egui::RichText::new(&detail)
@@ -3740,6 +3887,9 @@ impl OpAutoClickerApp {
                     ui.add_space(8.0_f32);
                     ui.separator();
                     ui.add_space(6.0_f32);
+                    // Leave room for the other three fact columns, even
+                    // when a valid release tag is unusually long.
+                    let latest_width = (ui.available_width() - 228.0_f32).max(60.0_f32);
                     Grid::new("updates_facts")
                         .num_columns(4)
                         .spacing([8.0_f32, 3.0_f32])
@@ -3758,12 +3908,16 @@ impl OpAutoClickerApp {
                                         .color(pal.text_dim)
                                         .size(12.0_f32),
                                 );
-                                ui.label(
-                                    egui::RichText::new(value)
-                                        .color(pal.text)
-                                        .size(12.0_f32)
-                                        .strong(),
-                                );
+                                let text = egui::RichText::new(value)
+                                    .color(pal.text)
+                                    .size(12.0_f32)
+                                    .strong();
+                                if label == "Latest" {
+                                    let galley = Self::truncated_galley(ui, text, latest_width);
+                                    ui.add(egui::Label::new(galley));
+                                } else {
+                                    ui.label(text);
+                                }
                                 if index % 2 == 1 {
                                     ui.end_row();
                                 }
@@ -4015,30 +4169,37 @@ impl OpAutoClickerApp {
         // widths and control heights stay fixed) up to the content cap
         // and centers the column beyond it; past the wide threshold
         // (`adapt_to_window_size` owns the switch) the middle groups go
-        // three-abreast and the buttons form one row. Extra height
-        // loosens the gaps between control clusters by a bounded
-        // amount and gathers the rest above the status strip, so the
-        // groups flow from the top and the status/actions/footer sit
-        // at the bottom edge at any window height (see
-        // `vertical_rhythm`). At the floor size every metric below reduces to the
-        // original classic layout. The top margin leaves room for the
-        // first group title, which rides half above its frame's top
+        // three-abreast and the buttons form one row. Tall windows
+        // reflow into narrower compositions. Their extra height is
+        // shared within cards after small bounded gaps, keeping the
+        // footer close to the last card; classic and wide layouts use
+        // the original vertical rhythm. The top margin leaves room for
+        // the first group title, which rides half above its frame's top
         // border.
         let window_size = ctx.screen_rect().size();
         let wide = self.main_layout == MainLayout::Wide;
-        let portrait = self.main_layout == MainLayout::Portrait;
+        let portrait = self.main_layout.is_portrait();
         let content_cap = match self.main_layout {
             MainLayout::Classic => MAIN_CONTENT_MAX_WIDTH,
-            MainLayout::Portrait => MAIN_CONTENT_MAX_WIDTH_PORTRAIT,
+            MainLayout::Portrait | MainLayout::Narrow | MainLayout::Slender => {
+                MAIN_CONTENT_MAX_WIDTH_PORTRAIT
+            }
             MainLayout::Wide => MAIN_CONTENT_MAX_WIDTH_WIDE,
         };
         let side_margin = Self::centered_side_margin(window_size.x, content_cap);
         let (fill_height, gap_count) = match self.main_layout {
             MainLayout::Classic => (MAIN_WINDOW_SIZE[1], 3.0_f32),
             MainLayout::Portrait => (MAIN_PORTRAIT_FILL_HEIGHT, 4.0_f32),
+            MainLayout::Narrow => (MAIN_NARROW_FILL_HEIGHT, 4.0_f32),
+            MainLayout::Slender => (MAIN_SLENDER_FILL_HEIGHT, 4.0_f32),
             MainLayout::Wide => (MAIN_WIDE_FILL_HEIGHT, 2.0_f32),
         };
-        let (gap_extra, spring) = Self::vertical_rhythm(window_size.y, fill_height, gap_count);
+        let (gap_extra, spring, extra_per_card) = if portrait {
+            Self::portrait_vertical_rhythm(window_size.y, fill_height)
+        } else {
+            let (gap, spring) = Self::vertical_rhythm(window_size.y, fill_height, gap_count);
+            (gap, spring, 0.0_f32)
+        };
         egui::CentralPanel::default()
             .frame(Frame::none().fill(pal.face).inner_margin(Margin {
                 left: side_margin,
@@ -4048,7 +4209,7 @@ impl OpAutoClickerApp {
             }))
             .show(ctx, |ui| {
                 ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
-                    self.draw_interval_group(ui);
+                    self.draw_interval_group(ui, extra_per_card);
                     if wide {
                         ui.add_space(7.0_f32 + gap_extra);
                         self.draw_wide_group_row(ui);
@@ -4056,22 +4217,22 @@ impl OpAutoClickerApp {
                     } else {
                         ui.add_space(7.0_f32 + gap_extra);
                         if portrait {
-                            self.draw_portrait_options_and_repeat(ui, gap_extra);
+                            self.draw_portrait_options_and_repeat(ui, gap_extra, extra_per_card);
                         } else {
                             self.draw_options_and_repeat(ui);
                         }
                         ui.add_space(7.0_f32 + gap_extra);
-                        self.draw_position_group(ui);
+                        self.draw_position_group(ui, extra_per_card);
                         ui.add_space(6.0_f32 + gap_extra);
                     }
-                    // Surplus height gathers here: everything below
-                    // (status, actions, footer) is the window's
-                    // bottom cluster and rides at its bottom edge.
+                    // Classic and wide layouts keep their status
+                    // cluster at the bottom; portrait caps this seam
+                    // and balances remaining height inside the cards.
                     ui.add_space(spring);
 
                     // Reserved one-line status strip; its height never
                     // changes, so the rows below it stay anchored.
-                    let (rect, _) = ui.allocate_exact_size(
+                    let (rect, status_response) = ui.allocate_exact_size(
                         Vec2::new(ui.available_width(), 16.0_f32),
                         Sense::hover(),
                     );
@@ -4140,11 +4301,30 @@ impl OpAutoClickerApp {
                     }
                     let dot_radius = pulse_t.map_or(3.5_f32, |t| 3.5_f32 + 1.3_f32 * (1.0_f32 - t));
                     painter.circle_filled(dot_center, dot_radius, dot_color);
-                    painter.text(
-                        egui::pos2(rect.left() + 17.0_f32, rect.center().y),
-                        Align2::LEFT_CENTER,
-                        shown,
+                    // Long errors must not silently run off a narrow
+                    // status plate. Ellipsize the visible line and expose
+                    // the complete, unchanged message on hover and to
+                    // accessibility integrations.
+                    let mut job = egui::text::LayoutJob::simple_singleline(
+                        shown.to_owned(),
                         FontId::proportional(12.5_f32),
+                        state_color,
+                    );
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(
+                        (rect.width() - 21.0_f32).max(0.0_f32),
+                    );
+                    let galley = ui.fonts(|fonts| fonts.layout_job(job));
+                    status_response
+                        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, shown));
+                    if galley.elided {
+                        status_response.on_hover_text(shown);
+                    }
+                    painter.galley(
+                        egui::pos2(
+                            rect.left() + 17.0_f32,
+                            rect.center().y - galley.size().y / 2.0_f32,
+                        ),
+                        galley,
                         state_color,
                     );
 
@@ -4167,25 +4347,11 @@ impl OpAutoClickerApp {
                 });
             });
     }
-}
 
-impl eframe::App for OpAutoClickerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.ui_clock_secs = ctx.input(|i| i.time);
-        self.apply_style(ctx);
-
-        // One background update check per launch (unless the user
-        // switched it off in the Updates window; manual checks are
-        // always available there). The worker resolves the state
-        // exactly once and the poll applies it on whatever frame
-        // happens to run next, so the UI never waits on the network.
-        if self.prefs.check_updates && !self.update_auto_check_started {
-            self.update_auto_check_started = true;
-            self.start_update_check();
-        }
-        self.poll_update_check();
-        self.poll_update_install(ctx);
-
+    /// Reconcile fit, dialog zoom, the physical window floor and saved size.
+    /// Keeping this independent of eframe's native Frame lets geometry tests
+    /// exercise the same resize bookkeeping as the real update loop.
+    fn sync_window_layout(&mut self, ctx: &egui::Context) {
         // UI scale and window size: the zoom factor follows the persisted
         // percentage times the window-driven fit (`adapt_to_window_size`
         // owns the fit; it only moves on settled sizes, and because it
@@ -4201,13 +4367,33 @@ impl eframe::App for OpAutoClickerApp {
         // points once an auto-fit is active: that would multiply the
         // physical minimum by the transient fit and could leave a
         // large window unable to shrink until restart. The declared
-        // live floor is therefore divided by the displayed auto-fit
-        // (see `live_window_floor`). A pending restore (startup, factory
-        // reset) applies the persisted size converted to live points; a
-        // plain scale change only ever grows the window, and only if the
-        // new zoom left it below the floor, so a window the user enlarged
-        // is never forced back down.
+        // live floor is therefore divided by the actually applied auto-fit,
+        // including the temporary fit used while a dialog is open. A
+        // pending restore (startup, factory reset) applies the persisted
+        // size converted to live points. A plain scale change only ever
+        // grows the window if the new zoom left it below the floor, so a
+        // window the user enlarged is never forced back down.
         let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
+        if let Some(native) = ctx
+            .input(|i| i.viewport().native_pixels_per_point)
+            .filter(|value| value.is_finite() && *value > 0.0_f32)
+        {
+            if self
+                .last_native_pixels_per_point
+                .is_none_or(|previous| (previous - native).abs() > 0.000_1_f32)
+            {
+                // egui-winit translates this command to physical pixels.
+                // Refresh the floor at the *current* applied zoom, but do
+                // not request an inner resize: Windows owns the DPI move,
+                // maximized windows and Snap geometry.
+                let applied_auto = ctx.zoom_factor() / user_factor;
+                let floor = Self::live_window_floor_for(applied_auto);
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(floor));
+                self.window_settle_until = Instant::now() + Duration::from_millis(750);
+                ctx.request_repaint();
+            }
+            self.last_native_pixels_per_point = Some(native);
+        }
         if (user_factor - self.applied_user_factor).abs() > 0.000_1_f32 {
             self.applied_user_factor = user_factor;
             if !self.restore_window_size {
@@ -4241,16 +4427,25 @@ impl eframe::App for OpAutoClickerApp {
                 ctx.request_repaint();
             }
         }
-        let desired_zoom = user_factor * self.displayed_auto_zoom;
+        let dashboard_zoom = user_factor * self.displayed_auto_zoom;
+        let desired_zoom = if self.any_dialog_open() {
+            let neutral = ctx.screen_rect().size() * ctx.zoom_factor();
+            window_layout::dialog_safe_zoom((neutral.x, neutral.y), dashboard_zoom)
+        } else {
+            dashboard_zoom
+        };
         if zoom_in_motion || (ctx.zoom_factor() - desired_zoom).abs() > 0.001_f32 {
             ctx.set_zoom_factor(desired_zoom);
             self.pending_resize = true;
             ctx.request_repaint();
         } else if self.pending_resize || self.restore_window_size {
             self.pending_resize = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(
-                self.live_window_floor(),
-            ));
+            // Use the zoom actually applied, which may be temporarily
+            // smaller while a dialog is open, to keep the physical floor
+            // and restored window size independent of that zoom.
+            let applied_auto_zoom = ctx.zoom_factor() / user_factor;
+            let applied_floor = Self::live_window_floor_for(applied_auto_zoom);
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(applied_floor));
             if self.restore_window_size {
                 self.restore_window_size = false;
                 // Fresh install (no settings file at load) at the
@@ -4283,15 +4478,14 @@ impl eframe::App for OpAutoClickerApp {
                     }
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(
-                    self.prefs.window_width as f32 / self.auto_zoom,
-                    self.prefs.window_height as f32 / self.auto_zoom,
+                    self.prefs.window_width as f32 / applied_auto_zoom,
+                    self.prefs.window_height as f32 / applied_auto_zoom,
                 )));
             } else {
                 let live = ctx.input(|i| i.screen_rect.size());
                 if live.x.is_finite() && live.y.is_finite() && live.x > 0.0_f32 && live.y > 0.0_f32
                 {
-                    let floor = self.live_window_floor();
-                    let grown = Vec2::new(live.x.max(floor.x), live.y.max(floor.y));
+                    let grown = Vec2::new(live.x.max(applied_floor.x), live.y.max(applied_floor.y));
                     if (grown.x - live.x).abs() > 0.5_f32 || (grown.y - live.y).abs() > 0.5_f32 {
                         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(grown));
                     }
@@ -4309,6 +4503,33 @@ impl eframe::App for OpAutoClickerApp {
             self.adapt_to_window_size(ctx);
         }
         self.observe_live_window_size(ctx);
+    }
+}
+
+impl eframe::App for OpAutoClickerApp {
+    fn persist_egui_memory(&self) -> bool {
+        // Our tolerant settings file is the sole source of window and
+        // scale state; stale egui memory must not restore a second zoom.
+        false
+    }
+
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.ui_clock_secs = ctx.input(|i| i.time);
+        self.apply_style(ctx);
+
+        // One background update check per launch (unless the user
+        // switched it off in the Updates window; manual checks are
+        // always available there). The worker resolves the state
+        // exactly once and the poll applies it on whatever frame
+        // happens to run next, so the UI never waits on the network.
+        if self.prefs.check_updates && !self.update_auto_check_started {
+            self.update_auto_check_started = true;
+            self.start_update_check();
+        }
+        self.poll_update_check();
+        self.poll_update_install(ctx);
+
+        self.sync_window_layout(ctx);
 
         self.poll_hotkeys();
         self.poll_pick_capture();
@@ -4428,6 +4649,19 @@ impl eframe::App for OpAutoClickerApp {
 
         self.draw_dashboard(ctx);
 
+        // Opening a dialog can happen while drawing the dashboard, after
+        // this frame's zoom decision. Wait until the safe zoom is actually
+        // applied before drawing the dialog, so it never appears clipped.
+        if self.any_dialog_open() {
+            let applied_zoom = ctx.zoom_factor();
+            let neutral = ctx.screen_rect().size() * applied_zoom;
+            let safe_zoom = window_layout::dialog_safe_zoom((neutral.x, neutral.y), applied_zoom);
+            if safe_zoom + 0.001_f32 < applied_zoom {
+                ctx.request_repaint();
+                return;
+            }
+        }
+
         if self.show_settings {
             self.draw_settings_window(ctx);
         }
@@ -4527,54 +4761,531 @@ mod dashboard_layout_tests {
             (MainLayout::Classic, Vec2::new(560.0, 456.0)),
             (MainLayout::Portrait, Vec2::new(400.0, 600.0)),
             (MainLayout::Portrait, Vec2::new(440.0, 680.0)),
+            (MainLayout::Portrait, Vec2::new(400.0, 710.0)),
+            (MainLayout::Narrow, Vec2::new(280.0, 700.0)),
+            (MainLayout::Narrow, Vec2::new(287.0, 701.0)),
+            (MainLayout::Narrow, Vec2::new(280.0, 760.0)),
+            (MainLayout::Slender, Vec2::new(220.0, 740.0)),
+            (MainLayout::Slender, Vec2::new(235.0, 780.0)),
+            (MainLayout::Slender, Vec2::new(220.6, 856.8)),
             (MainLayout::Wide, Vec2::new(700.0, 456.0)),
             (MainLayout::Wide, Vec2::new(904.0, 456.0)),
         ] {
             for ppp in [1.0, 1.25, 1.5, 2.0] {
                 for theme in AppTheme::all() {
-                    let ctx = egui::Context::default();
-                    let mut app = test_app(layout);
-                    app.prefs.theme = theme;
-                    app.prefs.toggle_hotkey_vk = 0x87; // F24, the longest function-key name.
-                    app.config.coordinate_mode = CoordinateMode::FixedScreen;
-                    app.config.fixed_x = -100_000;
-                    app.config.fixed_y = 100_000;
-                    app.repeat_limited = true;
-                    app.config.max_clicks = 1_000_000_000;
-                    let mut output = render(&mut app, &ctx, size, ppp, vec![]);
-                    for _ in 0..5 {
-                        output = render(&mut app, &ctx, size, ppp, vec![]);
-                    }
-                    let text = text_bounds(&output);
-                    for expected in [
-                        "Click interval",
-                        "Click options",
-                        "Click repeat",
-                        "Cursor position",
-                        "Record & Playback",
-                        "Update v1.6.0",
-                        "Settings…",
-                    ] {
-                        assert!(
-                            text.iter().any(|(label, _, _)| label == expected),
-                            "{layout:?} / {theme:?} at {ppp}: missing {expected}"
-                        );
-                    }
-                    let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
-                    for (index, (label, rect, clip)) in text.iter().enumerate() {
-                        assert!(
+                    for hotkey in [0x87, 0x20] {
+                        // F24 and Space, the longest supported names.
+                        let ctx = egui::Context::default();
+                        let mut app = test_app(layout);
+                        app.prefs.theme = theme;
+                        app.prefs.toggle_hotkey_vk = hotkey;
+                        app.config.coordinate_mode = CoordinateMode::FixedScreen;
+                        app.config.mouse_button = MouseButton::Middle;
+                        app.config.click_type = ClickType::Triple;
+                        app.config.fixed_x = -100_000;
+                        app.config.fixed_y = 100_000;
+                        app.repeat_limited = true;
+                        app.config.max_clicks = 1_000_000_000;
+                        let mut output = render(&mut app, &ctx, size, ppp, vec![]);
+                        for _ in 0..5 {
+                            output = render(&mut app, &ctx, size, ppp, vec![]);
+                        }
+                        let text = text_bounds(&output);
+                        for expected in [
+                            "Click interval",
+                            "Click options",
+                            "Click repeat",
+                            "Cursor position",
+                            if layout == MainLayout::Slender {
+                                "Record / Play"
+                            } else {
+                                "Record & Playback"
+                            },
+                            "Update v1.6.0",
+                            "Settings…",
+                        ] {
+                            assert!(
+                                text.iter().any(|(label, _, _)| label == expected),
+                                "{layout:?} / {theme:?} at {ppp}: missing {expected}"
+                            );
+                        }
+                        let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+                        for (index, (label, rect, clip)) in text.iter().enumerate() {
+                            assert!(
                             screen.contains_rect(*rect),
                             "{layout:?} / {theme:?} at {ppp}: {label:?} outside window: {rect:?}"
                         );
-                        assert!(
+                            assert!(
                         clip.expand(0.5).contains_rect(*rect),
                         "{layout:?} / {theme:?} at {ppp}: {label:?} clipped: {rect:?} by {clip:?}"
                     );
-                        for (other, other_rect, _) in &text[index + 1..] {
-                            let overlap = rect.intersect(*other_rect);
-                            assert!(
+                            for (other, other_rect, _) in &text[index + 1..] {
+                                let overlap = rect.intersect(*other_rect);
+                                assert!(
                             overlap.width() <= 0.5 || overlap.height() <= 0.5,
                             "{layout:?} / {theme:?} at {ppp}: {label:?} overlaps {other:?}: {overlap:?}"
+                        );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vertical_resize_keeps_card_and_footer_gaps_bounded() {
+        fn collect_cards(shape: &Shape, pal: &Palette, width: f32, cards: &mut Vec<Rect>) {
+            match shape {
+                Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect_cards(shape, pal, width, cards);
+                    }
+                }
+                Shape::Rect(rect)
+                    if rect.fill == pal.group_fill
+                        && rect.stroke.color == pal.group_border
+                        && rect.rect.width() > width - 30.0
+                        && rect.rect.height() > 40.0 =>
+                {
+                    cards.push(rect.rect);
+                }
+                _ => {}
+            }
+        }
+
+        let mut current = MainLayout::Classic;
+        for height in [
+            700.0, 840.0, 900.0, 1000.0, 1010.0, 1200.0, 1360.0, 1450.0, 1490.0, 1500.0, 1700.0,
+            1824.0, 2160.0,
+        ] {
+            let neutral = Vec2::new(560.0, height);
+            let layout = OpAutoClickerApp::layout_for(neutral, 1.0, current, true);
+            let zoom = OpAutoClickerApp::fit_auto_zoom(neutral, 1.0, layout);
+            let size = neutral / zoom;
+            let ctx = egui::Context::default();
+            let mut app = test_app(layout);
+            let mut output = render(&mut app, &ctx, size, zoom, vec![]);
+            for _ in 0..5 {
+                output = render(&mut app, &ctx, size, zoom, vec![]);
+            }
+            let mut cards = Vec::new();
+            for clipped in &output.shapes {
+                collect_cards(&clipped.shape, app.palette(), size.x, &mut cards);
+            }
+            cards.sort_by(|a, b| a.top().total_cmp(&b.top()));
+            assert_eq!(cards.len(), 4, "{height}px / {layout:?}: {cards:?}");
+            for pair in cards.windows(2) {
+                let gap_pixels = (pair[1].top() - pair[0].bottom()) * zoom;
+                assert!(
+                    (0.0..60.0).contains(&gap_pixels),
+                    "{height}px / {layout:?}: card gap {gap_pixels}px"
+                );
+            }
+            let text = text_bounds(&output);
+            let bounds = |label: &str| {
+                text.iter()
+                    .find(|(text, _, _)| text == label)
+                    .map(|(_, rect, _)| *rect)
+                    .unwrap_or_else(|| panic!("{height}px: missing {label:?}"))
+            };
+            let status_gap = (bounds("Ready.").top() - cards[3].bottom()) * zoom;
+            assert!(
+                (0.0..100.0).contains(&status_gap),
+                "{height}px / {layout:?}: footer gap {status_gap}px"
+            );
+            let bottom_gap = (size.y - bounds("Settings…").bottom()) * zoom;
+            assert!(
+                (0.0..50.0).contains(&bottom_gap),
+                "{height}px / {layout:?}: bottom gap {bottom_gap}px"
+            );
+            current = layout;
+        }
+    }
+
+    #[test]
+    fn long_status_is_ellipsized_and_hover_reveals_the_full_message() {
+        let message = "Click worker lost — session aborted. Restart the app before clicking again.";
+        for (layout, size) in [
+            (MainLayout::Classic, Vec2::new(560.0, 456.0)),
+            (MainLayout::Narrow, Vec2::new(280.0, 700.0)),
+            (MainLayout::Slender, Vec2::new(220.0, 740.0)),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = test_app(layout);
+            app.status_kind = StatusKind::Error;
+            app.status_text = message.to_owned();
+            let mut output = render(&mut app, &ctx, size, 1.0, vec![]);
+            for _ in 0..5 {
+                output = render(&mut app, &ctx, size, 1.0, vec![]);
+            }
+            let (_, rect, clip) = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == message)
+                .expect("status text");
+            assert!(
+                clip.expand(0.5).contains_rect(rect),
+                "{layout:?}: {rect:?} by {clip:?}"
+            );
+            assert!(Rect::from_min_size(Pos2::ZERO, size)
+                .expand(0.5)
+                .contains_rect(rect));
+            if layout == MainLayout::Slender {
+                let pointer = Pos2::new(clip.center().x, clip.center().y);
+                for _ in 0..50 {
+                    output = render(
+                        &mut app,
+                        &ctx,
+                        size,
+                        1.0,
+                        vec![Event::PointerMoved(pointer)],
+                    );
+                }
+                let copies = text_bounds(&output)
+                    .into_iter()
+                    .filter(|(text, _, _)| text == message)
+                    .count();
+                assert!(
+                    copies >= 2,
+                    "truncated status should reveal its full text on hover"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_sized_window_scales_controls_and_avoids_the_footer_void() {
+        // The reported image is 556x1388 including the native title bar.
+        // Use a realistic 556x1360 inner viewport to exercise the defect.
+        let neutral = Vec2::new(556.0, 1360.0);
+        let layout = OpAutoClickerApp::layout_for(neutral, 1.0, MainLayout::Classic, true);
+        let zoom = OpAutoClickerApp::fit_auto_zoom(neutral, 1.0, layout);
+        let old_portrait_zoom = OpAutoClickerApp::fit_auto_zoom(neutral, 1.0, MainLayout::Portrait);
+        assert_eq!(layout, MainLayout::Narrow);
+        assert!(zoom >= 1.90 && zoom >= old_portrait_zoom * 1.35);
+
+        let size = neutral / zoom;
+        let ctx = egui::Context::default();
+        let mut app = test_app(layout);
+        app.config.coordinate_mode = CoordinateMode::FixedScreen;
+        let mut output = render(&mut app, &ctx, size, zoom, vec![]);
+        for _ in 0..5 {
+            output = render(&mut app, &ctx, size, zoom, vec![]);
+        }
+        let text = text_bounds(&output);
+        let bounds = |label: &str| {
+            text.iter()
+                .find(|(text, _, _)| text == label)
+                .map(|(_, rect, _)| *rect)
+                .unwrap_or_else(|| panic!("missing {label:?}"))
+        };
+        let last_coordinate = bounds("Y: 0");
+        let status = bounds("Ready.");
+        let footer = bounds("Settings…");
+        let footer_gap_pixels = (status.top() - last_coordinate.bottom()) * zoom;
+        assert!(
+            footer_gap_pixels < 120.0,
+            "footer gap: {footer_gap_pixels}px"
+        );
+        assert!(
+            (size.y - footer.bottom()) * zoom < 50.0,
+            "footer not near bottom"
+        );
+    }
+
+    fn render_dialog(
+        app: &mut OpAutoClickerApp,
+        ctx: &egui::Context,
+        size: Vec2,
+        ppp: f32,
+        name: &str,
+        events: Vec<Event>,
+    ) -> FullOutput {
+        let mut input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(ppp);
+        ctx.run(input, |ctx| {
+            app.apply_style(ctx);
+            match name {
+                "settings" => app.draw_settings_window(ctx),
+                "hotkey" => app.draw_hotkey_dialog(ctx),
+                "macro" => app.draw_macro_window(ctx),
+                "updates" => app.draw_updates_window(ctx),
+                _ => unreachable!(),
+            }
+        })
+    }
+
+    #[test]
+    fn ordinary_update_labels_remain_full_length_in_each_layout() {
+        fn elided(shape: &Shape, expected: &str) -> Option<bool> {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().find_map(|shape| elided(shape, expected)),
+                Shape::Text(text) if text.galley.job.text == expected => Some(text.galley.elided),
+                _ => None,
+            }
+        }
+        for (layout, size) in [
+            (MainLayout::Classic, Vec2::new(560.0, 456.0)),
+            (MainLayout::Portrait, Vec2::new(400.0, 600.0)),
+            (MainLayout::Narrow, Vec2::new(280.0, 700.0)),
+            (MainLayout::Slender, Vec2::new(220.0, 740.0)),
+            (MainLayout::Wide, Vec2::new(700.0, 456.0)),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = test_app(layout);
+            let mut output = render(&mut app, &ctx, size, 1.0, vec![]);
+            for _ in 0..5 {
+                output = render(&mut app, &ctx, size, 1.0, vec![]);
+            }
+            let is_elided = output
+                .shapes
+                .iter()
+                .find_map(|clipped| elided(&clipped.shape, "Update v1.6.0"));
+            assert_eq!(is_elided, Some(false), "{layout:?}");
+        }
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Classic);
+        app.show_updates = true;
+        app.update_last_checked = Some(Instant::now());
+        app.exe_path = Some(std::path::PathBuf::from("macro_clicker.exe"));
+        app.install_kind = InstallKind::Portable;
+        app.update_asset = Some(ReleaseAsset {
+            size: 4_000_000,
+            sha256: Some([0; 32]),
+        });
+        let size = Vec2::new(420.0, 420.0);
+        let mut output = render_dialog(&mut app, &ctx, size, 1.0, "updates", vec![]);
+        for _ in 0..5 {
+            output = render_dialog(&mut app, &ctx, size, 1.0, "updates", vec![]);
+        }
+        let is_elided = output
+            .shapes
+            .iter()
+            .find_map(|clipped| elided(&clipped.shape, "Update to v1.6.0"));
+        assert_eq!(is_elided, Some(false));
+    }
+
+    #[test]
+    fn long_valid_version_keeps_update_labels_and_controls_within_view() {
+        let version = "4294967295.4294967295.4294967295";
+        assert!(update::parse_version(version).is_some());
+        for name in ["dashboard", "updates"] {
+            let size = if name == "dashboard" {
+                Vec2::new(220.0, 740.0)
+            } else {
+                Vec2::new(420.0, 420.0)
+            };
+            let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Slender);
+            app.update_state = UpdateUiState::Available(version.to_owned());
+            app.update_latest_version = Some(version.to_owned());
+            app.update_last_checked = Some(Instant::now());
+            app.show_updates = name == "updates";
+            app.exe_path = Some(std::path::PathBuf::from("macro_clicker.exe"));
+            app.install_kind = InstallKind::Portable;
+            app.update_asset = Some(ReleaseAsset {
+                size: 4_000_000,
+                sha256: Some([0; 32]),
+            });
+            let frame = |app: &mut OpAutoClickerApp, events| {
+                if name == "dashboard" {
+                    render(app, &ctx, size, 1.0, events)
+                } else {
+                    render_dialog(app, &ctx, size, 1.0, name, events)
+                }
+            };
+            let mut output = frame(&mut app, vec![]);
+            for _ in 0..5 {
+                output = frame(&mut app, vec![]);
+            }
+            let expected = if name == "dashboard" {
+                format!("Update v{version}")
+            } else {
+                format!("Update to v{version}")
+            };
+            let text = text_bounds(&output);
+            let (_, button_text, _) = text
+                .iter()
+                .find(|(label, _, _)| label == &expected)
+                .unwrap_or_else(|| panic!("missing {name} action {expected}"));
+            let pointer = button_text.center();
+            for (label, rect, clip) in text {
+                assert!(screen.contains_rect(rect), "{name}: {label:?} at {rect:?}");
+                assert!(
+                    clip.expand(0.5).contains_rect(rect),
+                    "{name}: {label:?}: {rect:?} by {clip:?}"
+                );
+            }
+            for _ in 0..50 {
+                output = frame(&mut app, vec![Event::PointerMoved(pointer)]);
+            }
+            assert!(
+                text_bounds(&output)
+                    .iter()
+                    .any(|(label, _, _)| label != &expected && label.contains(version)),
+                "{name} must reveal the full release version on hover"
+            );
+            if name == "dashboard" {
+                // The test avoids actually starting an update, but verifies
+                // the adjacent Settings action stays reachable at this width.
+                click_text_at(&mut app, &ctx, size, "Settings…");
+                assert!(app.show_settings);
+            }
+        }
+    }
+
+    #[test]
+    fn long_errors_keep_dialog_title_and_bottom_controls_reachable() {
+        for name in ["settings", "updates"] {
+            let size = Vec2::new(420.0, 420.0);
+            let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Classic);
+            app.update_last_checked = Some(Instant::now());
+            app.show_settings = name == "settings";
+            app.show_updates = name == "updates";
+            if name == "settings" {
+                app.prefs.theme = AppTheme::Dark;
+                app.last_save_error = Some("Access denied while saving settings. ".repeat(30));
+            } else {
+                app.update_state = UpdateUiState::Failed(
+                    "The update request timed out, please try again. ".repeat(30),
+                );
+            }
+            let title = if name == "settings" {
+                "Settings"
+            } else {
+                "Updates"
+            };
+            let bottom = if name == "settings" {
+                "Reset all settings to factory defaults"
+            } else {
+                "Check for updates on startup"
+            };
+            let mut output = render_dialog(&mut app, &ctx, size, 1.0, name, vec![]);
+            for _ in 0..6 {
+                output = render_dialog(&mut app, &ctx, size, 1.0, name, vec![]);
+            }
+            let top = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == title)
+                .expect("dialog title must remain visible");
+            assert!(screen.contains_rect(top.1));
+            assert!(top.2.expand(0.5).contains_rect(top.1));
+            for _ in 0..5 {
+                output = render_dialog(
+                    &mut app,
+                    &ctx,
+                    size,
+                    1.0,
+                    name,
+                    vec![
+                        Event::PointerMoved(Pos2::new(210.0, 210.0)),
+                        Event::Scroll(Vec2::new(0.0, -1000.0)),
+                    ],
+                );
+            }
+            for _ in 0..8 {
+                output = render_dialog(&mut app, &ctx, size, 1.0, name, vec![]);
+            }
+            let (label, rect, clip) = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == bottom)
+                .unwrap_or_else(|| panic!("{name} bottom control was not reachable"));
+            assert!(screen.contains_rect(rect), "{name}: {label:?}: {rect:?}");
+            assert!(
+                clip.expand(0.5).contains_rect(rect),
+                "{name}: {label:?}: {rect:?} by {clip:?}"
+            );
+            let title_rect = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == title)
+                .expect("title after scroll")
+                .1;
+            assert!(
+                screen.contains_rect(title_rect),
+                "{name} title left the viewport"
+            );
+            if name == "updates" {
+                assert!(app.prefs.check_updates);
+                click_dialog_text(&mut app, &ctx, size, name, bottom);
+                assert!(!app.prefs.check_updates);
+            } else {
+                click_dialog_text(&mut app, &ctx, size, name, bottom);
+                assert_eq!(app.prefs.theme, AppTheme::Classic);
+                assert!(
+                    app.settings_dirty,
+                    "an unavailable settings path must keep the retry pending"
+                );
+                assert!(app.status_kind == StatusKind::Warning);
+            }
+        }
+    }
+
+    #[test]
+    fn secondary_windows_fit_at_the_tall_dashboard_dialog_zoom() {
+        for neutral in [
+            Vec2::new(560.0, 456.0),
+            Vec2::new(556.0, 1360.0),
+            Vec2::new(560.0, 2160.0),
+        ] {
+            let layout = OpAutoClickerApp::layout_for(neutral, 1.0, MainLayout::Classic, true);
+            let dashboard_zoom = OpAutoClickerApp::fit_auto_zoom(neutral, 1.0, layout);
+            let dialog_zoom =
+                window_layout::dialog_safe_zoom((neutral.x, neutral.y), dashboard_zoom);
+            let size = neutral / dialog_zoom;
+            let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+            for ppp in [1.0, 1.25, 2.0] {
+                for theme in AppTheme::all() {
+                    for name in ["settings", "hotkey", "macro", "updates"] {
+                        let ctx = egui::Context::default();
+                        let mut app = test_app(layout);
+                        app.prefs.theme = theme;
+                        app.prefs.ui_scale_percent = 175; // Legacy value remains hidden in Settings.
+                        app.update_last_checked = Some(Instant::now());
+                        app.show_settings = name == "settings";
+                        app.show_hotkey_dialog = name == "hotkey";
+                        app.show_macro_window = name == "macro";
+                        app.show_updates = name == "updates";
+                        app.macro_until_stopped = false;
+                        app.macro_loops = 1_000_000;
+                        let mut output = render_dialog(&mut app, &ctx, size, ppp, name, vec![]);
+                        for _ in 0..5 {
+                            output = render_dialog(&mut app, &ctx, size, ppp, name, vec![]);
+                        }
+                        let text = text_bounds(&output);
+                        let title = match name {
+                            "settings" => "Settings",
+                            "hotkey" => "Hotkey setting",
+                            "macro" => "Record & Playback",
+                            "updates" => "Updates",
+                            _ => unreachable!(),
+                        };
+                        assert!(text.iter().any(|(label, _, _)| label == title));
+                        assert!(!text.iter().any(|(label, _, _)| label == "Window scale"));
+                        if name == "settings" {
+                            assert!(!text.iter().any(|(label, _, _)| label == "175 %"));
+                            assert!(text.iter().any(
+                                |(label, _, _)| label == "Scale and rearrange with window size"
+                            ));
+                        }
+                        for (label, rect, clip) in text {
+                            assert!(
+                            screen.contains_rect(rect),
+                            "{name} / {theme:?} at {size:?}: {label:?} outside window: {rect:?}"
+                        );
+                            assert!(
+                            clip.expand(0.5).contains_rect(rect),
+                            "{name} / {theme:?} at {size:?}: {label:?} clipped: {rect:?} by {clip:?}"
                         );
                         }
                     }
@@ -4583,8 +5294,380 @@ mod dashboard_layout_tests {
         }
     }
 
-    fn click_text(app: &mut OpAutoClickerApp, ctx: &egui::Context, label: &str) {
-        let size = Vec2::new(400.0, 600.0);
+    fn click_dialog_text(
+        app: &mut OpAutoClickerApp,
+        ctx: &egui::Context,
+        size: Vec2,
+        name: &str,
+        label: &str,
+    ) {
+        let output = render_dialog(app, ctx, size, 1.0, name, vec![]);
+        let position = text_bounds(&output)
+            .into_iter()
+            .find(|(text, _, _)| text == label)
+            .map(|(_, rect, _)| rect.center())
+            .unwrap_or_else(|| panic!("missing {name} control {label:?}"));
+        let button = |pressed| Event::PointerButton {
+            pos: position,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        let _ = render_dialog(
+            app,
+            ctx,
+            size,
+            1.0,
+            name,
+            vec![Event::PointerMoved(position), button(true)],
+        );
+        let _ = render_dialog(app, ctx, size, 1.0, name, vec![button(false)]);
+    }
+
+    #[test]
+    fn secondary_window_controls_remain_interactive_at_the_safe_zoom() {
+        let size = Vec2::new(420.0, 1027.0);
+        for name in ["settings", "hotkey", "macro", "updates"] {
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Narrow);
+            app.update_last_checked = Some(Instant::now());
+            app.show_settings = name == "settings";
+            app.show_hotkey_dialog = name == "hotkey";
+            app.show_macro_window = name == "macro";
+            app.show_updates = name == "updates";
+            for _ in 0..5 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, name, vec![]);
+            }
+            match name {
+                "settings" => {
+                    assert!(app.prefs.auto_scale);
+                    click_dialog_text(
+                        &mut app,
+                        &ctx,
+                        size,
+                        name,
+                        "Scale and rearrange with window size",
+                    );
+                    assert!(!app.prefs.auto_scale);
+                    assert_eq!(app.main_layout, MainLayout::Classic);
+                    let resize_ctx = egui::Context::default();
+                    let tall = Rect::from_min_size(Pos2::ZERO, Vec2::new(560.0, 1360.0));
+                    for _ in 0..8 {
+                        let _ = resize_ctx.run(
+                            RawInput {
+                                screen_rect: Some(tall),
+                                ..Default::default()
+                            },
+                            |ctx| app.adapt_to_window_size(ctx),
+                        );
+                    }
+                    assert_eq!(app.main_layout, MainLayout::Classic);
+                    assert_eq!(app.auto_zoom, 1.0);
+                    click_dialog_text(
+                        &mut app,
+                        &ctx,
+                        size,
+                        name,
+                        "Scale and rearrange with window size",
+                    );
+                    assert!(app.prefs.auto_scale);
+                    for _ in 0..8 {
+                        let _ = resize_ctx.run(
+                            RawInput {
+                                screen_rect: Some(tall),
+                                ..Default::default()
+                            },
+                            |ctx| app.adapt_to_window_size(ctx),
+                        );
+                    }
+                    assert_eq!(app.main_layout, MainLayout::Narrow);
+                    assert!(app.auto_zoom >= 1.90);
+                    click_dialog_text(&mut app, &ctx, size, name, "Classic light");
+                    click_dialog_text(&mut app, &ctx, size, name, "Dark");
+                    assert_eq!(app.prefs.theme, AppTheme::Dark);
+                }
+                "hotkey" => {
+                    click_dialog_text(&mut app, &ctx, size, name, "Assign new key…");
+                    assert!(app.capturing);
+                    click_dialog_text(&mut app, &ctx, size, name, "Close");
+                    assert!(!app.show_hotkey_dialog);
+                    assert!(!app.capturing);
+                }
+                "macro" => {
+                    assert!(app.macro_until_stopped);
+                    click_dialog_text(&mut app, &ctx, size, name, "Play");
+                    assert!(!app.macro_until_stopped);
+                }
+                "updates" => {
+                    assert!(app.prefs.check_updates);
+                    click_dialog_text(&mut app, &ctx, size, name, "Check for updates on startup");
+                    assert!(!app.prefs.check_updates);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn sync_at_size(
+        app: &mut OpAutoClickerApp,
+        ctx: &egui::Context,
+        neutral: Vec2,
+        applied_zoom: f32,
+    ) -> FullOutput {
+        ctx.run(
+            RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, neutral / applied_zoom)),
+                ..Default::default()
+            },
+            |ctx| {
+                app.ui_clock_secs = ctx.input(|input| input.time);
+                app.sync_window_layout(ctx);
+            },
+        )
+    }
+
+    #[test]
+    fn dialog_zoom_round_trips_window_size_and_restores_the_dashboard() {
+        for percent in [75, 100, 125, 150, 175, 200] {
+            let user_factor = percent as f32 / 100.0;
+            let neutral = Vec2::new(560.0, 1360.0) * user_factor;
+            let auto_zoom =
+                OpAutoClickerApp::fit_auto_zoom(neutral, user_factor, MainLayout::Narrow);
+            let dashboard_zoom = auto_zoom * user_factor;
+            let dialog_zoom =
+                window_layout::dialog_safe_zoom((neutral.x, neutral.y), dashboard_zoom);
+            for name in ["settings", "hotkey", "macro", "updates"] {
+                let ctx = egui::Context::default();
+                let mut app = test_app(MainLayout::Narrow);
+                app.prefs.ui_scale_percent = percent;
+                app.applied_user_factor = user_factor;
+                app.restore_window_size = false;
+                app.pending_resize = false;
+                app.auto_zoom = auto_zoom;
+                app.displayed_auto_zoom = auto_zoom;
+                app.zoom_transition = None;
+                app.last_base_size = neutral;
+                match name {
+                    "settings" => app.show_settings = true,
+                    "hotkey" => app.show_hotkey_dialog = true,
+                    "macro" => app.show_macro_window = true,
+                    "updates" => app.show_updates = true,
+                    _ => unreachable!(),
+                }
+
+                ctx.set_zoom_factor(dashboard_zoom);
+                // A zoom request is applied at the next frame boundary.
+                let _ = ctx.run(RawInput::default(), |_| {});
+                let _ = sync_at_size(&mut app, &ctx, neutral, dashboard_zoom);
+                assert!(app.pending_resize, "{name} / {percent}%");
+                let output = sync_at_size(&mut app, &ctx, neutral, dialog_zoom);
+                assert!((ctx.zoom_factor() - dialog_zoom).abs() < 0.001);
+                assert!(!app.pending_resize);
+                let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+                let floor = commands
+                    .iter()
+                    .find_map(|command| match command {
+                        egui::ViewportCommand::MinInnerSize(size) => Some(*size),
+                        _ => None,
+                    })
+                    .expect("minimum-size command");
+                assert!((floor.x * dialog_zoom - 560.0 * user_factor).abs() < 0.1);
+                assert!((floor.y * dialog_zoom - 456.0 * user_factor).abs() < 0.1);
+                assert!(
+                    !commands
+                        .iter()
+                        .any(|command| matches!(command, egui::ViewportCommand::InnerSize(_))),
+                    "opening {name} changed the physical window size"
+                );
+
+                app.window_settle_until = Instant::now() - Duration::from_secs(1);
+                let _ = sync_at_size(&mut app, &ctx, neutral, dialog_zoom);
+                assert_eq!(
+                    (app.prefs.window_width, app.prefs.window_height),
+                    (560, 1360)
+                );
+
+                app.show_settings = false;
+                app.show_hotkey_dialog = false;
+                app.show_macro_window = false;
+                app.show_updates = false;
+                let _ = sync_at_size(&mut app, &ctx, neutral, dialog_zoom);
+                let output = sync_at_size(&mut app, &ctx, neutral, dashboard_zoom);
+                assert!((ctx.zoom_factor() - dashboard_zoom).abs() < 0.001);
+                assert!(
+                    !output.viewport_output[&egui::ViewportId::ROOT]
+                        .commands
+                        .iter()
+                        .any(|command| matches!(command, egui::ViewportCommand::InnerSize(_))),
+                    "closing {name} changed the physical window size"
+                );
+                app.window_settle_until = Instant::now() - Duration::from_secs(1);
+                let _ = sync_at_size(&mut app, &ctx, neutral, dashboard_zoom);
+                assert_eq!(
+                    (app.prefs.window_width, app.prefs.window_height),
+                    (560, 1360)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resizing_and_resetting_while_a_dialog_is_open_uses_the_applied_zoom() {
+        let neutral = Vec2::new(600.0, 1360.0);
+        let dashboard_zoom = OpAutoClickerApp::fit_auto_zoom(neutral, 1.0, MainLayout::Narrow);
+        let cap = window_layout::dialog_safe_zoom((neutral.x, neutral.y), dashboard_zoom);
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Narrow);
+        app.restore_window_size = false;
+        app.pending_resize = false;
+        app.auto_zoom = dashboard_zoom;
+        app.displayed_auto_zoom = dashboard_zoom;
+        app.last_base_size = neutral;
+        app.show_settings = true;
+        ctx.set_zoom_factor(cap);
+        let _ = ctx.run(RawInput::default(), |_| {});
+        let _ = sync_at_size(&mut app, &ctx, neutral, cap);
+
+        let grown = Vec2::new(640.0, 1500.0);
+        let grown_cap = window_layout::dialog_safe_zoom((grown.x, grown.y), dashboard_zoom);
+        let _ = sync_at_size(&mut app, &ctx, grown, cap);
+        let output = sync_at_size(&mut app, &ctx, grown, grown_cap);
+        assert!((ctx.zoom_factor() - grown_cap).abs() < 0.001);
+        assert!(!output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::InnerSize(_))));
+        app.window_settle_until = Instant::now() - Duration::from_secs(1);
+        let _ = sync_at_size(&mut app, &ctx, grown, grown_cap);
+        assert_eq!(
+            (app.prefs.window_width, app.prefs.window_height),
+            (640, 1500)
+        );
+
+        app.reset_to_defaults();
+        let _ = sync_at_size(&mut app, &ctx, grown, grown_cap);
+        let output = sync_at_size(&mut app, &ctx, grown, 1.0);
+        let size = output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                egui::ViewportCommand::InnerSize(size) => Some(*size),
+                _ => None,
+            })
+            .expect("factory reset must restore the window size");
+        assert_eq!(size, Vec2::new(560.0, 456.0));
+        assert!(!app.restore_window_size);
+    }
+
+    #[test]
+    fn dpi_changes_redeclare_the_floor_without_resizing_the_window() {
+        for percent in [75, 100, 125, 150, 175, 200] {
+            for dialog in [false, true] {
+                let user = percent as f32 / 100.0;
+                let neutral = Vec2::new(560.0, 1360.0) * user;
+                let dashboard =
+                    user * OpAutoClickerApp::fit_auto_zoom(neutral, user, MainLayout::Narrow);
+                let zoom = if dialog {
+                    window_layout::dialog_safe_zoom((neutral.x, neutral.y), dashboard)
+                } else {
+                    dashboard
+                };
+                let ctx = egui::Context::default();
+                let mut app = test_app(MainLayout::Narrow);
+                app.restore_window_size = false;
+                app.prefs.ui_scale_percent = percent;
+                app.applied_user_factor = user;
+                app.auto_zoom = dashboard / user;
+                app.displayed_auto_zoom = dashboard / user;
+                app.last_base_size = neutral;
+                app.show_settings = dialog;
+                ctx.set_zoom_factor(zoom);
+                let _ = ctx.run(RawInput::default(), |_| {});
+                let frame = |app: &mut OpAutoClickerApp, density: f32, maximized: bool| {
+                    let mut input = RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, neutral / zoom)),
+                        ..Default::default()
+                    };
+                    let viewport = input.viewports.entry(egui::ViewportId::ROOT).or_default();
+                    viewport.native_pixels_per_point = Some(density);
+                    viewport.maximized = Some(maximized);
+                    ctx.run(input, |ctx| app.sync_window_layout(ctx))
+                };
+                let initial = frame(&mut app, 1.0, false);
+                let commands = &initial.viewport_output[&egui::ViewportId::ROOT].commands;
+                assert!(commands
+                    .iter()
+                    .any(|cmd| matches!(cmd, egui::ViewportCommand::MinInnerSize(_))));
+                assert!(!commands
+                    .iter()
+                    .any(|cmd| matches!(cmd, egui::ViewportCommand::InnerSize(_))));
+                for density in [1.25, 1.5, 2.0, 1.0] {
+                    let output = frame(&mut app, density, true);
+                    let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+                    let floor = commands
+                        .iter()
+                        .find_map(|cmd| match cmd {
+                            egui::ViewportCommand::MinInnerSize(value) => Some(*value),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| {
+                            panic!("{percent}% dialog={dialog} density={density}: no floor update")
+                        });
+                    assert!((floor.x * zoom * density - 560.0 * user * density).abs() < 0.1);
+                    assert!((floor.y * zoom * density - 456.0 * user * density).abs() < 0.1);
+                    assert!(!commands
+                        .iter()
+                        .any(|cmd| matches!(cmd, egui::ViewportCommand::InnerSize(_))));
+                    let unchanged = frame(&mut app, density, true);
+                    assert!(!unchanged.viewport_output[&egui::ViewportId::ROOT]
+                        .commands
+                        .iter()
+                        .any(|cmd| matches!(cmd, egui::ViewportCommand::MinInnerSize(_))));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shrinking_with_a_dialog_open_reflows_and_keeps_the_chosen_size() {
+        let neutral = Vec2::new(600.0, 1360.0);
+        let dashboard_zoom = OpAutoClickerApp::fit_auto_zoom(neutral, 1.0, MainLayout::Narrow);
+        let cap = window_layout::dialog_safe_zoom((neutral.x, neutral.y), dashboard_zoom);
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Narrow);
+        app.restore_window_size = false;
+        app.pending_resize = false;
+        app.auto_zoom = dashboard_zoom;
+        app.displayed_auto_zoom = dashboard_zoom;
+        app.last_base_size = neutral;
+        app.show_hotkey_dialog = true;
+        ctx.set_zoom_factor(cap);
+        let _ = ctx.run(RawInput::default(), |_| {});
+        let _ = sync_at_size(&mut app, &ctx, neutral, cap);
+
+        let shrunk = Vec2::new(560.0, 800.0);
+        let target = OpAutoClickerApp::fit_auto_zoom(shrunk, 1.0, MainLayout::Portrait);
+        let _ = sync_at_size(&mut app, &ctx, shrunk, cap);
+        assert_eq!(app.main_layout, MainLayout::Portrait);
+        assert!((app.displayed_auto_zoom - target).abs() < 0.001);
+        let output = sync_at_size(&mut app, &ctx, shrunk, target);
+        assert!((ctx.zoom_factor() - target).abs() < 0.001);
+        assert!(!output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .any(|command| matches!(command, egui::ViewportCommand::InnerSize(_))));
+        app.window_settle_until = Instant::now() - Duration::from_secs(1);
+        let _ = sync_at_size(&mut app, &ctx, shrunk, target);
+        assert_eq!(
+            (app.prefs.window_width, app.prefs.window_height),
+            (560, 800)
+        );
+        app.show_hotkey_dialog = false;
+        let _ = sync_at_size(&mut app, &ctx, shrunk, target);
+        assert!((ctx.zoom_factor() - target).abs() < 0.001);
+    }
+
+    fn click_text_at(app: &mut OpAutoClickerApp, ctx: &egui::Context, size: Vec2, label: &str) {
         let output = render(app, ctx, size, 1.0, vec![]);
         let position = text_bounds(&output)
             .into_iter()
@@ -4605,6 +5688,10 @@ mod dashboard_layout_tests {
             vec![Event::PointerMoved(position), button(true)],
         );
         let _ = render(app, ctx, size, 1.0, vec![button(false)]);
+    }
+
+    fn click_text(app: &mut OpAutoClickerApp, ctx: &egui::Context, label: &str) {
+        click_text_at(app, ctx, Vec2::new(400.0, 600.0), label);
     }
 
     #[test]
@@ -4672,7 +5759,103 @@ mod dashboard_layout_tests {
         assert!((app.auto_zoom - 1.0).abs() < 0.001);
         assert!((app.displayed_auto_zoom - 1.0).abs() < 0.001);
         assert!(app.zoom_transition.is_none());
-        assert_eq!(app.live_window_floor(), Vec2::new(560.0, 456.0));
+        assert_eq!(
+            OpAutoClickerApp::live_window_floor_for(app.displayed_auto_zoom),
+            Vec2::new(560.0, 456.0)
+        );
+    }
+
+    #[test]
+    fn extreme_portrait_reflows_grow_and_shrink_without_stale_fit() {
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Classic);
+        app.restore_window_size = false;
+        let raw = |size| RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            ..Default::default()
+        };
+        for _ in 0..8 {
+            let _ = ctx.run(raw(Vec2::new(560.0, 1360.0)), |ctx| {
+                app.adapt_to_window_size(ctx);
+            });
+        }
+        assert_eq!(app.main_layout, MainLayout::Narrow);
+        assert!(app.auto_zoom >= 1.90);
+        assert!(app.zoom_transition.is_some());
+        let narrow_zoom = app.auto_zoom;
+        app.displayed_auto_zoom = narrow_zoom;
+        app.zoom_transition = None;
+        ctx.set_zoom_factor(narrow_zoom);
+        let _ = ctx.run(raw(Vec2::new(560.0, 1360.0) / narrow_zoom), |_| {});
+        for _ in 0..8 {
+            let _ = ctx.run(raw(Vec2::new(560.0, 1800.0) / narrow_zoom), |ctx| {
+                app.adapt_to_window_size(ctx);
+            });
+        }
+        assert_eq!(app.main_layout, MainLayout::Slender);
+        assert!(app.auto_zoom > narrow_zoom);
+        assert!(app.zoom_transition.is_some());
+        let slender_zoom = app.auto_zoom;
+        app.displayed_auto_zoom = slender_zoom;
+        app.zoom_transition = None;
+        ctx.set_zoom_factor(slender_zoom);
+        let _ = ctx.run(raw(Vec2::new(560.0, 1800.0) / slender_zoom), |_| {});
+        let _ = ctx.run(raw(Vec2::new(560.0, 1360.0) / slender_zoom), |ctx| {
+            app.apply_shrink_fit_immediately(ctx, 1.0);
+        });
+        assert_eq!(app.main_layout, MainLayout::Narrow);
+        assert!((app.auto_zoom - narrow_zoom).abs() < 0.001);
+        assert_eq!(app.displayed_auto_zoom, app.auto_zoom);
+        assert!(app.zoom_transition.is_none());
+
+        ctx.set_zoom_factor(narrow_zoom);
+        let _ = ctx.run(raw(Vec2::new(560.0, 1360.0) / narrow_zoom), |_| {});
+        let _ = ctx.run(raw(Vec2::new(560.0, 600.0) / narrow_zoom), |ctx| {
+            app.apply_shrink_fit_immediately(ctx, 1.0);
+        });
+        assert_eq!(app.main_layout, MainLayout::Classic);
+        assert_eq!(app.auto_zoom, 1.0);
+        assert_eq!(app.displayed_auto_zoom, 1.0);
+    }
+
+    #[test]
+    fn narrow_and_slender_controls_remain_interactive() {
+        for (layout, size) in [
+            (MainLayout::Narrow, Vec2::new(280.0, 700.0)),
+            (MainLayout::Slender, Vec2::new(220.0, 740.0)),
+        ] {
+            let ctx = egui::Context::default();
+            let mut app = test_app(layout);
+            for _ in 0..5 {
+                let _ = render(&mut app, &ctx, size, 1.0, vec![]);
+            }
+            click_text_at(&mut app, &ctx, size, "Repeat");
+            assert!(app.repeat_limited);
+            click_text_at(&mut app, &ctx, size, "Random offset ±");
+            assert!(app.prefs.random_offset_enabled);
+            assert!(app.offset_ms > 0.0);
+            click_text_at(&mut app, &ctx, size, "Pick location");
+            assert_eq!(app.config.coordinate_mode, CoordinateMode::FixedScreen);
+            click_text_at(&mut app, &ctx, size, "Left");
+            click_text_at(&mut app, &ctx, size, "Right");
+            assert_eq!(app.config.mouse_button, MouseButton::Right);
+            click_text_at(&mut app, &ctx, size, "Single");
+            click_text_at(&mut app, &ctx, size, "Double");
+            assert_eq!(app.config.click_type, ClickType::Double);
+            click_text_at(&mut app, &ctx, size, "Hotkey setting");
+            assert!(app.show_hotkey_dialog);
+            let macro_label = if layout == MainLayout::Slender {
+                "Record / Play"
+            } else {
+                "Record & Playback"
+            };
+            click_text_at(&mut app, &ctx, size, macro_label);
+            assert!(app.show_macro_window);
+            click_text_at(&mut app, &ctx, size, "Settings…");
+            assert!(app.show_settings);
+            click_text_at(&mut app, &ctx, size, "Update v1.6.0");
+            assert!(app.show_updates);
+        }
     }
 
     #[test]
