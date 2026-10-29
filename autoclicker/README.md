@@ -39,7 +39,7 @@ cargo run --release
 cargo test --release
 ```
 
-Twelve integration test binaries run platform-independent logic (140 test
+Twelve integration test binaries run platform-independent logic (141 test
 cases, including the self-update module's fault-injection cases). Windows
 also runs the dashboard and click-worker unit tests:
 
@@ -440,7 +440,10 @@ a previous session is never reused.
     Light and Modern Dark, including each dialog and a restart. Confirm the
     selected appearance persists, controls stay usable at compact, tall and
     wide sizes, and saved OLED/Terminal/Aurora choices remain available under
-    Previous themes without being changed automatically.
+    Previous themes without being changed automatically. In Modern, check
+    the action icons and full labels, the neutral disabled Stop and the active
+    Stop state. Icons may disappear in a narrow layout, but labels must remain
+    readable; Classic retains its existing presentation.
 12. Start a "Repeat until stopped" session, then press Stop: the status
     shows "Stopping…" for at most a moment and then settles on
     "Stopped — N clicks delivered." — it must never remain stuck on
@@ -510,12 +513,11 @@ a previous session is never reused.
     missing result refreshes on open, and the status card must show
     **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**,
     and **Channel**, with the verdict naming the version GitHub reported.
-    With v1.6.0 published, a portable v1.5.2 EXE should show **Update
-    v1.6.0** without opening anything. After updating, the v1.6.0 footer
-    should show no red notification while up to date. To check the new red
-    **1**, use a controlled newer-release fixture or wait for a later
-    release: it should appear only for a confirmed available update, and
-    clicking it must behave like clicking the rest of the button.
+    With v1.7.0 published, a portable v1.6.0 EXE should show **Update
+    v1.7.0** with a red **1** after confirming the available update. The
+    badge must behave like the rest of the button when clicked. After
+    updating, the v1.7.0 footer should show no red notification while up to
+    date; a controlled newer-release fixture can test a future notification.
     It disappears during installation and returns after cancellation or
     failure if the newer version remains confirmed.
     With no session running, press the footer update button: the Updates
@@ -530,9 +532,9 @@ a previous session is never reused.
     the running version was not changed, and keep the current build
     working. **Release notes** opens that version's GitHub page and
     **Copy download link** puts the exact asset URL on the clipboard.
-    For the source path, launch a v1.5.2
-    `target\release\macro_clicker.exe` from a clean `main` checkout
-    after v1.6.0 is published: **Installation** must say
+    For the source path, launch a v1.6.0
+    `target\release\macro_clicker.exe` from a clean `main` checkout still at
+    v1.6.0 after v1.7.0 is published: **Installation** must say
     **Source checkout build**, the stages must begin with **Source**,
     the checkout must land exactly on that release tag, and the app
     must reopen as the new version. Make a tracked local edit and

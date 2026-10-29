@@ -5,7 +5,7 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Unreleased Modern visual refinement (source only)
+## v1.7.0: Modern visual refinement
 
 Modern Light and Dark use a cohesive porcelain/blue-ink palette, compact
 vector-icon caption tiles, a mint-to-blue Start action, neutral disabled Stop
@@ -17,9 +17,12 @@ redesigned. Updating remains explicit and user-initiated.
 
 Local verification with Rust 1.88.0:
 
-- **82 actual-egui app/worker tests** and **140 standalone tests** passed.
-  The former use an eframe stub and simulated Win32/input/timing; five updater
-  fault tests overlap the latter count. New checks exercise each action icon
+- **82 actual-egui app/worker tests** and **141 standalone tests** passed
+  against the 1.7.0 release candidate. The former use an eframe stub and
+  simulated Win32/input/timing; five updater fault tests overlap the latter
+  count. A release-metadata fixture reports v1.7.0 available from v1.6.0 and
+  up to date from v1.7.0; the dashboard's future-update fixture derives its
+  version from the current package. New checks exercise each action icon
   at four pixel densities, both with room for the mark and with the mark
   omitted, including click events and accessible names. Disabled Stop remains
   inert. Existing tests still cover keyboard traversal, dashboard geometry,
@@ -38,18 +41,18 @@ Local verification with Rust 1.88.0:
   action-label positions within their existing surfaces were intentionally
   refined. Software rasters of Classic Light/Dark and all three legacy themes
   at compact, tall and wide sizes matched the previous source byte for byte
-  in **15 cases**. Modern
-  Light/Dark, wide, narrow, slender, Settings and Updates rasters were also
-  inspected. These are software simulations, not Windows screenshots.
+  in **15 cases**. Modern Light/Dark, wide, narrow, slender, Settings and
+  Updates rasters were also inspected. These are software simulations, not
+  Windows screenshots.
 - Formatting, `git diff --check`, Linux harness Clippy, Windows-GNU all-target
   source checking and Clippy with project warnings denied passed. The local
   Windows checks use an eframe stub and do not link or run a Windows binary.
 
 Native Windows interaction, real input injection, screen-reader integration,
 multimonitor/mixed-DPI behavior and a real update/relaunch still need hands-on
-verification. No release is implied by these source-only changes.
+verification. These local checks ran before release.
 
-## Unreleased stability hardening (source only)
+## v1.7.0: Stability hardening
 
 Fixed-position and recorded macro moves now use the virtual-desktop flag,
 with checked 16-bit normalization and a connected-display check before any
@@ -88,10 +91,9 @@ Local verification with Rust 1.88.0:
 The stability changes themselves did not redesign the appearance or controls;
 the explicit updater, QPC spin schedule and batched `SendInput` design remain
 in use. Native Windows CI and hands-on Windows tests are separate from these
-local checks. In particular, real multi-monitor and
-mixed-DPI input placement, display disconnects, focus behavior and actual
-update/relaunch still require interactive verification. No new release is
-implied by this source-only work.
+local checks. In particular, real multi-monitor and mixed-DPI input
+placement, display disconnects, focus behavior and actual update/relaunch
+still require interactive verification. These checks ran before release.
 
 ## Classic and Modern appearances: v1.6.0
 

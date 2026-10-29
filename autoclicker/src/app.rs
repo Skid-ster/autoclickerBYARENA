@@ -5689,6 +5689,39 @@ mod dashboard_layout_tests {
     use super::*;
     use egui::{epaint::Shape, Event, FullOutput, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
+    // Always model a genuinely newer release, even after the package version
+    // changes. The static labels keep geometry and accessibility expectations
+    // tied to the exact same version that the test UI advertises.
+    fn future_update_version() -> &'static str {
+        static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        VERSION
+            .get_or_init(|| {
+                let (major, minor, patch) =
+                    update::parse_version(env!("CARGO_PKG_VERSION")).expect("package version");
+                let version = format!(
+                    "{major}.{minor}.{}",
+                    patch.checked_add(1).expect("next patch")
+                );
+                assert!(update::is_newer(&version, env!("CARGO_PKG_VERSION")));
+                version
+            })
+            .as_str()
+    }
+
+    fn future_update_footer() -> &'static str {
+        static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        LABEL
+            .get_or_init(|| format!("Update v{}", future_update_version()))
+            .as_str()
+    }
+
+    fn future_update_window() -> &'static str {
+        static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        LABEL
+            .get_or_init(|| format!("Update to v{}", future_update_version()))
+            .as_str()
+    }
+
     fn test_app(layout: MainLayout) -> OpAutoClickerApp {
         let mut app = OpAutoClickerApp::new();
         app.prefs = AppPrefs::default();
@@ -5700,7 +5733,7 @@ mod dashboard_layout_tests {
         app.settings_path = None;
         app.settings_load_error = None;
         app.last_save_error = None;
-        app.update_state = UpdateUiState::Available("1.6.0".to_string());
+        app.update_state = UpdateUiState::Available(future_update_version().to_string());
         app.status_text = "Ready.".to_string();
         app
     }
@@ -5817,7 +5850,7 @@ mod dashboard_layout_tests {
                             } else {
                                 "Record & Playback"
                             },
-                            "Update v1.6.0",
+                            future_update_footer(),
                             "Settings…",
                         ] {
                             assert!(
@@ -6139,7 +6172,7 @@ mod dashboard_layout_tests {
                 let is_elided = output
                     .shapes
                     .iter()
-                    .find_map(|clipped| elided(&clipped.shape, "Update v1.6.0"));
+                    .find_map(|clipped| elided(&clipped.shape, future_update_footer()));
                 assert_eq!(is_elided, Some(false), "{layout:?}");
             }
             let ctx = egui::Context::default();
@@ -6161,7 +6194,7 @@ mod dashboard_layout_tests {
             let is_elided = output
                 .shapes
                 .iter()
-                .find_map(|clipped| elided(&clipped.shape, "Update to v1.6.0"));
+                .find_map(|clipped| elided(&clipped.shape, future_update_window()));
             assert_eq!(is_elided, Some(false));
         }
     }
@@ -6268,7 +6301,7 @@ mod dashboard_layout_tests {
                     InstallKind::CargoBuild,
                     InstallKind::Unknown,
                 ] {
-                    for version in ["1.6.0", "4294967295.4294967295.4294967295"] {
+                    for version in [future_update_version(), "4294967295.4294967295.4294967295"] {
                         for asset_size in [None, Some(4_000_000), Some(u64::MAX)] {
                             let ctx = egui::Context::default();
                             let mut app = test_app(MainLayout::Slender);
@@ -7355,7 +7388,7 @@ mod dashboard_layout_tests {
             assert!(app.show_macro_window);
             click_text_at(&mut app, &ctx, size, "Settings…");
             assert!(app.show_settings);
-            click_text_at(&mut app, &ctx, size, "Update v1.6.0");
+            click_text_at(&mut app, &ctx, size, future_update_footer());
             assert!(app.show_updates);
         }
     }
@@ -7410,7 +7443,7 @@ mod dashboard_layout_tests {
                 assert!(app.show_macro_window);
                 click_text_at(&mut app, &ctx, size, "Settings…");
                 assert!(app.show_settings);
-                click_text_at(&mut app, &ctx, size, "Update v1.6.0");
+                click_text_at(&mut app, &ctx, size, future_update_footer());
                 assert!(app.show_updates);
 
                 // Ten minutes to the first deadline: exercise the real
@@ -7451,7 +7484,7 @@ mod dashboard_layout_tests {
         assert_eq!(app.config.mouse_button, MouseButton::Right);
         click_text(&mut app, &ctx, "Settings…");
         assert!(app.show_settings);
-        click_text(&mut app, &ctx, "Update v1.6.0");
+        click_text(&mut app, &ctx, future_update_footer());
         assert!(app.show_updates);
         click_text(&mut app, &ctx, "Record & Playback");
         assert!(app.show_macro_window);
@@ -8058,7 +8091,7 @@ mod dashboard_layout_tests {
                     let text = text_bounds(&output);
                     let label = text
                         .iter()
-                        .find(|(label, _, _)| label == "Update v1.6.0")
+                        .find(|(label, _, _)| label == future_update_footer())
                         .expect("full update label")
                         .1;
                     let settings = text
@@ -8101,7 +8134,7 @@ mod dashboard_layout_tests {
                             .iter()
                             .any(|event| matches!(event,
                         egui::output::OutputEvent::Clicked(info)
-                            if info.label.as_deref() == Some("Update v1.6.0"))),
+                            if info.label.as_deref() == Some(future_update_footer()))),
                         "the full accessible button label must be retained"
                     );
                 }
@@ -8303,7 +8336,7 @@ mod dashboard_layout_tests {
                                     }
                                     "update" => {
                                         if old {
-                                            let text = egui::RichText::new("Update to v1.6.0")
+                                            let text = egui::RichText::new(future_update_window())
                                                 .color(pal.text_disabled)
                                                 .size(13.0)
                                                 .strong();
@@ -8328,7 +8361,7 @@ mod dashboard_layout_tests {
                                             OpAutoClickerApp::update_action_button(
                                                 ui,
                                                 pal,
-                                                "Update to v1.6.0",
+                                                future_update_window(),
                                                 false,
                                                 true,
                                                 150.0,
@@ -8695,12 +8728,12 @@ mod dashboard_layout_tests {
                         }
                     }));
                     let _ = render(&mut app, &ctx, size, 1.0, vec![tab(false, false)]);
-                    if labels.iter().any(|label| label == "Update v1.6.0") {
+                    if labels.iter().any(|label| label == future_update_footer()) {
                         break;
                     }
                 }
                 assert!(
-                    labels.iter().any(|label| label == "Update v1.6.0"),
+                    labels.iter().any(|label| label == future_update_footer()),
                     "{theme:?}/{layout:?}: forward Tab never reached Updates: {labels:?}"
                 );
                 let output = render(
@@ -8723,7 +8756,7 @@ mod dashboard_layout_tests {
                     .iter()
                     .any(|event| matches!(event,
                     egui::output::OutputEvent::Clicked(info)
-                        if info.label.as_deref() == Some("Update v1.6.0"))));
+                        if info.label.as_deref() == Some(future_update_footer()))));
                 app.show_updates = false;
                 let mut backward_labels = Vec::new();
                 for _ in 0..48 {
@@ -8814,7 +8847,7 @@ mod dashboard_layout_tests {
             .iter()
             .any(|event| matches!(event,
             egui::output::OutputEvent::Clicked(info)
-                if info.label.as_deref() == Some("Update v1.6.0"))));
+                if info.label.as_deref() == Some(future_update_footer()))));
 
         // With an eligible portable update, clicking the badge follows the
         // existing direct-update path. A deliberately missing parent folder
@@ -8864,7 +8897,7 @@ mod dashboard_layout_tests {
             for _ in 0..5 {
                 let _ = render(&mut app, &ctx, size, 1.0, vec![]);
             }
-            for label in ["Settings…", "Update v1.6.0"] {
+            for label in ["Settings…", future_update_footer()] {
                 let output = render(&mut app, &ctx, size, 1.0, vec![]);
                 let position = text_bounds(&output)
                     .into_iter()
@@ -10002,7 +10035,7 @@ mod dashboard_layout_tests {
         let cancel = AtomicBool::new(false);
         let result = OpAutoClickerApp::finish_update_verification(
             paths,
-            "1.6.0".to_string(),
+            future_update_version().to_string(),
             true,
             &cancel,
             || {
@@ -10026,12 +10059,12 @@ mod dashboard_layout_tests {
         let temp_path = paths.download.clone();
         tx.send(UpdateInstallMessage::Verified(ReadyUpdate {
             paths,
-            version: "1.6.0".to_string(),
+            version: future_update_version().to_string(),
             source_advanced: true,
         }))
         .expect("send report");
         app.update_install = UpdateInstallState::Downloading {
-            version: "1.6.0".to_string(),
+            version: future_update_version().to_string(),
             total: 1,
             downloaded: Arc::new(AtomicU64::new(1)),
             phase: Arc::new(AtomicU8::new(UPDATE_PHASE_VERIFYING)),
@@ -10110,7 +10143,7 @@ mod dashboard_layout_tests {
             &egui::Context::default(),
             &ReadyUpdate {
                 paths: paths.clone(),
-                version: "1.6.0".to_string(),
+                version: future_update_version().to_string(),
                 source_advanced: true,
             },
         );
@@ -10132,7 +10165,7 @@ mod dashboard_layout_tests {
         let cancel = AtomicBool::new(true);
         let result = OpAutoClickerApp::finish_update_verification(
             paths,
-            "1.6.0".to_string(),
+            future_update_version().to_string(),
             false,
             &cancel,
             || panic!("cancelled attempt must not hash"),
@@ -10163,7 +10196,7 @@ mod dashboard_layout_tests {
             &egui::Context::default(),
             &ReadyUpdate {
                 paths: paths.clone(),
-                version: "1.6.0".to_string(),
+                version: future_update_version().to_string(),
                 source_advanced: true,
             },
         );
@@ -10190,7 +10223,7 @@ mod dashboard_layout_tests {
             &egui::Context::default(),
             &ReadyUpdate {
                 paths: paths.clone(),
-                version: "1.6.0".to_string(),
+                version: future_update_version().to_string(),
                 source_advanced: false,
             },
         );
@@ -10220,7 +10253,7 @@ mod dashboard_layout_tests {
         drop(sender);
         let mut app = test_app(MainLayout::Classic);
         app.update_install = UpdateInstallState::Downloading {
-            version: "1.6.0".to_string(),
+            version: future_update_version().to_string(),
             total: 1,
             downloaded: Arc::new(AtomicU64::new(0)),
             phase: Arc::new(AtomicU8::new(UPDATE_PHASE_SOURCE)),
