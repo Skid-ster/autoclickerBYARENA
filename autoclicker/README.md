@@ -40,12 +40,14 @@ cargo run --release
 cargo test --release
 ```
 
-Ten integration test binaries run platform-independent logic (108 tests):
+Eleven integration test binaries run platform-independent logic (128 test
+cases, including the self-update module's fault-injection cases). Windows
+also runs the dashboard and click-worker unit tests:
 
 - `config_tests` — invalid intervals, negative sigma, inverted clamps, hold
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
-  snapshot round trip, h/m/s/ms interval helpers, random-offset validation,
-  and the 4.1 baseline defaults.
+  snapshot round trip and concurrent coherent reads, h/m/s/ms interval helpers, random-offset validation,
+  long-interval commits, and the 4.1 baseline defaults.
 - `humanize_tests` — Box-Muller determinism, seeded RNG reproducibility,
   Gaussian mean/sigma over large samples, zero-sigma exactness, clamp
   guarantees, and the uniform +/- random-offset bounds and distribution.
@@ -71,7 +73,8 @@ Ten integration test binaries run platform-independent logic (108 tests):
   round trips for all five themes, fallback to the default theme for
   retired theme keys, legacy `dark_mode` migration precedence,
   `ui_scale` clamping and window-size round trip, clamping to
-  [560x456, 4x that] and per-dimension garbage/non-finite tolerance.
+  [560x456, 4x that], per-dimension garbage/non-finite tolerance, and
+  complete-file replacement and failed-write recovery.
 - `icon_tests` — dimensions, transparent rounded corners, solid accent
   center, two-axis symmetry, the presence of both accent and background
   pixels, anti-aliased edges with a fully opaque core, and byte-for-byte
@@ -92,20 +95,21 @@ Ten integration test binaries run platform-independent logic (108 tests):
 - `self_update_tests` — the verified self-replacement over real
   temp files: the AMD64 PE gate, file hashing, acceptance of
   exactly the published bytes (one flipped byte or a truncated
-  file fails), the replace-with-backup swap, rollback when the
-  download is missing or the new program won't launch, clearing
-  a crashed attempt's stale backup, development-build (`target/`)
-  detection, recognized source-checkout layout and origin checks,
-  manifest-version extraction, and leftover-file cleanup that
-  touches nothing else.
+  file fails), replace-with-backup swaps, injected rename and rollback
+  failures, preservation of recovery files, unique per-attempt cleanup,
+  development-build (`target/`) detection, recognized source-checkout
+  layout and origin checks, source-change reporting, and manifest-version
+  extraction.
+- `window_layout_tests` — classic/portrait/wide selection and hysteresis,
+  tall-window zoom, shrink fitting, user scales and zoom limits.
 
 The tests include the platform-independent sources by path, so they compile
 and pass on any platform even though the full binary is Windows-only.
 
 ## Interface
 
-The main window keeps the classic OP Auto Clicker 4.x dialog's exact
-control layout in a modern card surface — the same visual language as
+The main window keeps the classic OP Auto Clicker 4.x dialog's controls
+in a modern card surface — the same visual language as
 the Updates window: rounded elevated group cards led by an accent
 tick, an accent-filled **Start** button (the one primary action, like
 **Install** there), flat secondary buttons, and soft shadows — in a
@@ -119,8 +123,8 @@ Window scale percentage but never the transient fit, so neither a drag
 nor a snap can take the window below the size where every control fits
 and a large window can always be pulled back down. Growing the window is designed, not stretched:
 group boxes always claim the full content width (their borders stay
-flush at every size), the side-by-side Click options / Click repeat pair
-stays equal in width and height, and the button grid shares the extra
+flush at every size), the classic side-by-side Click options / Click
+repeat pair stays equal in width and height, and the button grid shares the extra
 width up to a content cap (beyond that the content column centers
 instead of producing over-wide buttons). Extra height loosens the
 gaps between groups by a bounded amount and gathers the rest above
@@ -135,23 +139,26 @@ neutral points — the live point size times the total zoom already
 applied, i.e. the physical size at 100 % zoom — which is invariant
 under the very zoom changes it drives, so feedback is mathematically
 impossible. That neutral size is fitted uniformly against the
-active design canvas (560x456 for the classic stack, 904x456 for
-the wide layout): the smaller of the width and height ratios is
-the fit factor, so the dialog scales proportionally, the limiting
-axis fills exactly, and nothing is stretched or clipped. The
-result (divided by your own Window scale percentage and capped so
+active design canvas (560x456 for the classic stack, 400x600 for
+the tall/portrait stack, and 904x456 for the wide layout): the
+smaller of the width and height ratios is the fit factor, so the
+dialog scales proportionally without stretching or clipping. The
+limiting axis fills approximately unless the maximum zoom has been reached.
+The result (divided by your own Window scale percentage and capped so
 the total never exceeds 280 %) is rounded down to a whole percent.
 A growing fit is adopted after the size has held still for a few
 frames and the applied zoom **eases** to it over ~180 ms (cubic
-ease-out); a shrinking fit is adopted on the frame the window gets
-smaller, so an inward drag never has to fight a stale scale or wait
-for a restart. A small dead band keeps pixel rounding from nudging
+ease-out); a shrinking fit is requested without growth easing and takes
+effect at egui's next frame boundary, so it does not require a restart. A small dead band keeps pixel rounding from nudging
 the fit back and forth. The easing is presentation-only — the fit's
 neutral-point measure uses the *applied* zoom, so it stays exact at
 every intermediate value, and the landing always sets the exact fit
-factor. The wide three-across layout engages in
-panoramic windows (aspect and predicted live width both qualify,
-with arrive-and-hold hysteresis). A fresh install on a monitor
+factor. Tall windows reflow the interval fields into two rows, stack
+options and repeat, and give the footer reminder its own row; this
+lets the controls grow when only the height is extended. Panoramic
+windows use the wide three-across layout. Both compositions use
+arrive-and-hold hysteresis so they do not flicker at a boundary.
+A fresh install on a monitor
 larger than the 1920x1080 reference opens once at a proportionally
 larger size (so 1440p first runs are not comparatively tiny); an
 existing settings file — even one that deliberately stores the
@@ -216,10 +223,17 @@ bar agree.
   to 100 ms, followed by the 4.1 **Random offset ± [40] milliseconds** row.
   The offset is checkbox-gated: ticking it reveals/arms the magnitude (40 ms
   the first time, matching the reference build); unticked, timing is exact.
+  Hours and minutes are supported beyond the engine's old 10-second
+  default limit. The Start button and toggle hotkey both validate the
+  current editors before starting; a disabled Start button explains why
+  on hover.
 - **Click options** (left group box) — classic combo boxes for Mouse button
   (Left / Right / Middle) and Click type (Single / Double / Triple). Double
   and triple emit two or three down/up bursts separated by a short QPC-spun
-  gap — never a sleep.
+  gap — never a sleep. Recorded macro steps remain
+  single clicks regardless of this setting, so playback does not multiply
+  what was recorded. Random offset applies to ordinary clicking, not to
+  the recorded macro delays.
 - **Click repeat** (right group box) — Repeat N times, or Repeat until
   stopped (the default); the worker auto-stops at the count.
 - **Cursor position** (full width) — Current location (default) or Pick
@@ -253,14 +267,17 @@ bar agree.
   place. Portable builds stream the new EXE beside the running one
   with progress and cancellation. A recognized source checkout is
   first required to be a clean `main` branch with this project's
-  GitHub origin, then fast-forwarded to the exact release tag and
-  its manifest version is confirmed. Both paths then verify exact
-  size and SHA-256 against GitHub's published values (no published
-  fingerprint, no install), move the running EXE aside, put the
-  verified one in place, launch it, and close. Failure restores
-  the current program and says whether a source checkout had
-  already been fast-forwarded. The new build confirms with
-  "Updated from v… — now running v…" and sweeps the leftover file.
+  GitHub origin; the target manifest is checked before fast-forwarding
+  to the exact release tag. Both paths then verify exact size and
+  SHA-256 against GitHub's published values (no published fingerprint,
+  no install). Before replacing the EXE, the app honors cancellation,
+  waits for the click worker to stop, and saves settings. It then
+  renames, relaunches, and closes. Failures report any source change;
+  a failed rollback preserves the backup and explains how to recover
+  rather than claiming restoration. The new build confirms with
+  "Updated from v… — now running v…" and cleans only its own attempt's
+  leftover files. A legacy updater that does not pass an attempt ID may
+  leave its old backup beside the EXE; it is not automatically swept.
   **Release notes** and **Copy download link** remain available,
   and browser failures are reported in the window.
 
@@ -288,13 +305,17 @@ taskbar and Alt-Tab) without shipping any binary asset.
 
 There is no diagnostics surface: every clicking control lives on the one
 main screen, and the Settings window carries only the theme picker, the
-window-scale picker and **Reset all settings to factory defaults**, so the
-main dialog keeps its exact classic control set.
+window-scale picker and **Reset all settings to factory defaults**; it
+also reports a settings-save failure if one occurs.
 
 Settings persist automatically to
 `%APPDATA%\op-auto-clicker\settings.conf` (a hand-editable, tolerant
-key=value document) and reload on launch. A stale window handle from a
-previous session is never reused.
+key=value document) and reload on launch. A complete, uniquely named
+temporary file is synced and atomically renamed over the old file; a
+failed save stays dirty, is reported, and is retried. An invalid random
+range is saved as zero instead of invalidating unrelated settings. An
+update will not restart while settings cannot be saved. A stale window handle from
+a previous session is never reused.
 
 ## Architecture
 
@@ -308,17 +329,19 @@ previous session is never reused.
 | `src/hotkey.rs` | Virtual-key constants, hotkey validation and key names (platform-independent, fully tested) |
 | `src/icon.rs` | Procedurally generated 32x32 RGBA crosshair icon via signed-distance pixel math; no binary asset |
 | `src/humanize.rs` | Thread-local SplitMix64 PRNG (OS/QPC entropy), Box-Muller Gaussian and uniform +/- offset samples with clamping |
-| `src/settings.rs` | Dependency-free key=value settings serialization and tolerant parsing (platform-independent, fully tested) |
+| `src/settings.rs` | Dependency-free key=value serialization, tolerant parsing and atomic settings writes |
 | `src/telemetry.rs` | Lock-free SPSC ring buffer over atomic `Atom` slots (`Send + Sync`, no `unsafe`), drop-newest back pressure, sliding-window statistics |
 | `src/config.rs` | Configuration struct, validation, h/m/s/ms helpers and the all-atomic runtime snapshot |
 | `src/update.rs` | Pure update decisions: version ordering, release/asset JSON scanning (tag, size, SHA-256 digest), validated release/download/redirect URLs, refresh policy, error headlines and a dependency-free streaming SHA-256 |
-| `src/self_update.rs` | Installation classification and verified self-replacement: recognized source-checkout fast-forward with bounded/cancellable Git commands, PE gate, size+fingerprint verification, rename-aside/swap-in with rollback, undo after a failed launch, and stale-file cleanup |
+| `src/self_update.rs` | Installation classification and verified self-replacement: guarded/cancellable Git fast-forward, PE and fingerprint checks, per-attempt swap, rollback and recovery preservation |
+| `src/window_layout.rs` | Pure classic/portrait/wide composition selection, hysteresis and proportional fit arithmetic |
 
 ### Timing and threading rules
 
 - The egui update/render thread never runs the timing loop. The worker parks
-  on a manual-reset Win32 event (`WaitForSingleObject`) while idle, so idle
-  CPU footprint stays near zero and no continuous repaint is requested.
+  on a manual-reset Win32 event (`WaitForSingleObject`) while idle, with
+  a bounded 250 ms termination check. Session transitions are serialized
+  outside the click loop; a stopping worker remains busy until fully drained.
 - Active scheduling is a rate-based QPC deadline loop; the spin body is
   `std::hint::spin_loop` and there is no `std::thread::sleep` in the active
   click path — including inter-click gaps inside double/triple bursts.
@@ -326,9 +349,11 @@ previous session is never reused.
   with `timeEndPeriod(1)` on drop.
 - `SetThreadPriority(THREAD_PRIORITY_TIME_CRITICAL)` is verified; denial is
   surfaced on the dashboard and in the log.
-- Configuration crosses threads through `AtomicConfigSnapshot` (one atomic
-  per field); telemetry uses a lock-free single-producer/single-consumer
-  ring. No mutex is taken on the per-click hot path.
+- Configuration crosses threads through `AtomicConfigSnapshot`: the worker
+  accepts only a complete published generation and otherwise keeps its last
+  complete settings for that click. The read makes one bounded attempt, so
+  it never locks or waits on the click path. Telemetry uses a lock-free
+  single-producer/single-consumer ring.
 - F8 (or the panic button) sets an atomic flag sampled before every click and
   on every spin iteration, including hold and inter-click spins. The mouse
   button is always released before the worker leaves a panicked hold.
@@ -431,8 +456,11 @@ previous session is never reused.
     only at the same classic footprint, never stranded at the large
     size. Pull it panoramic:
     the three middle groups sit three-across with one row of four
-    action buttons. Pull it tall: the gaps between groups loosen and
-    the status, buttons and footer stay pinned at the bottom. Snap
+    action buttons. Pull it tall without making it wider: interval fields
+    rearrange into two rows, options and repeat stack, and the controls
+    grow rather than remaining a small dialog in empty space. Drag back
+    down and across both shape boundaries: the controls should settle into
+    a fitting layout without flicker or trapping the window at a large minimum. Snap
     it to half of a 1440p screen and maximize it: in both cases the
     interface fills the window at a large, readable scale — never a
     small dialog marooned in empty space. Double-click the title
@@ -447,29 +475,35 @@ previous session is never reused.
     the settings file back and confirm the saved size wins again.
 18. Updates: with the machine online, open **Updates…** — a stale or
     missing result refreshes on open, and the status card must show
-    **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**, and **Channel**, with the verdict naming
-    the version GitHub reported. Use a portable v1.4.1 EXE for the
-    v1.4.1 → v1.5.0 rehearsal: its footer must become **Update
-    v1.5.0** without opening anything. With no session running,
-    press that one footer button: the Updates window must open on
-    live progress, move through **Download → Verify → Install →
-    Restart**, then close and reopen by itself as v1.5.0 with
-    "Updated from v1.4.1 — now running v1.5.0", settings and window
-    size intact and no `macro_clicker.exe.old-*` file left beside
-    the EXE. In the window itself, **Update to vX.Y.Z** must stay
-    disabled unless a newer release is proven. Repeat an update and
+    **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**,
+    and **Channel**, with the verdict naming the version GitHub reported.
+    After v1.5.1 is published, use a portable v1.5.0 EXE: its footer must
+    become **Update v1.5.1** without opening anything. To test the updater
+    included in v1.5.1 itself, a later release must first exist.
+    With no session running, press the footer update button: the Updates
+    window must open on live progress, move through **Download → Verify →
+    Install → Restart**, then close and reopen into the selected newer
+    version with an "Updated from v…" confirmation and settings and window
+    size intact. That successful attempt's backup should be removed;
+    unrelated recovery files must remain untouched. In the window itself,
+    **Update to vX.Y.Z** must stay disabled unless a newer release is
+    proven. Repeat an update and
     press **Cancel update** mid-transfer: it must stop, report that
     the running version was not changed, and keep the current build
     working. **Release notes** opens that version's GitHub page and
     **Copy download link** puts the exact asset URL on the clipboard.
-    For the source path, wait until a release newer than a v1.5.0
-    checkout exists, then launch `target\release\macro_clicker.exe`
-    from a clean `main` checkout: **Installation** must say
+    For the source path, launch the v1.5.0
+    `target\release\macro_clicker.exe` from a clean `main` checkout
+    after v1.5.1 is published: **Installation** must say
     **Source checkout build**, the stages must begin with **Source**,
     the checkout must land exactly on that release tag, and the app
     must reopen as the new version. Make a tracked local edit and
     retry: the update must refuse before replacing the EXE; repeat
-    from a non-`main` branch and confirm the same. Disconnect the
+    from a non-`main` branch and confirm the same. Cancel during
+    source preparation, download and verification; if the checkout
+    has already advanced, the notice must say so. Try while clicking:
+    installation must wait for the worker to stop, and cancelling while
+    waiting must leave the original EXE in place. Disconnect the
     network and press **Check now**: the window must settle on a
     plain-language failure with technical detail and **Try again** —
     never an endless spinner. If an update was already confirmed

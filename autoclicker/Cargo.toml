@@ -1,6 +1,6 @@
 [package]
 name = "macro_clicker"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 description = "MacroClicker — an OP Auto Clicker 4.1-style Rust/egui Windows auto-clicker with record & playback and verified in-app updates"
 license = "MIT"

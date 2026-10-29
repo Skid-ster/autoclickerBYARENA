@@ -5,7 +5,75 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
-## Professional release and one-click update round (current): v1.5.0
+## Tall-window and stability round: v1.5.1 candidate
+
+A screenshot of a narrow, vertically stretched window exposed a fit
+limitation: the old 560x456 canvas was width-limited, so additional
+height could not enlarge its controls. This change adds a
+400x600 portrait composition, with two interval rows, stacked options
+and repeat cards, reflowed position controls and a separate footer
+reminder. Shape selection has hysteresis; shrinking requests a fitting
+zoom without growth easing and the physical minimum is unchanged.
+
+The same audit addressed a click-worker stop/restart handoff race and
+mixed concurrent configuration snapshots, made hours/minutes intervals
+usable, and made the toggle hotkey validate the current editors. Macro
+playback now treats each recorded step as one click even if the dashboard
+is set to double or triple. The explicitly initiated updater now reports
+source checkout changes on failure/cancellation, checks the target manifest
+before merging, checks cancellation before replacement, waits for the
+click worker, reserves unique attempt files, and preserves a recovery
+backup if rollback fails. Settings use unique atomic temp files, remain
+dirty and retry on failure, and must save before an update restarts.
+An invalid offset is normalized on save and load so it cannot invalidate
+other preferences on the next launch; unrelated invalid saved engine fields
+fall back without discarding independent preferences. These changes are
+not part of the previously published v1.5.0 asset.
+
+Executed in the Linux sandbox with Rust 1.88:
+
+- `cargo fmt --check` and 128 tests across 11 standalone integration
+  files (including injected updater failures), with `rustc -D warnings`.
+- Twenty-nine integrated tests using the actual egui 0.27.2 layout engine,
+  app, click engine and timing code, with an eframe trait stub and a Win32
+  event/QPC/input shim. They include 20 app tests (geometry across five
+  themes and four pixel densities, contrast, controls, hotkeys, updater
+  cancellation/rollback and failed settings saves), four engine tests
+  (including 200 rapid stop/restart cycles and failed wake), and five
+  updater fault tests already counted in the standalone total. The shim
+  refuses to send real input.
+- A two-writer stress test checks that accepted configuration reads never
+  contain fields mixed across publications. A deliberately unguarded
+  snapshot mutation failed that test with a mixed configuration.
+- A separate Windows-GNU target **type check and Clippy** of the real
+  app, engine, timing, updater, and Win32 sources with actual egui 0.27.2
+  and `windows-sys` 0.52.0; the eframe app trait was stubbed and no EXE
+  was linked or run. Clippy was also clean for the local egui app and
+  engine shims. The GitHub-source dependencies emitted their own warnings.
+- An isolated local Git repository exercised the actual source updater's
+  fast-forward, wrong destination manifest refusal, dirty-tree guard, and
+  pre-cancellation. A separate fixture used the published v1.5.0 source
+  updater to fast-forward a clean checkout to a synthetic v1.5.1 tag and
+  validate its manifest. Fetches were redirected to local fixtures; these
+  were not Git for Windows or GitHub network tests.
+- A simulated-input Win32 shim exercised the actual engine's single and
+  double bursts, fixed-coordinate input arrays, panic release during a
+  hold, and two loops of a recorded macro. No real mouse input was sent.
+
+The first v1.5.1 candidate commit `a635d0e84becd581f04fa27b4968ade6d37e09f6`
+passed [Windows MSVC CI run 40803408176, job 123216569011](https://github.com/Skid-ster/autoclickerBYARENA/actions/runs/40803408176/job/123216569011):
+format, Clippy with warnings denied, tests, release build, GUI-subsystem and
+version-resource checks, and artifact upload all completed successfully.
+The binary metadata annotation reported GUI subsystem 2, ProductName
+MacroClicker, FileVersion 1.5.1 and 3,910,144 bytes. Publishing was skipped
+on the pull request, as intended; the later tag workflow publishes the release.
+
+No real Windows interaction was performed in the sandbox. Hands-on resizing,
+SendInput/F6/F8, settings, WinHTTP, Git for Windows, and update/relaunch and
+rollback acceptance remain separate checks. The prior v1.5.0 CI applies only
+to that shipped commit.
+
+## Professional release and one-click update round (shipped): v1.5.0
 
 The follow-up report after v1.4.1 had two parts: GitHub releases should
 read as a professional public project rather than a personal handoff,

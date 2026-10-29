@@ -26,6 +26,7 @@ mod self_update;
 mod settings;
 mod telemetry;
 mod update;
+mod window_layout;
 
 #[cfg(windows)]
 mod app;

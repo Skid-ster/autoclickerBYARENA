@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
 use crate::config::{AtomicConfigSnapshot, CoordinateMode, EngineConfig, InputMode, MouseButton};
@@ -33,6 +32,9 @@ pub const STATE_PANIC: i32 = 3;
 /// Gap between the down/up bursts of a double or triple click. Spun on the
 /// QPC deadline (never a sleep) so stop and panic flags stay responsive.
 const INTER_CLICK_GAP_MS: f64 = 50.0;
+/// Idle waits periodically recheck termination even if signalling fails.
+/// This is outside the click path; active timing remains QPC-spun.
+const IDLE_WAIT_MS: u32 = 250;
 
 struct RectCache {
     left: AtomicI32,
@@ -74,7 +76,13 @@ struct Shared {
     stop: Arc<AtomicBool>,
     panic: Arc<AtomicBool>,
     state: Arc<AtomicI32>,
+    /// Serializes starts, stop requests, and the worker's final state
+    /// transition. Never locked inside the active click loop.
+    session_gate: Mutex<()>,
     config: Arc<AtomicConfigSnapshot>,
+    /// The first valid configuration is captured at start, before signalling.
+    /// The worker clones it once at session entry, never inside the click loop.
+    session_config: Mutex<EngineConfig>,
     telemetry: Arc<TelemetryStore>,
     priority_denied: Arc<AtomicBool>,
     start_tick: Arc<AtomicI64>,
@@ -101,27 +109,48 @@ impl Default for ClickEngine {
 
 impl ClickEngine {
     pub fn new() -> Self {
-        let wake_handle = win32::create_manual_reset_event().expect("event creation");
+        let (wake_handle, initial_error) = match win32::create_manual_reset_event() {
+            Ok(handle) => (handle, None),
+            Err(error) => (
+                0,
+                Some(format!("Could not create click-worker event: {error}")),
+            ),
+        };
         let shared = Arc::new(Shared {
             wake_event: wake_handle as i64,
             terminate: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
             panic: Arc::new(AtomicBool::new(false)),
             state: Arc::new(AtomicI32::new(STATE_IDLE)),
+            session_gate: Mutex::new(()),
             config: Arc::new(AtomicConfigSnapshot::default()),
+            session_config: Mutex::new(EngineConfig::default()),
             telemetry: Arc::new(TelemetryStore::new()),
             priority_denied: Arc::new(AtomicBool::new(false)),
             start_tick: Arc::new(AtomicI64::new(0)),
             last_elapsed: Arc::new(AtomicI64::new(0)),
-            error: Arc::new(Mutex::new(None)),
+            error: Arc::new(Mutex::new(initial_error)),
             rect_cache: Arc::new(RectCache::new()),
             macro_steps: Mutex::new(Arc::from(Vec::new())),
         });
-        let worker_shared = Arc::clone(&shared);
-        let worker = thread::spawn(move || worker_loop(worker_shared));
+        let worker = if wake_handle == 0 {
+            None
+        } else {
+            let worker_shared = Arc::clone(&shared);
+            match thread::Builder::new()
+                .name("macroclicker-click-worker".to_string())
+                .spawn(move || worker_loop(worker_shared))
+            {
+                Ok(handle) => Some(handle),
+                Err(error) => {
+                    publish_error(&shared, format!("Could not start click worker: {error}"));
+                    None
+                }
+            }
+        };
         Self {
             shared,
-            worker: Some(worker),
+            worker,
             wake_handle,
         }
     }
@@ -138,23 +167,37 @@ impl ClickEngine {
         config: &EngineConfig,
         steps: Arc<[MacroStep]>,
     ) -> Result<(), String> {
-        if self.is_running() {
-            return Err("A click session is already running.".to_string());
-        }
         if !steps.is_empty() && config.input_mode != InputMode::GlobalSendInput {
             return Err("Macro playback requires global SendInput delivery.".to_string());
         }
         config.validate()?;
+        let _gate = lock_recovering(&self.shared.session_gate);
+        if self.is_running() {
+            return Err("The previous click session is still running or stopping.".to_string());
+        }
+        if !self.worker_alive() {
+            return Err(
+                "Click worker is unavailable. Restart the app before clicking.".to_string(),
+            );
+        }
+        let previous_state = self.state();
         *lock_recovering(&self.shared.macro_steps) = steps;
         self.shared.telemetry.reset();
+        self.shared.start_tick.store(0, Ordering::Release);
         self.shared.last_elapsed.store(0, Ordering::Release);
         self.shared.priority_denied.store(false, Ordering::Release);
         *lock_recovering(&self.shared.error) = None;
         self.shared.stop.store(false, Ordering::Release);
         self.shared.panic.store(false, Ordering::Release);
+        *lock_recovering(&self.shared.session_config) = config.clone();
         self.shared.config.store(config);
         self.shared.state.store(STATE_RUNNING, Ordering::Release);
-        win32::set_event(self.wake_handle).map_err(|e| e.to_string())
+        if let Err(error) = win32::set_event(self.wake_handle) {
+            self.shared.stop.store(true, Ordering::Release);
+            self.shared.state.store(previous_state, Ordering::Release);
+            return Err(format!("Could not wake click worker: {error}"));
+        }
+        Ok(())
     }
 
     /// Atomically replaces the running configuration so humanization and
@@ -167,18 +210,27 @@ impl ClickEngine {
     }
 
     pub fn request_stop(&self) {
-        self.shared.stop.store(true, Ordering::Release);
-        self.shared.state.store(STATE_STOPPING, Ordering::Release);
+        let _gate = lock_recovering(&self.shared.session_gate);
+        if self.is_running() {
+            self.shared.stop.store(true, Ordering::Release);
+            self.shared.state.store(STATE_STOPPING, Ordering::Release);
+        }
     }
 
     pub fn panic_stop(&self) {
-        self.shared.panic.store(true, Ordering::Release);
-        self.shared.stop.store(true, Ordering::Release);
-        self.shared.state.store(STATE_PANIC, Ordering::Release);
+        let _gate = lock_recovering(&self.shared.session_gate);
+        if self.is_running() {
+            self.shared.panic.store(true, Ordering::Release);
+            self.shared.stop.store(true, Ordering::Release);
+            // PANIC is terminal only after the worker has fully drained.
+            self.shared.state.store(STATE_STOPPING, Ordering::Release);
+        }
     }
 
+    /// Includes the drain period: another session must not clear the stop
+    /// flag, reset telemetry, or begin an update until the worker is idle.
     pub fn is_running(&self) -> bool {
-        self.shared.state.load(Ordering::Acquire) == STATE_RUNNING
+        matches!(self.state(), STATE_RUNNING | STATE_STOPPING)
     }
 
     pub fn state(&self) -> i32 {
@@ -187,6 +239,11 @@ impl ClickEngine {
 
     pub fn click_count(&self) -> u64 {
         self.shared.telemetry.total_clicks()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_config_for_test(&self) -> EngineConfig {
+        lock_recovering(&self.shared.session_config).clone()
     }
 
     pub fn missed_count(&self) -> u64 {
@@ -221,6 +278,7 @@ impl ClickEngine {
     /// dead worker mid-session, so Start/Stop enablement and the status
     /// strip recover instead of reporting a running session forever.
     pub fn force_idle(&self) {
+        let _gate = lock_recovering(&self.shared.session_gate);
         self.shared.stop.store(true, Ordering::Release);
         self.shared.state.store(STATE_IDLE, Ordering::Release);
     }
@@ -239,7 +297,9 @@ impl Drop for ClickEngine {
         self.shared.terminate.store(true, Ordering::Release);
         self.shared.stop.store(true, Ordering::Release);
         self.shared.panic.store(true, Ordering::Release);
-        let _ = win32::set_event(self.wake_handle);
+        if self.wake_handle != 0 {
+            let _ = win32::set_event(self.wake_handle);
+        }
         if let Some(handle) = self.worker.take() {
             let _ = handle.join();
         }
@@ -267,16 +327,28 @@ fn worker_loop(shared: Arc<Shared>) {
         if shared.terminate.load(Ordering::Acquire) {
             return;
         }
-        let wake = win32::wait_for_event(shared.wake_event as isize, INFINITE);
-        if wake == win32::WAIT_ERROR {
+        let wake = win32::wait_for_event(shared.wake_event as isize, IDLE_WAIT_MS);
+        if wake == win32::WAIT_TIMED_OUT {
+            continue;
+        }
+        if wake != win32::WAIT_OBJECT {
             publish_error(&shared, "Idle event wait failed; worker exited");
             return;
         }
         if shared.terminate.load(Ordering::Acquire) {
             return;
         }
+        // Reset before the session, not after it. A new start can signal
+        // as soon as the old session becomes idle; resetting afterwards
+        // could erase that signal and strand the new session forever.
+        if let Err(error) = win32::reset_event(shared.wake_event as isize) {
+            publish_error(
+                &shared,
+                format!("Could not reset click-worker event: {error}"),
+            );
+            return;
+        }
         run_click_session(&shared);
-        let _ = win32::reset_event(shared.wake_event as isize);
     }
 }
 
@@ -384,9 +456,15 @@ fn run_click_session(shared: &Shared) {
     let mut next_deadline = session_start;
     let mut previous_completion: Option<i64> = None;
     let mut sequence: u64 = 0;
+    let mut last_config = lock_recovering(&shared.session_config).clone();
 
     while !shared.stop.load(Ordering::Acquire) && !shared.panic.load(Ordering::Acquire) {
-        let mut config = shared.config.load();
+        if let Some(next) = shared.config.try_load() {
+            last_config = next;
+        }
+        // When a writer is in flight, keep the last complete configuration
+        // for this click instead of spinning, blocking, or mixing fields.
+        let mut config = last_config.clone();
         if config.max_clicks != 0 && sequence >= config.max_clicks {
             break;
         }
@@ -522,9 +600,102 @@ fn run_click_session(shared: &Shared) {
             .store(completion - session_start, Ordering::Release);
     }
 
+    let _gate = lock_recovering(&shared.session_gate);
     let panicked = shared.panic.load(Ordering::Acquire);
     shared.state.store(
         if panicked { STATE_PANIC } else { STATE_IDLE },
         Ordering::Release,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // The first deadline is ten minutes away: these tests exercise the
+    // worker handoff without sending a single mouse input on the runner.
+    fn safe_config() -> EngineConfig {
+        EngineConfig {
+            base_interval_ms: 600_000.0,
+            max_interval_ms: 600_000.0,
+            ..EngineConfig::default()
+        }
+    }
+
+    fn wait_until(mut predicate: impl FnMut() -> bool, message: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !predicate() {
+            assert!(Instant::now() < deadline, "{message}");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn stopping_is_busy_and_idle_stop_does_not_strand_the_engine() {
+        let engine = ClickEngine::new();
+        engine.request_stop();
+        assert_eq!(engine.state(), STATE_IDLE);
+        engine.shared.state.store(STATE_STOPPING, Ordering::Release);
+        assert!(engine.is_running());
+        assert!(engine.start(&safe_config()).is_err());
+        engine.shared.state.store(STATE_IDLE, Ordering::Release);
+        assert!(engine.start(&safe_config()).is_ok());
+        engine.request_stop();
+        wait_until(|| !engine.is_running(), "stopped worker never became idle");
+    }
+
+    #[test]
+    fn failed_signal_rolls_back_running_state() {
+        let mut engine = ClickEngine::new();
+        assert!(engine.worker_alive());
+        let original_handle = engine.wake_handle;
+        engine.wake_handle = 0; // invalid for SetEvent; worker still owns the real event.
+        let result = engine.start(&safe_config());
+        engine.wake_handle = original_handle;
+        assert!(result.is_err());
+        assert_eq!(engine.state(), STATE_IDLE);
+        assert!(!engine.is_running());
+        assert!(engine.start(&safe_config()).is_ok());
+        engine.request_stop();
+        wait_until(
+            || !engine.is_running(),
+            "worker did not recover from failed wake",
+        );
+    }
+
+    #[test]
+    fn rapid_stop_and_restart_never_loses_a_wake() {
+        let engine = ClickEngine::new();
+        let config = safe_config();
+        for _ in 0..200 {
+            assert!(engine.start(&config).is_ok());
+            wait_until(
+                || engine.shared.start_tick.load(Ordering::Acquire) != 0,
+                "new session never reached the worker",
+            );
+            engine.request_stop();
+            wait_until(|| !engine.is_running(), "worker failed to drain after stop");
+            assert_eq!(engine.click_count(), 0);
+        }
+    }
+
+    #[test]
+    fn panic_is_terminal_only_after_drain_and_allows_a_later_start() {
+        let engine = ClickEngine::new();
+        let config = safe_config();
+        assert!(engine.start(&config).is_ok());
+        wait_until(
+            || engine.shared.start_tick.load(Ordering::Acquire) != 0,
+            "panic test never reached the worker",
+        );
+        engine.panic_stop();
+        wait_until(|| !engine.is_running(), "panic did not drain");
+        assert_eq!(engine.state(), STATE_PANIC);
+        assert!(engine.start(&config).is_ok());
+        engine.request_stop();
+        wait_until(|| !engine.is_running(), "restart after panic did not stop");
+        assert_eq!(engine.state(), STATE_IDLE);
+        assert_eq!(engine.click_count(), 0);
+    }
 }

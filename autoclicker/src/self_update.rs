@@ -6,7 +6,7 @@
 //! use the same verified flow: download → verify → swap → relaunch:
 //!
 //! 1. The new EXE is streamed (by `win32::https_download_to_file`)
-//!    to `macro_clicker.exe.update-<pid>` **next to the running
+//!    to a uniquely reserved `macro_clicker.exe.update-<attempt>` **next to the running
 //!    EXE**, so the final step is a same-volume rename, never a
 //!    copy that could half-complete.
 //! 2. [`verify_downloaded_exe`] re-reads it and demands all three:
@@ -15,14 +15,15 @@
 //!    fingerprint. Any mismatch deletes the download and leaves
 //!    the installed program untouched.
 //! 3. [`swap_in_new_exe`] renames the running EXE to
-//!    `.old-<pid>` — Windows permits renaming a loaded program
+//!    `.old-<attempt>` — Windows permits renaming a loaded program
 //!    image even though overwriting it would fail — then renames
 //!    the verified download into its place. If the second rename
 //!    fails, the original is renamed straight back.
 //! 4. The app launches the new file and exits; on its next start
-//!    [`cleanup_stale_update_files`] removes the `.old-<pid>`
+//!    [`cleanup_update_attempt`] removes only this attempt's
 //!    remains (retrying briefly, because the old process may
-//!    still be exiting while the new one starts).
+//!    still be exiting while the new one starts). Other attempts'
+//!    files and failed-rollback backups are never swept automatically.
 //!
 //! Everything here is `std`-only file and process work, so the
 //! path classification, swap, rollback, and verification logic are
@@ -48,11 +49,12 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 use crate::update::{self, Sha256};
 
 /// The three paths one update attempt juggles. `download` and
-/// `backup` are siblings of `exe` with a per-process suffix, so
-/// two instances updating at once never fight over one temp name
-/// and a crashed attempt's remains are recognizable for cleanup.
+/// `backup` are siblings of `exe` with a per-attempt suffix, so
+/// instances never reuse one temp name and a failed attempt's
+/// recovery files remain identifiable.
 #[derive(Clone, Debug)]
 pub struct UpdatePaths {
+    pub id: String,
     pub exe: PathBuf,
     pub download: PathBuf,
     pub backup: PathBuf,
@@ -68,13 +70,67 @@ fn sibling_with_suffix(exe: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Builds the path set for one update attempt. `unique` is the
-/// caller's per-attempt discriminator (the app passes its PID).
+/// caller's per-attempt discriminator (the app reserves a fresh ID).
 pub fn update_paths(exe: &Path, unique: &str) -> UpdatePaths {
     UpdatePaths {
+        id: unique.to_string(),
         exe: exe.to_path_buf(),
         download: sibling_with_suffix(exe, &format!(".update-{unique}")),
         backup: sibling_with_suffix(exe, &format!(".old-{unique}")),
     }
+}
+
+/// Reserve a new download path without overwriting leftovers from another
+/// attempt. A fresh suffix also keeps a failed rollback's backup distinct
+/// from a later retry, including after the OS reuses a process id.
+pub fn reserve_update_paths(exe: &Path) -> Result<UpdatePaths, String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    for _ in 0..32 {
+        let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+        let id = format!("{}-{stamp}-{sequence}", std::process::id());
+        let paths = update_paths(exe, &id);
+        if paths.backup.exists() {
+            continue;
+        }
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&paths.download)
+        {
+            Ok(_) => return Ok(paths),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "the update file could not be reserved next to the program: {error}"
+                ))
+            }
+        }
+    }
+    Err(
+        "could not reserve a unique update file; existing recovery files were preserved"
+            .to_string(),
+    )
+}
+
+/// Only IDs issued by this updater may identify files for post-restart cleanup.
+pub fn valid_update_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 96 && id.bytes().all(|byte| byte.is_ascii_digit() || byte == b'-')
+}
+
+/// Clean only this successfully relaunched attempt, never another running
+/// instance's download or a previous failed rollback's recovery backup.
+pub fn cleanup_update_attempt(paths: &UpdatePaths) -> usize {
+    if !paths.exe.is_file() || !valid_update_id(&paths.id) {
+        return 0;
+    }
+    [&paths.backup, &paths.download]
+        .into_iter()
+        .filter(|path| fs::remove_file(path).is_ok())
+        .count()
 }
 
 /// A recognized MacroClicker source checkout behind a Cargo-built
@@ -179,6 +235,58 @@ pub fn is_cargo_target_exe(exe: &Path) -> bool {
 /// Callers compare against it to land on the ordinary "cancelled"
 /// terminal state instead of presenting cancellation as a failure.
 pub const SOURCE_UPDATE_CANCELLED: &str = "source update cancelled";
+
+/// What could be established after a possibly-mutating Git command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceChange {
+    Unchanged,
+    AdvancedToTarget,
+    OtherHead,
+    Uncertain,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceUpdateFailure {
+    pub reason: String,
+    pub change: SourceChange,
+}
+
+impl SourceUpdateFailure {
+    fn before_merge(reason: String) -> Self {
+        Self {
+            reason,
+            change: SourceChange::Unchanged,
+        }
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.reason == SOURCE_UPDATE_CANCELLED
+    }
+
+    pub fn description(&self, version: &str) -> String {
+        let reason = if self.cancelled() {
+            "The source update was cancelled".to_string()
+        } else {
+            self.reason.clone()
+        };
+        let context = match self.change {
+            SourceChange::Unchanged => " This update did not change the checkout's HEAD or tracked files.",
+            SourceChange::AdvancedToTarget => {
+                return format!("{reason}. The source checkout's HEAD advanced to v{version}; inspect git status before retrying. The running program was not replaced.");
+            }
+            SourceChange::OtherHead => " The source checkout's HEAD changed during the update; inspect git status and HEAD before retrying.",
+            SourceChange::Uncertain => " The source checkout may have changed; inspect git status and HEAD before retrying.",
+        };
+        format!("{reason}.{context} The running program was not replaced.")
+    }
+}
+
+/// Successful source preparation records whether this attempt actually
+/// moved HEAD, rather than claiming a checkout already on the tag changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceUpdateSuccess {
+    pub advanced: bool,
+}
 
 /// Whether an `origin` URL names this project's GitHub repository in
 /// one of the standard HTTPS or SSH spellings. The source updater runs
@@ -315,15 +423,15 @@ fn run_update_command(
 
     let started = Instant::now();
     let status = loop {
-        if cancel.load(Ordering::Relaxed) {
-            terminate_child(&mut child);
-            let _ = fs::remove_file(&stdout_path);
-            let _ = fs::remove_file(&stderr_path);
-            return Err(SOURCE_UPDATE_CANCELLED.to_string());
-        }
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
+                if cancel.load(Ordering::Relaxed) {
+                    terminate_child(&mut child);
+                    let _ = fs::remove_file(&stdout_path);
+                    let _ = fs::remove_file(&stderr_path);
+                    return Err(SOURCE_UPDATE_CANCELLED.to_string());
+                }
                 if started.elapsed() > timeout {
                     terminate_child(&mut child);
                     let _ = fs::remove_file(&stdout_path);
@@ -333,6 +441,7 @@ fn run_update_command(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(error) => {
+                terminate_child(&mut child);
                 let _ = fs::remove_file(&stdout_path);
                 let _ = fs::remove_file(&stderr_path);
                 return Err(format!("{label} couldn't be monitored: {error}"));
@@ -368,144 +477,218 @@ fn run_git(
     run_update_command("git", &full_args, &checkout.root, cancel, timeout, label)
 }
 
-/// Fast-forwards a recognized source checkout to an exact release tag.
-///
-/// Safety rails, in order: no tracked changes, the current branch is
-/// `main`, `origin` is this project's GitHub repository, the release
-/// tag resolves to a commit, the current HEAD is an ancestor of that
-/// commit, and the manifest at the destination names the expected
-/// version. Any refusal happens before the working tree is changed
-/// (fetching refs aside). The checked-out source is updated even if a
-/// later binary download fails; callers word that state honestly.
+/// Fast-forwards a recognized checkout to an exact release tag. Existing
+/// clean-tree, branch, origin, tag and ancestry guards remain in force.
+/// The destination manifest is inspected *before* merge. If a mutating
+/// command fails or is cancelled, an independent bounded probe reports
+/// whether HEAD advanced, another HEAD appeared, or the tree is uncertain.
 pub fn fast_forward_source_checkout(
     checkout: &SourceCheckout,
     version: &str,
     cancel: &AtomicBool,
-) -> Result<(), String> {
+) -> Result<SourceUpdateSuccess, SourceUpdateFailure> {
+    fast_forward_source_checkout_with(checkout, version, cancel, |args, flag, timeout, label| {
+        run_git(checkout, args, flag, timeout, label)
+    })
+}
+
+fn inspect_after_merge_failure<F>(
+    git: &mut F,
+    before: &str,
+    target: &str,
+    reason: String,
+) -> SourceUpdateFailure
+where
+    F: FnMut(&[&str], &AtomicBool, Duration, &str) -> Result<String, String>,
+{
+    // Never reuse the user's already-set cancellation flag for recovery.
+    let recovery_cancel = AtomicBool::new(false);
+    let timeout = Duration::from_secs(5);
+    let head = git(
+        &["rev-parse", "--verify", "HEAD"],
+        &recovery_cancel,
+        timeout,
+        "git recovery HEAD",
+    );
+    let change = match head {
+        Ok(head) if head.trim() == target && head.trim() != before => {
+            SourceChange::AdvancedToTarget
+        }
+        Ok(head) if head.trim() != before && !head.trim().is_empty() => SourceChange::OtherHead,
+        Ok(head) if head.trim() == before => {
+            // A killed merge can modify the worktree before it changes HEAD.
+            match git(
+                &["status", "--porcelain=v1", "--untracked-files=no"],
+                &recovery_cancel,
+                timeout,
+                "git recovery status",
+            ) {
+                Ok(status) if status.trim().is_empty() => SourceChange::Unchanged,
+                _ => SourceChange::Uncertain,
+            }
+        }
+        _ => SourceChange::Uncertain,
+    };
+    SourceUpdateFailure { reason, change }
+}
+
+fn fast_forward_source_checkout_with<F>(
+    checkout: &SourceCheckout,
+    version: &str,
+    cancel: &AtomicBool,
+    mut git: F,
+) -> Result<SourceUpdateSuccess, SourceUpdateFailure>
+where
+    F: FnMut(&[&str], &AtomicBool, Duration, &str) -> Result<String, String>,
+{
     let clean_version = version.trim().strip_prefix('v').unwrap_or(version.trim());
     if update::parse_version(clean_version).is_none() {
-        return Err(format!("release version {version} is not a version number"));
+        return Err(SourceUpdateFailure::before_merge(format!(
+            "release version {version} is not a version number"
+        )));
     }
-
-    let short_timeout = Duration::from_secs(20);
-    let status = run_git(
-        checkout,
+    let short = Duration::from_secs(20);
+    let status = git(
         &["status", "--porcelain=v1", "--untracked-files=no"],
         cancel,
-        short_timeout,
+        short,
         "git status",
-    )?;
+    )
+    .map_err(SourceUpdateFailure::before_merge)?;
     if !status.trim().is_empty() {
-        return Err(
-            "the source checkout has uncommitted tracked changes; commit or stash them before updating in the app"
-                .to_string(),
-        );
-    }
-
-    let branch = run_git(
-        checkout,
-        &["branch", "--show-current"],
-        cancel,
-        short_timeout,
-        "git branch",
-    )?;
-    if branch.trim() != "main" {
-        let current = branch.trim();
-        let shown = if current.is_empty() {
-            "a detached HEAD".to_string()
-        } else {
-            format!("branch {current}")
-        };
-        return Err(format!(
-            "the source checkout is on {shown}, not main; switch to main before updating in the app"
+        return Err(SourceUpdateFailure::before_merge(
+            "the source checkout has uncommitted tracked changes; commit or stash them before updating in the app".to_string(),
         ));
     }
-
-    let origin = run_git(
-        checkout,
+    let branch = git(&["branch", "--show-current"], cancel, short, "git branch")
+        .map_err(SourceUpdateFailure::before_merge)?;
+    if branch.trim() != "main" {
+        let shown = if branch.trim().is_empty() {
+            "a detached HEAD".to_string()
+        } else {
+            format!("branch {}", branch.trim())
+        };
+        return Err(SourceUpdateFailure::before_merge(format!(
+            "the source checkout is on {shown}, not main; switch to main before updating in the app"
+        )));
+    }
+    let origin = git(
         &["remote", "get-url", "origin"],
         cancel,
-        short_timeout,
+        short,
         "git remote",
-    )?;
+    )
+    .map_err(SourceUpdateFailure::before_merge)?;
     if !is_supported_origin_url(origin.trim()) {
-        return Err(
+        return Err(SourceUpdateFailure::before_merge(
             "the source checkout's origin is not the MacroClicker GitHub repository".to_string(),
-        );
+        ));
     }
-
-    run_git(
-        checkout,
+    git(
         &["fetch", "--prune", "--tags", "origin", "main"],
         cancel,
         Duration::from_secs(120),
         "git fetch",
-    )?;
-
+    )
+    .map_err(SourceUpdateFailure::before_merge)?;
     let tag_ref = format!("refs/tags/v{clean_version}^{{commit}}");
-    let target = run_git(
-        checkout,
+    let target = git(
         &["rev-parse", "--verify", &tag_ref],
         cancel,
-        short_timeout,
+        short,
         "git rev-parse",
-    )?;
+    )
+    .map_err(SourceUpdateFailure::before_merge)?;
     let target = target.trim();
     if target.len() < 7 || !target.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(format!(
+        return Err(SourceUpdateFailure::before_merge(format!(
             "Git did not resolve release tag v{clean_version} to a commit"
-        ));
+        )));
     }
-
-    let head = run_git(
-        checkout,
-        &["rev-parse", "HEAD"],
-        cancel,
-        short_timeout,
-        "git rev-parse",
-    )?;
+    let head = git(&["rev-parse", "HEAD"], cancel, short, "git rev-parse")
+        .map_err(SourceUpdateFailure::before_merge)?;
     let head = head.trim();
     if head != target {
-        let merge_base = run_git(
-            checkout,
+        let merge_base = git(
             &["merge-base", "HEAD", target],
             cancel,
-            short_timeout,
+            short,
             "git merge-base",
-        )?;
+        )
+        .map_err(SourceUpdateFailure::before_merge)?;
         if merge_base.trim() != head {
-            return Err(format!(
+            return Err(SourceUpdateFailure::before_merge(format!(
                 "the source checkout cannot fast-forward cleanly to v{clean_version}; no source files were changed"
-            ));
+            )));
         }
-        run_git(
-            checkout,
+    }
+
+    let manifest_relative = checkout
+        .manifest
+        .strip_prefix(&checkout.root)
+        .map_err(|_| {
+            SourceUpdateFailure::before_merge(
+                "the source manifest is outside the checkout".to_string(),
+            )
+        })?;
+    if manifest_relative
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(SourceUpdateFailure::before_merge(
+            "the source manifest path is invalid".to_string(),
+        ));
+    }
+    let manifest_at_target = format!(
+        "{target}:{}",
+        manifest_relative.to_string_lossy().replace('\\', "/")
+    );
+    let target_manifest = git(
+        &["show", &manifest_at_target],
+        cancel,
+        short,
+        "git show manifest",
+    )
+    .map_err(SourceUpdateFailure::before_merge)?;
+    if package_version_from_manifest(&target_manifest).as_deref() != Some(clean_version) {
+        return Err(SourceUpdateFailure::before_merge(format!(
+            "the destination tag v{clean_version} does not name that version in its Cargo manifest"
+        )));
+    }
+
+    let advanced = head != target;
+    if advanced {
+        if let Err(reason) = git(
             &["merge", "--ff-only", target],
             cancel,
             Duration::from_secs(60),
             "git merge",
-        )?;
-        let new_head = run_git(
-            checkout,
-            &["rev-parse", "HEAD"],
-            cancel,
-            short_timeout,
-            "git rev-parse",
-        )?;
+        ) {
+            return Err(inspect_after_merge_failure(&mut git, head, target, reason));
+        }
+        let new_head = match git(&["rev-parse", "HEAD"], cancel, short, "git rev-parse") {
+            Ok(head) => head,
+            Err(reason) => return Err(inspect_after_merge_failure(&mut git, head, target, reason)),
+        };
         if new_head.trim() != target {
-            return Err(format!(
-                "the source checkout did not land exactly on v{clean_version}; no program file was replaced"
+            return Err(inspect_after_merge_failure(
+                &mut git,
+                head,
+                target,
+                format!("the source checkout did not land exactly on v{clean_version}"),
             ));
         }
     }
-
     let manifest_text = bounded_file_text(&checkout.manifest, 256 * 1024);
     if package_version_from_manifest(&manifest_text).as_deref() != Some(clean_version) {
-        return Err(format!(
-            "the source checkout at v{clean_version} does not name that version in its Cargo manifest; no program file was replaced"
-        ));
+        let reason = format!("the checked-out Cargo manifest does not name v{clean_version}");
+        return Err(if advanced {
+            inspect_after_merge_failure(&mut git, head, target, reason)
+        } else {
+            SourceUpdateFailure::before_merge(reason)
+        });
     }
-    Ok(())
+    Ok(SourceUpdateSuccess { advanced })
 }
 
 /// True when `header` (the first bytes of a file) opens as an
@@ -593,82 +776,275 @@ pub fn verify_downloaded_exe(
     Ok(())
 }
 
-/// Puts the verified download where the running EXE lives,
-/// parking the current file at the backup path first. Any
-/// failure after the first rename puts the original back before
-/// reporting, so the app is never left without its old,
-/// known-good program file. A stale backup from a crashed
-/// earlier attempt is cleared first — the one case where the
-/// backup destination might already exist.
+/// Parks the current EXE, then places the verified download. If either
+/// rename or restoration fails, the error says exactly where the known-good
+/// backup remains; it is never discarded to make an error look successful.
+fn rename_update_file(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
+}
+
 pub fn swap_in_new_exe(paths: &UpdatePaths) -> Result<(), String> {
-    let _ = fs::remove_file(&paths.backup);
-    fs::rename(&paths.exe, &paths.backup)
+    swap_in_new_exe_with(paths, rename_update_file)
+}
+
+fn swap_in_new_exe_with<R>(paths: &UpdatePaths, mut rename: R) -> Result<(), String>
+where
+    R: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    if !paths.exe.is_file() {
+        return Err(format!(
+            "the current EXE is missing; any existing backup was kept at {}",
+            paths.backup.display()
+        ));
+    }
+    if paths.backup.exists() {
+        return Err(format!(
+            "the backup path {} is already occupied; it was preserved and nothing was replaced",
+            paths.backup.display()
+        ));
+    }
+    rename(&paths.exe, &paths.backup)
         .map_err(|error| format!("the current EXE couldn't be moved aside: {error}"))?;
-    match fs::rename(&paths.download, &paths.exe) {
+    match rename(&paths.download, &paths.exe) {
         Ok(()) => Ok(()),
-        Err(error) => {
-            let _ = fs::rename(&paths.backup, &paths.exe);
-            Err(format!(
+        Err(error) => match rename(&paths.backup, &paths.exe) {
+            Ok(()) => Err(format!(
                 "the new EXE couldn't be put in place (the current one was restored): {error}"
-            ))
-        }
+            )),
+            Err(restore_error) => Err(format!(
+                "the new EXE couldn't be put in place ({error}) and the current EXE could not be restored ({restore_error}). The known-good backup remains at {}; restore it manually before closing this app",
+                paths.backup.display()
+            )),
+        },
     }
 }
 
-/// Undoes a completed [`swap_in_new_exe`] when the new program
-/// could not be launched: the new file is moved back to the
-/// (now vacant) download path and deleted, and the backup
-/// returns to the EXE's place. Best-effort on purpose — this
-/// runs while reporting an error, and the startup cleanup
-/// collects anything it cannot move.
-pub fn undo_swap(paths: &UpdatePaths) {
-    let _ = fs::rename(&paths.exe, &paths.download);
-    let _ = fs::rename(&paths.backup, &paths.exe);
+/// Restore the old executable if launching the replacement fails. On any
+/// failure, keep both the known-good backup and any replacement candidate;
+/// return a recovery instruction instead of claiming rollback succeeded.
+pub fn undo_swap(paths: &UpdatePaths) -> Result<(), String> {
+    undo_swap_with(paths, rename_update_file)
+}
+
+fn undo_swap_with<R>(paths: &UpdatePaths, mut rename: R) -> Result<(), String>
+where
+    R: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    if !paths.backup.is_file() {
+        return Err(format!(
+            "the original backup was not found at {}; the replacement was left at {}",
+            paths.backup.display(),
+            paths.exe.display()
+        ));
+    }
+    if !paths.exe.exists() {
+        return rename(&paths.backup, &paths.exe).map_err(|error| {
+            format!(
+                "the original EXE could not be restored ({error}); its backup remains at {}",
+                paths.backup.display()
+            )
+        });
+    }
+    if paths.download.exists() {
+        return Err(format!(
+            "rollback could not use the occupied temporary path {}; the known-good backup remains at {}",
+            paths.download.display(), paths.backup.display()
+        ));
+    }
+    rename(&paths.exe, &paths.download).map_err(|error| {
+        format!(
+        "the replacement could not be moved aside ({error}); the known-good backup remains at {}",
+        paths.backup.display()
+    )
+    })?;
+    if let Err(error) = rename(&paths.backup, &paths.exe) {
+        // Keep a runnable path when possible, without touching the backup.
+        // If this too fails, the replacement remains at the download path.
+        let candidate = if !paths.exe.exists() && rename(&paths.download, &paths.exe).is_ok() {
+            paths.exe.display().to_string()
+        } else {
+            paths.download.display().to_string()
+        };
+        return Err(format!(
+            "the original EXE could not be restored ({error}); the known-good backup remains at {} and the replacement remains at {candidate}",
+            paths.backup.display()
+        ));
+    }
     let _ = fs::remove_file(&paths.download);
+    Ok(())
 }
 
-/// Lists leftover update files next to `exe` (any
-/// `<exe>.old-*` / `<exe>.update-*` sibling). Capped so a
-/// pathological directory can never turn startup cleanup into
-/// an unbounded collection.
-pub fn stale_update_files(exe: &Path) -> Vec<PathBuf> {
-    const MAX_LISTED: usize = 128;
-    let Some(dir) = exe.parent() else {
-        return Vec::new();
-    };
-    let Some(base) = exe
-        .file_name()
-        .map(|file_name| file_name.to_string_lossy().into_owned())
-    else {
-        return Vec::new();
-    };
-    let prefixes = [format!("{base}.old-"), format!("{base}.update-")];
-    let mut stale = Vec::new();
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if stale.len() >= MAX_LISTED {
-                break;
+#[cfg(test)]
+mod failure_path_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch() -> PathBuf {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "macroclicker-update-fault-{}-{n}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("scratch directory");
+        path
+    }
+
+    #[test]
+    fn failed_swap_and_failed_restore_preserve_the_known_good_backup() {
+        let dir = scratch();
+        let paths = update_paths(&dir.join("macro_clicker.exe"), "swap");
+        fs::write(&paths.exe, b"old").expect("write old");
+        fs::write(&paths.download, b"new").expect("write new");
+        let mut calls = 0;
+        let err = swap_in_new_exe_with(&paths, |from, to| {
+            calls += 1;
+            if calls >= 2 {
+                Err(io::Error::other("injected rename failure"))
+            } else {
+                fs::rename(from, to)
             }
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if prefixes
-                .iter()
-                .any(|prefix| name.starts_with(prefix.as_str()))
-            {
-                stale.push(entry.path());
+        })
+        .expect_err("both later renames fail");
+        assert!(err.contains("could not be restored"));
+        assert!(err.contains(&paths.backup.display().to_string()));
+        assert_eq!(fs::read(&paths.backup).expect("backup retained"), b"old");
+        assert_eq!(
+            fs::read(&paths.download).expect("candidate retained"),
+            b"new"
+        );
+        assert!(!paths.exe.exists());
+        assert_eq!(cleanup_update_attempt(&paths), 0);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_rollback_preserves_both_backup_and_replacement() {
+        let dir = scratch();
+        let paths = update_paths(&dir.join("macro_clicker.exe"), "rollback");
+        fs::write(&paths.exe, b"replacement").expect("write replacement");
+        fs::write(&paths.backup, b"known good").expect("write backup");
+        let err = undo_swap_with(&paths, |from, to| {
+            if from == paths.backup {
+                Err(io::Error::other("injected restoration failure"))
+            } else {
+                fs::rename(from, to)
             }
+        })
+        .expect_err("restoring backup must report failure");
+        assert!(err.contains("could not be restored"));
+        assert!(err.contains(&paths.backup.display().to_string()));
+        assert_eq!(
+            fs::read(&paths.backup).expect("backup retained"),
+            b"known good"
+        );
+        assert_eq!(
+            fs::read(&paths.exe).expect("candidate retained"),
+            b"replacement"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    fn checkout(root: &Path) -> SourceCheckout {
+        let crate_dir = root.join("autoclicker");
+        SourceCheckout {
+            root: root.to_path_buf(),
+            manifest: crate_dir.join("Cargo.toml"),
+            crate_dir,
+            profile: "release".to_string(),
         }
     }
-    stale
-}
 
-/// Deletes every leftover update file next to `exe`, returning
-/// how many were removed. A file still held by a running older
-/// instance simply refuses and is left for the next launch —
-/// cleanup must never fail startup.
-pub fn cleanup_stale_update_files(exe: &Path) -> usize {
-    stale_update_files(exe)
-        .iter()
-        .filter(|path| fs::remove_file(path).is_ok())
-        .count()
+    #[test]
+    fn destination_manifest_is_rejected_before_a_merge() {
+        let dir = scratch();
+        let checkout = checkout(&dir);
+        let cancel = AtomicBool::new(false);
+        let mut merged = false;
+        let result =
+            fast_forward_source_checkout_with(&checkout, "1.6.0", &cancel, |args, _, _, _| {
+                match args[0] {
+                    "status" | "fetch" => Ok(String::new()),
+                    "branch" => Ok("main".to_string()),
+                    "remote" => Ok("https://github.com/Skid-ster/autoclickerBYARENA".to_string()),
+                    "rev-parse" if args[1] == "--verify" => Ok("bbbbbbbb".to_string()),
+                    "rev-parse" => Ok("aaaaaaaa".to_string()),
+                    "merge-base" => Ok("aaaaaaaa".to_string()),
+                    "show" => Ok("[package]\nversion=\"9.0.0\"".to_string()),
+                    "merge" => {
+                        merged = true;
+                        Ok(String::new())
+                    }
+                    other => panic!("unexpected command {other}"),
+                }
+            });
+        let failure = result.expect_err("mismatched target manifest must fail");
+        assert_eq!(failure.change, SourceChange::Unchanged);
+        assert!(!merged);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cancellation_after_fast_forward_reports_advanced_head() {
+        let dir = scratch();
+        let checkout = checkout(&dir);
+        let cancel = AtomicBool::new(false);
+        let mut recovery_probe = false;
+        let result = fast_forward_source_checkout_with(
+            &checkout,
+            "1.6.0",
+            &cancel,
+            |args, flag, _, label| match args[0] {
+                "status" | "fetch" => Ok(String::new()),
+                "branch" => Ok("main".to_string()),
+                "remote" => Ok("https://github.com/Skid-ster/autoclickerBYARENA".to_string()),
+                "rev-parse" if label == "git recovery HEAD" => {
+                    recovery_probe = true;
+                    assert!(
+                        !flag.load(Ordering::Relaxed),
+                        "recovery needs a fresh cancellation flag"
+                    );
+                    Ok("bbbbbbbb".to_string())
+                }
+                "rev-parse" if args[1] == "--verify" => Ok("bbbbbbbb".to_string()),
+                "rev-parse" => Ok("aaaaaaaa".to_string()),
+                "merge-base" => Ok("aaaaaaaa".to_string()),
+                "show" => Ok("[package]\nversion=\"1.6.0\"".to_string()),
+                "merge" => {
+                    cancel.store(true, Ordering::Relaxed);
+                    Err(SOURCE_UPDATE_CANCELLED.to_string())
+                }
+                other => panic!("unexpected command {other}"),
+            },
+        );
+        let failure = result.expect_err("cancelled merge");
+        assert!(recovery_probe);
+        assert!(failure.cancelled());
+        assert_eq!(failure.change, SourceChange::AdvancedToTarget);
+        assert!(failure
+            .description("1.6.0")
+            .contains("HEAD advanced to v1.6.0"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unchanged_head_with_dirty_worktree_is_reported_as_uncertain() {
+        let mut git = |args: &[&str], flag: &AtomicBool, _: Duration, _: &str| {
+            assert!(!flag.load(Ordering::Relaxed));
+            if args[0] == "rev-parse" {
+                Ok("aaaaaaaa".to_string())
+            } else {
+                Ok(" M autoclicker/Cargo.toml".to_string())
+            }
+        };
+        let failure = inspect_after_merge_failure(
+            &mut git,
+            "aaaaaaaa",
+            "bbbbbbbb",
+            SOURCE_UPDATE_CANCELLED.to_string(),
+        );
+        assert_eq!(failure.change, SourceChange::Uncertain);
+        assert!(failure.description("1.6.0").contains("may have changed"));
+    }
 }

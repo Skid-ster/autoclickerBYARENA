@@ -7,6 +7,28 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-29
+
+### Changed
+
+- Tall windows now reflow into a portrait layout so the controls grow
+  when height is added, while classic and wide window shapes retain
+  their respective compositions.
+
+### Fixed
+
+- Serialized click-worker stop and restart transitions and prevented
+  concurrent configuration changes from producing mixed snapshots.
+- Applied interval edits and validation consistently for the Start button
+  and toggle hotkey, including intervals longer than ten seconds.
+- Replayed recorded clicks once per recorded step, regardless of the
+  dashboard's double/triple setting or ordinary-click random offset.
+- Made settings saves atomic across concurrent attempts, retained and
+  retried failed saves, and recovered invalid offsets without discarding
+  unrelated preferences.
+- Improved update cancellation, source-change reporting, worker drain,
+  per-attempt cleanup, and recovery-backup preservation on rollback failure.
+
 ## [1.5.0] - 2026-10-28
 
 ### Added
@@ -100,7 +122,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   precision QPC click engine, Record & Playback, global hotkeys, themes,
   resizable/scaling window, persistent settings, and Windows CI releases.
 
-[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.3.0...v1.4.0

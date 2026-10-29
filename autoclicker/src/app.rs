@@ -24,10 +24,10 @@ use std::time::{Duration, Instant};
 use egui::{Align2, Color32, FontId, Frame, Grid, Layout, Margin, Rounding, Sense, Stroke, Vec2};
 
 use crate::config::{
-    interval_parts_to_ms, ms_to_interval_parts, ClickType, CoordinateMode, EngineConfig, InputMode,
-    MouseButton,
+    commit_ui_interval, interval_parts_to_ms, ms_to_interval_parts, ClickType, CoordinateMode,
+    EngineConfig, InputMode, MouseButton,
 };
-use crate::engine::{ClickEngine, STATE_PANIC};
+use crate::engine::{ClickEngine, STATE_PANIC, STATE_RUNNING, STATE_STOPPING};
 use crate::hotkey::{
     self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, AppTheme,
     UI_SCALE_OPTIONS, VK_ESCAPE,
@@ -37,6 +37,7 @@ use crate::self_update::{self, InstallKind, UpdatePaths};
 use crate::settings;
 use crate::update::{self, ReleaseAsset, UpdateOutcome};
 use crate::win32;
+use crate::window_layout::{self, MainLayout};
 
 /// Complete color scheme for one theme. Both themes share every layout
 /// metric — only colors differ — so switching can never move a control.
@@ -263,62 +264,12 @@ const MAIN_CONTENT_MAX_WIDTH_WIDE: f32 = 880.0_f32;
 /// floor). The vertical rhythm measures spare height from here.
 const MAIN_WIDE_FILL_HEIGHT: f32 = 372.0_f32;
 
-/// Design canvas of the wide arrangement, in the same neutral points
-/// as `MAIN_WINDOW_SIZE`: the 880-point content cap plus the two
-/// 12-point side margins, with the main window's 456-point floor
-/// height. The wide column's natural fill is shorter than that floor,
-/// so using the floor here is what stops a fit calculation from ever
-/// asking the OS for a window shorter than the declared minimum.
-const MAIN_WIDE_CANVAS: [f32; 2] = [
-    MAIN_CONTENT_MAX_WIDTH_WIDE + 2.0_f32 * MAIN_SIDE_MARGIN,
-    MAIN_WINDOW_SIZE[1],
-];
-
-/// Window-driven UI scale is a continuous fit, not a ladder of
-/// steps: the neutral-point window size is divided by the active
-/// design canvas on both axes and the smaller ratio becomes the
-/// total zoom. Neutral points are live points times the total
-/// applied zoom — the size the window has at 100 % zoom — so the
-/// measure is invariant under the zoom changes it drives and
-/// feedback is mathematically impossible. The result is quantized
-/// down to whole percent. Growth applies after the size settles and is
-/// eased; shrinkage applies immediately (see
-/// `apply_shrink_fit_immediately`), because a too-large fit in a
-/// window that is actively getting smaller would squeeze the canvas
-/// below its design size and fight the user's drag. The one-percent
-/// dead band still keeps a size parked on a boundary from flip-flopping.
-const AUTO_ZOOM_QUANTUM: f32 = 0.01_f32;
-
-/// Ceiling on the *total* applied zoom (user percentage x window
-/// fit). 2.80 is the largest total every shipped build has been
-/// verified in (200 % x the old 1.40 maximum step), so the fit may
-/// use the whole proven rendering envelope on a large window.
-const AUTO_ZOOM_MAX_TOTAL: f32 = 2.80_f32;
-
-/// Narrowest live width the wide (three-abreast) arrangement is
-/// allowed to occupy under the automatic fit. The wide row was
-/// verified down to 714 points; below 700 the compact stack returns
-/// instead of squeezing three boxes into a width they were never
-/// proven in. A user's own percentage can still make the *compact*
-/// layout narrower in points — that squeeze is their explicit
-/// choice, as before.
-const MAIN_WIDE_MIN_LIVE_WIDTH: f32 = 700.0_f32;
-
-/// Live width at or above which the wide arrangement may engage.
-/// The 60-point gap above the hold floor is the hysteresis that
-/// keeps a window parked near the boundary from rearranging back
-/// and forth.
-const MAIN_WIDE_ENGAGE_LIVE_WIDTH: f32 = 760.0_f32;
-
-/// Wide-layout aspect band. The compact canvas is 560:456 (1.23:1)
-/// and the wide canvas 904:456 (1.98:1); their geometric mean is
-/// 1.56:1, the aspect at which the two canvases fill a window
-/// equally well. The arrangement engages at 1.58:1 and holds down
-/// to 1.46:1, so panoramic windows get the three-abreast row and
-/// squarer windows keep the classic stack, with a dead band between
-/// the two edges instead of a knife-edge switch.
-const WIDE_LAYOUT_ENGAGE_ASPECT: f32 = 1.58_f32;
-const WIDE_LAYOUT_DISENGAGE_ASPECT: f32 = 1.46_f32;
+/// Portrait cards are stacked and interval/position controls reflow into
+/// two rows, so their width remains legible as the total zoom grows.
+const MAIN_CONTENT_MAX_WIDTH_PORTRAIT: f32 = 480.0_f32;
+/// Natural portrait-column height (including margins); surplus is distributed
+/// through the same bounded rhythm as the classic and panoramic layouts.
+const MAIN_PORTRAIT_FILL_HEIGHT: f32 = 596.0_f32;
 
 /// Reference display for the one-time display-aware opening size:
 /// on a fresh install the classic dialog opens occupying the same
@@ -372,6 +323,7 @@ type UpdateCheckResult = Result<(UpdateOutcome, Option<ReleaseAsset>), String>;
 const UPDATE_PHASE_DOWNLOADING: u8 = 0;
 const UPDATE_PHASE_VERIFYING: u8 = 1;
 const UPDATE_PHASE_SOURCE: u8 = 2;
+const UPDATE_PHASE_STOPPING: u8 = 3;
 
 /// The self-update pipeline's place in its one-way journey:
 /// idle, a download/verify worker in flight (with the shared
@@ -388,7 +340,13 @@ enum UpdateInstallState {
         phase: Arc<AtomicU8>,
         cancel: Arc<AtomicBool>,
         temp_path: PathBuf,
+        source_expected: bool,
+        source_advanced: Arc<AtomicBool>,
         rx: mpsc::Receiver<UpdateInstallMessage>,
+    },
+    WaitingForStop {
+        ready: ReadyUpdate,
+        cancel: Arc<AtomicBool>,
     },
     Restarting,
 }
@@ -396,9 +354,15 @@ enum UpdateInstallState {
 /// The download/verify worker's single report. Verification runs
 /// on the worker so the UI thread never hashes a file; only the
 /// millisecond-fast rename swap and relaunch happen here.
+struct ReadyUpdate {
+    paths: UpdatePaths,
+    version: String,
+    source_advanced: bool,
+}
+
 enum UpdateInstallMessage {
-    Verified { paths: UpdatePaths, version: String },
-    Cancelled,
+    Verified(ReadyUpdate),
+    Cancelled { source_advanced: bool },
     Failed(String),
 }
 
@@ -500,6 +464,8 @@ pub struct OpAutoClickerApp {
     // window and footer both read this one verdict, so the install
     // action they offer can never disagree mid-session.
     install_kind: InstallKind,
+    /// A failed rollback needs manual recovery before another in-app update.
+    update_recovery_backup: Option<PathBuf>,
     skip_exit_save: bool,
 
     // Whether a settings file existed at load. A fresh install (no
@@ -558,8 +524,8 @@ pub struct OpAutoClickerApp {
     // the old fit by the new percentage and could grow the window to
     // satisfy a floor that the current physical window already meets.
     applied_user_factor: f32,
-    // Wide three-across layout currently in effect.
-    wide_layout: bool,
+    // Shape-aware classic, portrait, or panoramic composition.
+    main_layout: MainLayout,
     // Upward fit-zoom debounce: the candidate factor and how many
     // consecutive frames the neutral-point window size has held
     // still while asking for it. Growth applies only once the size
@@ -574,6 +540,7 @@ pub struct OpAutoClickerApp {
     // so the disk is never written while nothing changed.
     settings_path: Option<PathBuf>,
     settings_dirty: bool,
+    last_save_error: Option<String>,
     last_save: Instant,
     last_saved_config: EngineConfig,
     last_saved_prefs: AppPrefs,
@@ -614,6 +581,12 @@ impl OpAutoClickerApp {
             text.strip_prefix("--updated-from=")
                 .filter(|version| update::parse_version(version).is_some())
                 .map(|version| version.strip_prefix('v').unwrap_or(version).to_string())
+        });
+        let updated_attempt = std::env::args_os().find_map(|arg| {
+            let text = arg.to_string_lossy().into_owned();
+            text.strip_prefix("--update-attempt=")
+                .filter(|id| self_update::valid_update_id(id))
+                .map(str::to_string)
         });
         let config = EngineConfig::default();
         let prefs = AppPrefs::default();
@@ -662,6 +635,7 @@ impl OpAutoClickerApp {
             update_install: UpdateInstallState::Idle,
             exe_path,
             install_kind,
+            update_recovery_backup: None,
             skip_exit_save: false,
             window_size_was_persisted: false,
             pending_resize: false,
@@ -673,12 +647,13 @@ impl OpAutoClickerApp {
             displayed_auto_zoom: 1.0_f32,
             zoom_transition: None,
             applied_user_factor: 1.0_f32,
-            wide_layout: false,
+            main_layout: MainLayout::Classic,
             zoom_candidate: 1.0_f32,
             stable_frames: 0,
             last_base_size: Vec2::ZERO,
             settings_path: Self::settings_file_path(),
             settings_dirty: false,
+            last_save_error: None,
             last_save: Instant::now(),
             last_saved_config: EngineConfig::default(),
             last_saved_prefs: AppPrefs::default(),
@@ -692,23 +667,23 @@ impl OpAutoClickerApp {
         app.sanitize_loaded_config();
         app.last_saved_config = app.config.clone();
         app.last_saved_prefs = app.prefs;
-        // Update leftovers from any earlier attempt are collected
-        // at every launch. Right after a relaunch the old process
-        // may still be exiting with its (renamed) image held open,
-        // so that case also retries briefly in the background; a
-        // file that still refuses is simply next launch's job.
-        if let Some(exe) = app.exe_path.clone() {
-            self_update::cleanup_stale_update_files(&exe);
+        // Only clean this successful relaunch's exact attempt. Failed
+        // rollbacks and other instances' in-flight files stay recoverable.
+        if let (Some(exe), Some(id)) = (app.exe_path.clone(), updated_attempt) {
             if updated_from.is_some() {
-                std::thread::spawn(move || {
-                    for _attempt in 0..8 {
-                        if self_update::stale_update_files(&exe).is_empty() {
-                            break;
+                let paths = self_update::update_paths(&exe, &id);
+                self_update::cleanup_update_attempt(&paths);
+                let _ = std::thread::Builder::new()
+                    .name("macroclicker-update-cleanup".to_string())
+                    .spawn(move || {
+                        for _attempt in 0..8 {
+                            if !paths.backup.exists() && !paths.download.exists() {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(750));
+                            self_update::cleanup_update_attempt(&paths);
                         }
-                        std::thread::sleep(Duration::from_millis(750));
-                        self_update::cleanup_stale_update_files(&exe);
-                    }
-                });
+                    });
             }
         }
         if let Some(previous) = updated_from {
@@ -803,16 +778,25 @@ impl OpAutoClickerApp {
         // user's to keep: no display-aware first-run upgrade.
         self.window_size_was_persisted = true;
         let (mut config, mut prefs) = settings::parse_settings(&text);
-        // A window handle from a previous process can never be reused: the OS
-        // may have recycled it for an unrelated window.
+        // The dashboard no longer exposes these legacy modes; neutralize
+        // them before validation so an old HWND cannot discard unrelated
+        // valid preferences and controls.
+        config.input_mode = InputMode::GlobalSendInput;
         config.target_hwnd = 0;
+        config.background_synchronous = false;
+        config.humanize_enabled = false;
         if config.validate().is_err() {
-            self.log("Saved settings failed validation; defaults kept.");
-            self.set_status(
-                StatusKind::Warning,
-                "Saved settings were invalid; factory defaults used.",
-            );
-            return;
+            let mut repaired = config.clone();
+            repaired.random_offset_ms = 0.0;
+            if repaired.validate().is_ok() {
+                config = repaired;
+                self.log("Invalid saved random offset reset; other settings kept.");
+                self.set_status(StatusKind::Warning, "Saved offset invalid; reset to zero.");
+            } else {
+                config = EngineConfig::default();
+                self.log("Invalid saved click settings reset; preferences kept.");
+                self.set_status(StatusKind::Warning, "Invalid saved click settings reset.");
+            }
         }
         // Backward compatibility: files written before the checkbox existed
         // encode the intent through a non-zero offset magnitude.
@@ -840,8 +824,12 @@ impl OpAutoClickerApp {
         self.displayed_auto_zoom = self.auto_zoom;
         self.applied_user_factor = user_factor;
         self.zoom_candidate = self.auto_zoom;
-        self.wide_layout =
-            self.prefs.auto_scale && Self::wide_layout_for(neutral, user_factor, false);
+        self.main_layout = Self::layout_for(
+            neutral,
+            user_factor,
+            MainLayout::Classic,
+            self.prefs.auto_scale,
+        );
         self.sync_interval_editors();
         self.log(format!("Settings loaded from {}.", path.display()));
     }
@@ -850,24 +838,66 @@ impl OpAutoClickerApp {
         self.settings_dirty = true;
     }
 
-    fn flush_settings(&mut self) {
-        self.settings_dirty = false;
+    /// An invalid editor should not poison the entire settings file.
+    /// Random offset is the only cross-field validation the dashboard can
+    /// make invalid; keep all other edited fields and persist zero instead.
+    /// Otherwise use the last saved configuration if valid, or defaults.
+    fn settings_config_to_save(&self) -> EngineConfig {
+        if self.config.validate().is_ok() {
+            return self.config.clone();
+        }
+        let mut repaired = self.config.clone();
+        repaired.random_offset_ms = 0.0;
+        if repaired.validate().is_ok() {
+            repaired
+        } else if self.last_saved_config.validate().is_ok() {
+            self.last_saved_config.clone()
+        } else {
+            EngineConfig::default()
+        }
+    }
+
+    fn flush_settings(&mut self) -> bool {
+        // A close/update can occur before the next normal frame commits
+        // the editors. Persist the values currently visible to the user.
+        self.commit_interval_editors();
         self.last_save = Instant::now();
-        self.last_saved_config = self.config.clone();
-        self.last_saved_prefs = self.prefs;
-        let Some(path) = self.settings_path.clone() else {
-            return;
+        let config_to_save = self.settings_config_to_save();
+        let result = match self.settings_path.as_deref() {
+            Some(path) => settings::write_settings_atomic(
+                path,
+                &settings::serialize_settings(&config_to_save, &self.prefs),
+            )
+            .map_err(|error| error.to_string()),
+            None => Err("No settings path is available.".to_string()),
         };
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        let payload = settings::serialize_settings(&self.config, &self.prefs);
-        if let Err(error) = std::fs::create_dir_all(parent).and_then(|_| {
-            let tmp = parent.join("settings.conf.tmp");
-            std::fs::write(&tmp, payload.as_bytes())?;
-            std::fs::rename(&tmp, &path)
-        }) {
-            self.log(format!("Settings not saved: {error}"));
+        match result {
+            Ok(()) => {
+                self.settings_dirty = false;
+                self.last_saved_config = self.config.clone();
+                self.last_saved_prefs = self.prefs;
+                if self.last_save_error.take().is_some()
+                    && self.status_kind == StatusKind::Warning
+                    && self.status_text == "Settings could not be saved; open Settings for details."
+                {
+                    self.set_status(StatusKind::Ready, "Settings saved.");
+                }
+                true
+            }
+            Err(error) => {
+                self.settings_dirty = true;
+                if self.last_save_error.as_deref() != Some(error.as_str()) {
+                    self.log(format!("Settings not saved: {error}"));
+                }
+                if !self.engine.is_running() && self.status_kind != StatusKind::Panic {
+                    self.set_status(
+                        StatusKind::Warning,
+                        "Settings could not be saved; open Settings for details.",
+                    );
+                }
+                self.last_save_error = Some(error);
+                false
+            }
         }
     }
 
@@ -1117,6 +1147,13 @@ impl OpAutoClickerApp {
     // -------------------------------------------------------- record & play
 
     fn start_macro_recording(&mut self) {
+        if self.update_is_finishing() {
+            self.set_status(
+                StatusKind::Warning,
+                "The update is waiting to restart; cancel it before recording.",
+            );
+            return;
+        }
         if self.engine.is_running() || self.macro_recording {
             return;
         }
@@ -1199,9 +1236,17 @@ impl OpAutoClickerApp {
     }
 
     fn start_macro_playback(&mut self) {
+        if self.update_is_finishing() {
+            self.set_status(
+                StatusKind::Warning,
+                "The update is waiting to restart; cancel it before playback.",
+            );
+            return;
+        }
         if self.engine.is_running() || self.macro_recording || self.macro_recorder.is_empty() {
             return;
         }
+        self.commit_interval_editors();
         let steps: std::sync::Arc<[macro_rec::MacroStep]> =
             std::sync::Arc::from(self.macro_recorder.steps().to_vec());
         let loops = if self.macro_until_stopped {
@@ -1213,6 +1258,11 @@ impl OpAutoClickerApp {
         config.input_mode = InputMode::GlobalSendInput;
         config.coordinate_mode = CoordinateMode::FixedScreen;
         config.target_hwnd = 0;
+        // Each recorded step is one physical click with its own recorded
+        // delay. Dashboard burst and random-offset choices are irrelevant to
+        // playback and must neither multiply nor invalidate recorded steps.
+        config.click_type = ClickType::Single;
+        config.random_offset_ms = 0.0;
         config.max_clicks = macro_rec::clicks_for_loops(steps.len(), loops);
         match self.engine.start_with_macro(&config, steps) {
             Ok(()) => {
@@ -1256,6 +1306,9 @@ impl OpAutoClickerApp {
             self.stop_macro_recording("hotkey");
             return;
         }
+        if self.engine.state() == STATE_STOPPING {
+            return;
+        }
         if self.engine.is_running() {
             self.engine.request_stop();
             self.set_status(StatusKind::Stopping, "Stopping…");
@@ -1268,6 +1321,22 @@ impl OpAutoClickerApp {
     }
 
     fn handle_start(&mut self) {
+        if self.update_is_finishing() {
+            self.set_status(
+                StatusKind::Warning,
+                "The update is waiting to restart; cancel it before starting.",
+            );
+            return;
+        }
+        // Hotkeys are polled before this frame's normal editor commit.
+        // Commit and validate here as well so F6 never starts with stale
+        // values, and a zero interval cannot bypass the disabled button.
+        self.commit_interval_editors();
+        if let Some(error) = self.validation_message() {
+            self.set_status(StatusKind::Error, format!("Error: {error}"));
+            self.log(format!("Click session rejected: {error}"));
+            return;
+        }
         // Only global SendInput delivery is exposed by the UI; the target
         // handle is pinned clear so a stale persisted value can never leak
         // into a session.
@@ -1276,19 +1345,21 @@ impl OpAutoClickerApp {
         match self.engine.start(&self.config) {
             Ok(()) => {
                 self.last_seen_error = None;
+                let cps = self.config.target_cps();
+                let pace = if cps < 0.01 {
+                    format!("every {} ms", self.interval_total_ms())
+                } else {
+                    format!("at {cps:.2} CPS")
+                };
                 self.set_status(
                     StatusKind::Running,
                     format!(
-                        "Running at {:.2} CPS — {} button, {} click.",
-                        self.config.target_cps(),
+                        "Running {pace} — {} button, {} click.",
                         self.config.mouse_button.label().to_lowercase(),
                         self.config.click_type.label().to_lowercase()
                     ),
                 );
-                self.log(format!(
-                    "Click session started at {:.2} CPS.",
-                    self.config.target_cps()
-                ));
+                self.log(format!("Click session started {pace}."));
             }
             Err(error) => {
                 self.set_status(StatusKind::Error, format!("Start rejected: {error}"));
@@ -1312,7 +1383,7 @@ impl OpAutoClickerApp {
         self.zoom_transition = None;
         self.applied_user_factor = 1.0_f32;
         self.zoom_candidate = 1.0_f32;
-        self.wide_layout = false;
+        self.main_layout = MainLayout::Classic;
         self.stable_frames = 0;
         self.restore_window_size = true;
         self.repeat_limited = false;
@@ -1338,15 +1409,13 @@ impl OpAutoClickerApp {
 
     fn commit_interval_editors(&mut self) {
         let total = interval_parts_to_ms(self.hours, self.minutes, self.seconds, self.millis);
-        if total > 0 {
-            self.config.base_interval_ms = total as f64;
-        }
         // The 4.1 checkbox gates the offset; zero means exact timing.
-        self.config.random_offset_ms = if self.prefs.random_offset_enabled {
+        let offset = if self.prefs.random_offset_enabled {
             self.offset_ms
         } else {
             0.0
         };
+        commit_ui_interval(&mut self.config, total, offset);
     }
 
     fn interval_total_ms(&self) -> u64 {
@@ -1424,91 +1493,17 @@ impl OpAutoClickerApp {
         (gap_extra, spring)
     }
 
-    /// Quantizes a raw fit factor down to a whole percent, never
-    /// below 1.0. Rounding *down* keeps the live point size at or
-    /// above the design canvas on the limiting axis, so the fit can
-    /// never push a window under its declared OS minimum and force
-    /// the window to grow against the size the user chose.
-    fn quantize_fit_zoom(raw: f32) -> f32 {
-        if !raw.is_finite() || raw <= 1.0_f32 {
-            return 1.0_f32;
-        }
-        ((raw / AUTO_ZOOM_QUANTUM).floor() * AUTO_ZOOM_QUANTUM).max(1.0_f32)
+    /// Shared, platform-independent fit and shape logic uses neutral points.
+    fn fit_auto_zoom(base: Vec2, user_factor: f32, layout: MainLayout) -> f32 {
+        window_layout::fit_auto_zoom((base.x, base.y), user_factor, layout)
     }
 
-    /// The window-driven scale factor for a neutral-point window
-    /// size: the uniform fit of the active design canvas into the
-    /// window. The smaller axis ratio wins, so the whole dialog
-    /// scales proportionally — never distorted, never clipped — and
-    /// the limiting axis fills exactly. The user's own percentage
-    /// divides back out (the fit speaks in total zoom; this returns
-    /// only the window-driven share), and the total is capped at
-    /// `AUTO_ZOOM_MAX_TOTAL`, the envelope every shipped build was
-    /// verified in. Every input is a neutral-point extent or a
-    /// persisted preference, so the result cannot feed back into
-    /// itself.
-    fn fit_auto_zoom(base: Vec2, user_factor: f32, wide: bool) -> f32 {
-        if !base.x.is_finite()
-            || !base.y.is_finite()
-            || base.x <= 0.0_f32
-            || base.y <= 0.0_f32
-            || !user_factor.is_finite()
-            || user_factor <= 0.0_f32
-        {
-            return 1.0_f32;
-        }
-        let canvas = if wide {
-            MAIN_WIDE_CANVAS
-        } else {
-            MAIN_WINDOW_SIZE
-        };
-        let fit_total = (base.x / canvas[0]).min(base.y / canvas[1]);
-        let max_auto = (AUTO_ZOOM_MAX_TOTAL / user_factor).max(1.0_f32);
-        Self::quantize_fit_zoom((fit_total / user_factor).min(max_auto))
-    }
-
-    /// The fit factor to open with for a neutral-point window size:
-    /// the same decision the running evaluator makes, with the
-    /// wide layout at its engage edge (on a cold start there is no
-    /// previous arrangement for hysteresis to protect), so the
-    /// opening frame and the settled frame always agree.
     fn initial_auto_zoom(base: Vec2, user_factor: f32, enabled: bool) -> f32 {
-        if !enabled {
-            return 1.0_f32;
-        }
-        Self::fit_auto_zoom(
-            base,
-            user_factor,
-            Self::wide_layout_for(base, user_factor, false),
-        )
+        window_layout::initial_auto_zoom((base.x, base.y), user_factor, enabled)
     }
 
-    /// Wide layout for a neutral-point window size. Two tests, both
-    /// with arrive-and-hold hysteresis: the window must be
-    /// panoramic enough that the wide canvas fills it better than
-    /// the compact one (aspect band around the canvases' geometric
-    /// mean), and the live width the wide fit would produce must
-    /// stay inside the proven three-abreast envelope — so a large
-    /// user percentage in a small window gets the compact stack
-    /// instead of a squeezed row.
-    fn wide_layout_for(base: Vec2, user_factor: f32, current: bool) -> bool {
-        if !base.x.is_finite()
-            || !base.y.is_finite()
-            || base.x <= 0.0_f32
-            || base.y <= 0.0_f32
-            || !user_factor.is_finite()
-            || user_factor <= 0.0_f32
-        {
-            return current;
-        }
-        let wide_fit = Self::fit_auto_zoom(base, user_factor, true);
-        let live_width = base.x / (user_factor * wide_fit);
-        let aspect = base.x / base.y;
-        if current {
-            aspect >= WIDE_LAYOUT_DISENGAGE_ASPECT && live_width >= MAIN_WIDE_MIN_LIVE_WIDTH
-        } else {
-            aspect >= WIDE_LAYOUT_ENGAGE_ASPECT && live_width >= MAIN_WIDE_ENGAGE_LIVE_WIDTH
-        }
+    fn layout_for(base: Vec2, user_factor: f32, current: MainLayout, enabled: bool) -> MainLayout {
+        window_layout::choose_layout((base.x, base.y), user_factor, current, enabled)
     }
 
     /// The one-time display-aware opening size for a fresh install,
@@ -1618,13 +1613,13 @@ impl OpAutoClickerApp {
                 && applied_zoom > 0.0_f32
             {
                 let neutral = size * applied_zoom;
-                self.wide_layout = Self::wide_layout_for(neutral, user_factor, self.wide_layout);
-                self.auto_zoom = Self::fit_auto_zoom(neutral, user_factor, self.wide_layout);
+                self.main_layout = Self::layout_for(neutral, user_factor, self.main_layout, true);
+                self.auto_zoom = Self::fit_auto_zoom(neutral, user_factor, self.main_layout);
                 self.last_base_size = neutral;
             }
         } else {
             self.auto_zoom = 1.0_f32;
-            self.wide_layout = false;
+            self.main_layout = MainLayout::Classic;
         }
         self.displayed_auto_zoom = self.auto_zoom;
         self.zoom_candidate = self.auto_zoom;
@@ -1665,10 +1660,16 @@ impl OpAutoClickerApp {
             return;
         }
         let neutral = size * applied_zoom;
-        // The active layout's canvas is deliberately kept here;
-        // `adapt_to_window_size` remains the sole owner of layout
-        // hysteresis once the zoom machinery is idle.
-        let target = Self::fit_auto_zoom(neutral, user_factor, self.wide_layout);
+        // Re-evaluate the shape during the drag too: a portrait canvas
+        // that no longer fits must reflow back to classic before waiting
+        // for the normal settled-size / growth-easing machinery.
+        let layout = Self::layout_for(neutral, user_factor, self.main_layout, true);
+        if layout != self.main_layout {
+            self.main_layout = layout;
+            self.stable_frames = 0;
+            ctx.request_repaint();
+        }
+        let target = Self::fit_auto_zoom(neutral, user_factor, self.main_layout);
         if target >= self.auto_zoom - FIT_DEADBAND {
             return;
         }
@@ -1721,10 +1722,10 @@ impl OpAutoClickerApp {
         // the measure is the physical window size at 100 % zoom.
         let base = size * ctx.zoom_factor();
         let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
-        self.wide_layout =
-            self.prefs.auto_scale && Self::wide_layout_for(base, user_factor, self.wide_layout);
+        self.main_layout =
+            Self::layout_for(base, user_factor, self.main_layout, self.prefs.auto_scale);
         let target = if self.prefs.auto_scale {
-            Self::fit_auto_zoom(base, user_factor, self.wide_layout)
+            Self::fit_auto_zoom(base, user_factor, self.main_layout)
         } else {
             1.0_f32
         };
@@ -2053,43 +2054,63 @@ impl OpAutoClickerApp {
     fn draw_interval_group(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
         let _ = Self::group_box(ui, pal, "Click interval", 0.0_f32, |ui| {
-            // The row's spare width is split between the four
-            // field+label groups, so the units keep their reading
-            // rhythm at every window size and widening the window
-            // opens the gaps between groups instead of stranding dead
-            // space at the right end. The split is computed from last
-            // frame's measured group widths — a group is never forced
-            // wider than it naturally is, so no font or window size
-            // can make a label overflow and stretch the frame.
-            let natural_total: f32 = self.interval_group_widths.iter().sum();
-            let mut measured = [0.0_f32; 4];
-            ui.horizontal(|ui| {
-                let available = ui.available_width();
-                let spacing = ui.spacing().item_spacing.x;
-                // The final group's trailing item spacing still counts
-                // toward the claimed row width, so reserve it up front.
-                let share = if natural_total > 1.0_f32 {
-                    ((available - spacing - natural_total) / 3.0_f32).max(spacing + 2.0_f32)
-                } else {
-                    spacing + 2.0_f32
-                };
-                let fields: [(&str, &mut u64, u64); 4] = [
-                    ("hours", &mut self.hours, 99),
-                    ("mins", &mut self.minutes, 59),
-                    ("secs", &mut self.seconds, 59),
-                    ("milliseconds", &mut self.millis, 999),
-                ];
-                for (index, (label, value, max)) in fields.into_iter().enumerate() {
-                    let before = ui.cursor().left();
-                    Self::numeric_field(ui, value, max, 56.0_f32);
-                    ui.label(egui::RichText::new(label).color(pal.text));
-                    measured[index] = (ui.cursor().left() - before - spacing).max(0.0_f32);
-                    if index < 3 {
-                        ui.add_space(share - spacing);
+            if self.main_layout == MainLayout::Portrait {
+                // Four units need two rows at this width. Grid columns keep
+                // the fields and their labels aligned without clipping.
+                Grid::new("portrait_interval_fields")
+                    .num_columns(4)
+                    .spacing(Vec2::new(7.0_f32, 6.0_f32))
+                    .show(ui, |ui| {
+                        Self::numeric_field(ui, &mut self.hours, 99, 56.0_f32);
+                        ui.label(egui::RichText::new("hours").color(pal.text));
+                        Self::numeric_field(ui, &mut self.minutes, 59, 56.0_f32);
+                        ui.label(egui::RichText::new("mins").color(pal.text));
+                        ui.end_row();
+                        Self::numeric_field(ui, &mut self.seconds, 59, 56.0_f32);
+                        ui.label(egui::RichText::new("secs").color(pal.text));
+                        Self::numeric_field(ui, &mut self.millis, 999, 56.0_f32);
+                        ui.label(egui::RichText::new("milliseconds").color(pal.text));
+                        ui.end_row();
+                    });
+            } else {
+                // The row's spare width is split between the four
+                // field+label groups, so the units keep their reading
+                // rhythm at every window size and widening the window
+                // opens the gaps between groups instead of stranding dead
+                // space at the right end. The split is computed from last
+                // frame's measured group widths — a group is never forced
+                // wider than it naturally is, so no font or window size
+                // can make a label overflow and stretch the frame.
+                let natural_total: f32 = self.interval_group_widths.iter().sum();
+                let mut measured = [0.0_f32; 4];
+                ui.horizontal(|ui| {
+                    let available = ui.available_width();
+                    let spacing = ui.spacing().item_spacing.x;
+                    // The final group's trailing item spacing still counts
+                    // toward the claimed row width, so reserve it up front.
+                    let share = if natural_total > 1.0_f32 {
+                        ((available - spacing - natural_total) / 3.0_f32).max(spacing + 2.0_f32)
+                    } else {
+                        spacing + 2.0_f32
+                    };
+                    let fields: [(&str, &mut u64, u64); 4] = [
+                        ("hours", &mut self.hours, 99),
+                        ("mins", &mut self.minutes, 59),
+                        ("secs", &mut self.seconds, 59),
+                        ("milliseconds", &mut self.millis, 999),
+                    ];
+                    for (index, (label, value, max)) in fields.into_iter().enumerate() {
+                        let before = ui.cursor().left();
+                        Self::numeric_field(ui, value, max, 56.0_f32);
+                        ui.label(egui::RichText::new(label).color(pal.text));
+                        measured[index] = (ui.cursor().left() - before - spacing).max(0.0_f32);
+                        if index < 3 {
+                            ui.add_space(share - spacing);
+                        }
                     }
-                }
-            });
-            self.interval_group_widths = measured;
+                });
+                self.interval_group_widths = measured;
+            }
             ui.add_space(7.0_f32);
             ui.horizontal(|ui| {
                 let mut enabled = self.prefs.random_offset_enabled;
@@ -2281,6 +2302,17 @@ impl OpAutoClickerApp {
         self.store_row_group_height(taller_natural);
     }
 
+    fn draw_portrait_options_and_repeat(&mut self, ui: &mut egui::Ui, gap_extra: f32) {
+        let pal = self.palette();
+        let _ = Self::group_box(ui, pal, "Click options", 0.0_f32, |ui| {
+            self.options_group_contents(ui, pal)
+        });
+        ui.add_space(7.0_f32 + gap_extra);
+        let _ = Self::group_box(ui, pal, "Click repeat", 0.0_f32, |ui| {
+            self.repeat_group_contents(ui, pal)
+        });
+    }
+
     /// Wide layout's middle row: Click options, Click repeat and
     /// Cursor position three-abreast, still meeting at one bottom
     /// edge through the same shared-height mechanism.
@@ -2309,31 +2341,63 @@ impl OpAutoClickerApp {
     fn draw_position_group(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
         let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, |ui| {
-            self.position_group_contents(ui, pal, false)
+            if self.main_layout == MainLayout::Portrait {
+                ui.horizontal(|ui| {
+                    ui.radio_value(
+                        &mut self.config.coordinate_mode,
+                        CoordinateMode::CurrentCursor,
+                        "Current location",
+                    );
+                    ui.radio_value(
+                        &mut self.config.coordinate_mode,
+                        CoordinateMode::FixedScreen,
+                        "Pick location",
+                    );
+                });
+                ui.add_space(4.0_f32);
+                ui.horizontal(|ui| {
+                    self.pick_location_button(ui, pal);
+                    self.fixed_xy_fields(ui);
+                });
+            } else {
+                self.position_group_contents(ui, pal, false);
+            }
         });
     }
 
     fn start_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
         let running = self.engine.is_running();
-        let config_ok = self.validation_message().is_none();
+        let validation = self.validation_message();
+        let finishing = self.update_is_finishing();
         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
-        if Self::toned_button(
+        let response = Self::toned_button(
             ui,
             pal,
             &format!("Start ({hotkey_name})"),
-            !running && config_ok,
+            !running && validation.is_none() && !finishing,
             width,
             true,
             false,
-        )
-        .clicked()
-        {
+        );
+        let reason = if running {
+            Some("Stop the current session first.".to_string())
+        } else if finishing {
+            Some("The update is waiting to restart.".to_string())
+        } else {
+            validation
+        };
+        let response = if let Some(reason) = reason {
+            response.on_disabled_hover_text(reason)
+        } else {
+            response
+        };
+        if response.clicked() {
             self.handle_start();
         }
     }
 
     fn stop_button(&mut self, ui: &mut egui::Ui, pal: &Palette, width: f32) {
-        let running = self.engine.is_running();
+        let running = self.engine.state() == STATE_RUNNING;
         let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
         if Self::toned_button(
             ui,
@@ -2374,7 +2438,7 @@ impl OpAutoClickerApp {
     fn draw_action_buttons(&mut self, ui: &mut egui::Ui) {
         let pal = self.palette();
         let gap = ui.spacing().item_spacing.x;
-        if self.wide_layout {
+        if self.main_layout == MainLayout::Wide {
             // One row of four: the wide canvas earns the flatter,
             // single-glance action strip.
             let button_width = (ui.available_width() - 3.0_f32 * gap) / 4.0_f32;
@@ -2403,6 +2467,102 @@ impl OpAutoClickerApp {
                     ui.end_row();
                 });
         }
+    }
+
+    fn draw_footer_actions(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().button_padding = Vec2::new(8.0_f32, 2.0_f32);
+            let button = egui::Button::new(
+                egui::RichText::new("Settings…")
+                    .size(12.0_f32)
+                    .color(pal.text),
+            )
+            .fill(pal.button)
+            .stroke(Stroke::new(1.0_f32, pal.button_border))
+            .rounding(Rounding::same(5.0_f32));
+            let settings_response = ui
+                .add(button)
+                .on_hover_text("Theme, interface scale, clicking behaviour and the session log");
+            if settings_response.clicked() {
+                self.show_settings = true;
+            }
+            // The Updates entry point reports the
+            // checker's state in place — including the
+            // waiting and ready-to-download states — so
+            // a background verdict is visible without
+            // opening anything. When a verified in-app
+            // update is ready and no click/macro session
+            // is active, this one button starts the whole
+            // update; the Updates window opens as its
+            // progress and cancellation surface.
+            let direct_update = matches!(self.update_state, UpdateUiState::Available(_))
+                && self.self_update_possible()
+                && matches!(self.update_install, UpdateInstallState::Idle)
+                && !self.engine.is_running()
+                && !self.macro_recording
+                && !self.macro_playing;
+            let (updates_label, updates_color, updates_stroke, updates_hover) =
+                match &self.update_state {
+                    UpdateUiState::Available(version) => (
+                        format!("Update v{version}"),
+                        pal.success,
+                        pal.success,
+                        if direct_update && self.source_checkout().is_some() {
+                            format!("Update this source checkout and restart into v{version}")
+                        } else if direct_update {
+                            format!("Update now and restart into v{version}")
+                        } else {
+                            format!("MacroClicker v{version} is available — open update details")
+                        },
+                    ),
+                    UpdateUiState::Checking => (
+                        "Checking…".to_string(),
+                        pal.text_dim,
+                        pal.button_border,
+                        "Checking GitHub for a newer release".to_string(),
+                    ),
+                    UpdateUiState::Failed(_) => (
+                        "Updates…".to_string(),
+                        pal.warning,
+                        pal.button_border,
+                        "The last update check couldn't finish — open for details".to_string(),
+                    ),
+                    _ => (
+                        "Updates…".to_string(),
+                        pal.text,
+                        pal.button_border,
+                        "See whether a newer MacroClicker release is available".to_string(),
+                    ),
+                };
+            let (updates_label, updates_color, updates_stroke, updates_hover) = if matches!(
+                self.update_install,
+                UpdateInstallState::Downloading { .. } | UpdateInstallState::WaitingForStop { .. }
+            ) {
+                (
+                    "Updating…".to_string(),
+                    pal.success,
+                    pal.success,
+                    "Updating MacroClicker — open for progress".to_string(),
+                )
+            } else {
+                (updates_label, updates_color, updates_stroke, updates_hover)
+            };
+            let updates_button = egui::Button::new(
+                egui::RichText::new(updates_label)
+                    .size(12.0_f32)
+                    .color(updates_color),
+            )
+            .fill(pal.button)
+            .stroke(Stroke::new(1.0_f32, updates_stroke))
+            .rounding(Rounding::same(5.0_f32));
+            let updates_response = ui.add(updates_button).on_hover_text(updates_hover);
+            if updates_response.clicked() {
+                self.show_updates = true;
+                if direct_update {
+                    self.start_update_install();
+                }
+            }
+        });
     }
 
     // ---------------------------------------------------------- hotkey dialog
@@ -2654,21 +2814,26 @@ impl OpAutoClickerApp {
                         self.displayed_auto_zoom = 1.0_f32;
                         self.zoom_transition = None;
                         self.zoom_candidate = 1.0_f32;
-                        self.wide_layout = false;
+                        self.main_layout = MainLayout::Classic;
                         self.stable_frames = 0;
                     }
                     self.mark_dirty();
                 }
                 ui.label(
                     egui::RichText::new(
-                        "The whole interface scales to fit the window as it \
-                         grows or shrinks, and panoramic windows rearrange \
-                         the middle groups three-abreast with one row of \
-                         buttons. The fit multiplies with the percentage above.",
+                        "The interface scales as the window grows or shrinks. \
+                         Tall windows stack the controls; panoramic windows \
+                         arrange them side by side. The fit multiplies with \
+                         the percentage above.",
                     )
                     .color(pal.text_dim)
                     .small(),
                 );
+                if let Some(error) = &self.last_save_error {
+                    ui.add_space(8.0_f32);
+                    ui.label(egui::RichText::new(format!("Settings not saved: {error}. Retrying automatically."))
+                        .color(pal.warning).small());
+                }
                 ui.add_space(10.0_f32);
                 ui.separator();
                 ui.add_space(6.0_f32);
@@ -2699,16 +2864,24 @@ impl OpAutoClickerApp {
         self.update_notice = None;
         let (sender, receiver) = mpsc::channel();
         self.update_rx = Some(receiver);
-        std::thread::spawn(move || {
-            let result = win32::https_get_text(
-                update::UPDATE_API_HOST,
-                update::UPDATE_API_PATH,
-                update::UPDATE_API_HEADERS,
-            )
-            .map_err(|error| error.to_string())
-            .and_then(|body| update::evaluate_release(&body, env!("CARGO_PKG_VERSION")));
-            let _ = sender.send(result);
-        });
+        let spawned = std::thread::Builder::new()
+            .name("macroclicker-update-check".to_string())
+            .spawn(move || {
+                let result = win32::https_get_text(
+                    update::UPDATE_API_HOST,
+                    update::UPDATE_API_PATH,
+                    update::UPDATE_API_HEADERS,
+                )
+                .map_err(|error| error.to_string())
+                .and_then(|body| update::evaluate_release(&body, env!("CARGO_PKG_VERSION")));
+                let _ = sender.send(result);
+            });
+        if let Err(error) = spawned {
+            self.apply_update_failure(
+                format!("could not start the update check: {error}"),
+                Instant::now(),
+            );
+        }
     }
 
     /// Refreshes the verdict when the Updates window is opened and
@@ -2813,7 +2986,10 @@ impl OpAutoClickerApp {
             self.install_kind,
             InstallKind::Portable | InstallKind::SourceCheckout(_)
         );
-        asset_ready && self.exe_path.is_some() && install_ready
+        asset_ready
+            && self.exe_path.is_some()
+            && install_ready
+            && self.update_recovery_backup.is_none()
     }
 
     fn source_checkout(&self) -> Option<&self_update::SourceCheckout> {
@@ -2835,6 +3011,9 @@ impl OpAutoClickerApp {
     /// Why the browser path is being offered instead of an
     /// in-app update, for the Updates window's fine print.
     fn self_update_unavailable_reason(&self) -> &'static str {
+        if self.update_recovery_backup.is_some() {
+            return "A previous rollback needs manual recovery; inspect the backup path shown above and restart MacroClicker before retrying.";
+        }
         match &self.install_kind {
             InstallKind::CargoBuild => {
                 "Development build outside a recognized MacroClicker source checkout — \
@@ -2851,12 +3030,82 @@ impl OpAutoClickerApp {
         }
     }
 
-    /// Starts the update worker for the confirmed release. A
-    /// recognized source checkout is fast-forwarded to the exact
-    /// tag first; the worker then streams the release EXE next to
-    /// the running one, verifies size and SHA-256, and reports
-    /// exactly once. This process only ever acts on Verified.
+    fn update_is_finishing(&self) -> bool {
+        matches!(
+            self.update_install,
+            UpdateInstallState::WaitingForStop { .. } | UpdateInstallState::Restarting
+        )
+    }
+
+    fn source_advanced_context(version: &str, advanced: bool) -> String {
+        if advanced {
+            format!("The source checkout was fast-forwarded to v{version}. ")
+        } else {
+            String::new()
+        }
+    }
+
+    fn show_update_cancelled(&mut self, version: &str, advanced: bool) {
+        self.update_notice = Some((
+            UpdateNoticeKind::Info,
+            format!(
+                "Update cancelled. {}The running program was not replaced.",
+                Self::source_advanced_context(version, advanced)
+            ),
+        ));
+    }
+
+    /// Cancellation is checked on both sides of the potentially lengthy
+    /// hash. It is checked once more on the UI thread before any rename.
+    fn finish_update_verification<F>(
+        paths: UpdatePaths,
+        version: String,
+        source_advanced: bool,
+        cancel: &AtomicBool,
+        verify: F,
+    ) -> UpdateInstallMessage
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        if cancel.load(Ordering::Acquire) {
+            let _ = std::fs::remove_file(&paths.download);
+            return UpdateInstallMessage::Cancelled { source_advanced };
+        }
+        let result = verify();
+        if cancel.load(Ordering::Acquire) {
+            let _ = std::fs::remove_file(&paths.download);
+            return UpdateInstallMessage::Cancelled { source_advanced };
+        }
+        match result {
+            Ok(()) => UpdateInstallMessage::Verified(ReadyUpdate {
+                paths,
+                version,
+                source_advanced,
+            }),
+            Err(message) => {
+                let _ = std::fs::remove_file(&paths.download);
+                UpdateInstallMessage::Failed(format!(
+                    "{}{message}",
+                    Self::source_advanced_context(&version, source_advanced)
+                ))
+            }
+        }
+    }
+
+    /// Starts only from an explicit user action. Source preparation and
+    /// verification happen off the UI thread; nothing is replaced until a
+    /// verified report has passed the final cancellation check.
     fn start_update_install(&mut self) {
+        if let Some(backup) = &self.update_recovery_backup {
+            self.update_notice = Some((
+                UpdateNoticeKind::Error,
+                format!(
+                    "Restore or inspect the recovery backup at {} and restart MacroClicker before another in-app update.",
+                    backup.display()
+                ),
+            ));
+            return;
+        }
         if !matches!(self.update_install, UpdateInstallState::Idle) {
             return;
         }
@@ -2870,9 +3119,16 @@ impl OpAutoClickerApp {
         let Some((host, path)) = update::download_request_for_version(&version) else {
             return;
         };
-        let paths = self_update::update_paths(&exe, &std::process::id().to_string());
+        let paths = match self_update::reserve_update_paths(&exe) {
+            Ok(paths) => paths,
+            Err(error) => {
+                self.update_notice = Some((UpdateNoticeKind::Error, error));
+                return;
+            }
+        };
         let source_checkout = self.source_checkout().cloned();
-        let initial_phase = if source_checkout.is_some() {
+        let source_expected = source_checkout.is_some();
+        let initial_phase = if source_expected {
             UPDATE_PHASE_SOURCE
         } else {
             UPDATE_PHASE_DOWNLOADING
@@ -2880,6 +3136,7 @@ impl OpAutoClickerApp {
         let downloaded = Arc::new(AtomicU64::new(0));
         let phase = Arc::new(AtomicU8::new(initial_phase));
         let cancel = Arc::new(AtomicBool::new(false));
+        let source_advanced = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
         let temp_path = paths.download.clone();
         self.update_install = UpdateInstallState::Downloading {
@@ -2889,164 +3146,222 @@ impl OpAutoClickerApp {
             phase: Arc::clone(&phase),
             cancel: Arc::clone(&cancel),
             temp_path,
+            source_expected,
+            source_advanced: Arc::clone(&source_advanced),
             rx: receiver,
         };
         self.update_notice = None;
-        std::thread::spawn(move || {
-            let source_result = match &source_checkout {
-                Some(checkout) => {
-                    self_update::fast_forward_source_checkout(checkout, &version, &cancel)
-                }
-                None => Ok(()),
-            };
-            let message = match source_result {
-                Err(reason)
-                    if reason == self_update::SOURCE_UPDATE_CANCELLED
-                        || cancel.load(Ordering::Relaxed) =>
-                {
-                    UpdateInstallMessage::Cancelled
-                }
-                Err(reason) => UpdateInstallMessage::Failed(reason),
-                Ok(()) => {
-                    let source_prepared = source_checkout.is_some();
-                    phase.store(UPDATE_PHASE_DOWNLOADING, Ordering::Relaxed);
-                    let failure_context = if source_prepared {
-                        format!(
-                            "The source checkout was updated to v{version}, but the release build was not installed: "
-                        )
-                    } else {
-                        String::new()
-                    };
-                    match win32::https_download_to_file(
-                        host,
-                        &path,
-                        &paths.download,
-                        asset.size,
-                        &downloaded,
-                        &cancel,
-                    ) {
-                        Ok(_bytes) => {
-                            phase.store(UPDATE_PHASE_VERIFYING, Ordering::Relaxed);
-                            match self_update::verify_downloaded_exe(
+        let spawned = std::thread::Builder::new()
+            .name("macroclicker-update".to_string())
+            .spawn(move || {
+                let source_result = match &source_checkout {
+                    Some(checkout) => {
+                        self_update::fast_forward_source_checkout(checkout, &version, &cancel)
+                            .map(|result| result.advanced)
+                    }
+                    None => Ok(false),
+                };
+                let message = match source_result {
+                    Err(failure)
+                        if failure.cancelled()
+                            && failure.change == self_update::SourceChange::Unchanged =>
+                    {
+                        UpdateInstallMessage::Cancelled {
+                            source_advanced: false,
+                        }
+                    }
+                    Err(failure) => UpdateInstallMessage::Failed(failure.description(&version)),
+                    Ok(advanced) => {
+                        source_advanced.store(advanced, Ordering::Release);
+                        if cancel.load(Ordering::Acquire) {
+                            UpdateInstallMessage::Cancelled {
+                                source_advanced: advanced,
+                            }
+                        } else {
+                            phase.store(UPDATE_PHASE_DOWNLOADING, Ordering::Relaxed);
+                            match win32::https_download_to_file(
+                                host,
+                                &path,
                                 &paths.download,
                                 asset.size,
-                                &sha256,
+                                &downloaded,
+                                &cancel,
                             ) {
-                                Ok(()) => UpdateInstallMessage::Verified { paths, version },
-                                Err(message) => {
-                                    let _ = std::fs::remove_file(&paths.download);
-                                    UpdateInstallMessage::Failed(format!(
-                                        "{failure_context}{message}"
-                                    ))
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            let _ = std::fs::remove_file(&paths.download);
-                            if cancel.load(Ordering::Relaxed) {
-                                if source_prepared {
-                                    UpdateInstallMessage::Failed(
-                                        "The update was cancelled after the source checkout had been fast-forwarded; the running program was not replaced."
-                                            .to_string(),
+                                Ok(_bytes) => {
+                                    phase.store(UPDATE_PHASE_VERIFYING, Ordering::Relaxed);
+                                    let candidate = paths.download.clone();
+                                    Self::finish_update_verification(
+                                        paths,
+                                        version,
+                                        advanced,
+                                        &cancel,
+                                        || {
+                                            self_update::verify_downloaded_exe(
+                                                &candidate, asset.size, &sha256,
+                                            )
+                                        },
                                     )
-                                } else {
-                                    UpdateInstallMessage::Cancelled
                                 }
-                            } else {
-                                UpdateInstallMessage::Failed(format!("{failure_context}{error}"))
+                                Err(error) => {
+                                    let _ = std::fs::remove_file(&paths.download);
+                                    if cancel.load(Ordering::Acquire) {
+                                        UpdateInstallMessage::Cancelled {
+                                            source_advanced: advanced,
+                                        }
+                                    } else {
+                                        UpdateInstallMessage::Failed(format!(
+                                            "{}{error}",
+                                            Self::source_advanced_context(&version, advanced)
+                                        ))
+                                    }
+                                }
                             }
                         }
                     }
-                }
-            };
-            let _ = sender.send(message);
-        });
+                };
+                let _ = sender.send(message);
+            });
+        if let Err(error) = spawned {
+            if let UpdateInstallState::Downloading { temp_path, .. } =
+                std::mem::replace(&mut self.update_install, UpdateInstallState::Idle)
+            {
+                let _ = std::fs::remove_file(temp_path);
+            }
+            self.update_notice = Some((
+                UpdateNoticeKind::Error,
+                format!("Could not start the update worker: {error}"),
+            ));
+        }
     }
 
-    /// Applies the install worker's report. Verified is the only
-    /// path that touches the program file, and it does so in one
-    /// careful breath (stop, save, swap, relaunch, close);
-    /// everything else resolves to Idle with a notice and the
-    /// previous build provably untouched.
+    /// Apply terminal worker reports; never replace an EXE after cancellation
+    /// or while a click worker is still releasing its current session.
     fn poll_update_install(&mut self, ctx: &egui::Context) {
+        if let UpdateInstallState::WaitingForStop { cancel, .. } = &self.update_install {
+            let cancelled = cancel.load(Ordering::Acquire);
+            let worker_lost = self.engine.is_running() && !self.engine.worker_alive();
+            if !cancelled && !worker_lost && self.engine.is_running() {
+                ctx.request_repaint_after(Duration::from_millis(16));
+                return;
+            }
+            let previous = std::mem::replace(&mut self.update_install, UpdateInstallState::Idle);
+            if let UpdateInstallState::WaitingForStop { ready, .. } = previous {
+                if cancelled {
+                    let _ = std::fs::remove_file(&ready.paths.download);
+                    self.show_update_cancelled(&ready.version, ready.source_advanced);
+                } else if worker_lost {
+                    self.engine.force_idle();
+                    let _ = std::fs::remove_file(&ready.paths.download);
+                    self.update_notice = Some((UpdateNoticeKind::Error, format!(
+                        "{}The click worker exited unexpectedly. Restart the app before retrying; the program was not replaced.",
+                        Self::source_advanced_context(&ready.version, ready.source_advanced)
+                    )));
+                } else {
+                    self.install_verified_update(ctx, &ready);
+                }
+            }
+            return;
+        }
         let message = match &self.update_install {
-            UpdateInstallState::Downloading { rx, .. } => match rx.try_recv() {
+            UpdateInstallState::Downloading {
+                rx,
+                source_expected,
+                source_advanced,
+                version,
+                ..
+            } => match rx.try_recv() {
                 Ok(message) => Some(message),
                 Err(mpsc::TryRecvError::Empty) => None,
-                Err(mpsc::TryRecvError::Disconnected) => Some(UpdateInstallMessage::Failed(
-                    "the update download stopped unexpectedly".to_string(),
-                )),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let context = if source_advanced.load(Ordering::Acquire) {
+                        Self::source_advanced_context(version, true)
+                    } else if *source_expected {
+                        "The source checkout may have changed; inspect git status and HEAD before retrying. ".to_string()
+                    } else {
+                        String::new()
+                    };
+                    Some(UpdateInstallMessage::Failed(format!("{context}The update worker stopped unexpectedly; the running program was not replaced.")))
+                }
             },
             _ => None,
         };
         let Some(message) = message else {
             if matches!(self.update_install, UpdateInstallState::Downloading { .. }) {
-                // The progress row is only truthful if frames keep
-                // arriving while the worker streams.
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
             return;
         };
-        let (version, temp_path) =
+        let (version, temp_path, cancel) =
             match std::mem::replace(&mut self.update_install, UpdateInstallState::Idle) {
                 UpdateInstallState::Downloading {
-                    version, temp_path, ..
-                } => (version, temp_path),
-                _ => (String::new(), PathBuf::new()),
+                    version,
+                    temp_path,
+                    cancel,
+                    ..
+                } => (version, temp_path, cancel),
+                _ => return,
             };
         match message {
-            UpdateInstallMessage::Cancelled => {
+            UpdateInstallMessage::Cancelled { source_advanced } => {
                 let _ = std::fs::remove_file(&temp_path);
-                self.update_notice = Some((
-                    UpdateNoticeKind::Info,
-                    "Update cancelled — the running version was not changed.".to_string(),
-                ));
+                self.show_update_cancelled(&version, source_advanced);
             }
             UpdateInstallMessage::Failed(reason) => {
                 let _ = std::fs::remove_file(&temp_path);
-                self.update_notice = Some((
-                    UpdateNoticeKind::Error,
-                    format!(
-                        "Couldn't update automatically: {reason} \
-                         You can still download v{version} in your browser."
-                    ),
-                ));
+                self.update_notice = Some((UpdateNoticeKind::Error, format!(
+                    "Couldn't update automatically: {reason} You can still download v{version} in your browser."
+                )));
             }
-            UpdateInstallMessage::Verified { paths, version } => {
-                self.install_verified_update(ctx, &paths, &version);
+            UpdateInstallMessage::Verified(ready) => {
+                if cancel.load(Ordering::Acquire) {
+                    let _ = std::fs::remove_file(&ready.paths.download);
+                    self.show_update_cancelled(&ready.version, ready.source_advanced);
+                } else if self.engine.is_running() {
+                    self.engine.request_stop();
+                    self.set_status(StatusKind::Stopping, "Stopping before update restart…");
+                    self.update_install = UpdateInstallState::WaitingForStop { ready, cancel };
+                    ctx.request_repaint();
+                } else {
+                    self.install_verified_update(ctx, &ready);
+                }
             }
         }
     }
 
-    /// The point of no return, taken carefully: stop any click
-    /// or macro activity, flush settings, swap the verified EXE
-    /// into place (rolling back on any failure), launch it, and
-    /// close this process. If the new program cannot be
-    /// launched, the swap is undone and this build keeps running
-    /// exactly as it was.
-    fn install_verified_update(&mut self, ctx: &egui::Context, paths: &UpdatePaths, version: &str) {
+    /// Swap only after the click worker has drained. Errors retain recovery
+    /// paths and never claim rollback succeeded when a rename failed.
+    fn install_verified_update(&mut self, ctx: &egui::Context, ready: &ReadyUpdate) {
+        let paths = &ready.paths;
+        let version = &ready.version;
+        let source_context = Self::source_advanced_context(version, ready.source_advanced);
         if self.macro_recording {
             self.stop_macro_recording("update restart");
         }
-        if self.engine.is_running() {
-            self.engine.request_stop();
-        }
         self.macro_playing = false;
-        self.flush_settings();
+        if !self.flush_settings() {
+            let _ = std::fs::remove_file(&paths.download);
+            self.update_notice = Some((UpdateNoticeKind::Error, format!(
+                "{source_context}Settings could not be saved, so the update was not installed. Open Settings for details and retry."
+            )));
+            return;
+        }
         match self_update::swap_in_new_exe(paths) {
             Err(reason) => {
-                let _ = std::fs::remove_file(&paths.download);
-                self.update_notice = Some((
-                    UpdateNoticeKind::Error,
-                    format!(
-                        "v{version} downloaded and verified but wasn't installed: {reason} \
-                         Your current version is untouched — the browser download works too."
-                    ),
-                ));
+                if paths.backup.exists() {
+                    self.update_recovery_backup = Some(paths.backup.clone());
+                } else if paths.exe.is_file() {
+                    // No recovery backup is needed and the original is still
+                    // in place; do not accumulate a discarded candidate.
+                    let _ = std::fs::remove_file(&paths.download);
+                }
+                self.update_notice = Some((UpdateNoticeKind::Error, format!(
+                    "{source_context}v{version} was verified but could not be installed: {reason}. This running instance remains open."
+                )));
             }
             Ok(()) => {
                 let spawned = std::process::Command::new(&paths.exe)
                     .arg(format!("--updated-from={}", env!("CARGO_PKG_VERSION")))
+                    .arg(format!("--update-attempt={}", paths.id))
                     .spawn();
                 match spawned {
                     Ok(_child) => {
@@ -3058,14 +3373,16 @@ impl OpAutoClickerApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     Err(error) => {
-                        self_update::undo_swap(paths);
-                        self.update_notice = Some((
-                            UpdateNoticeKind::Error,
-                            format!(
-                                "The new version couldn't be started ({error}); \
-                                 your current version was restored."
-                            ),
-                        ));
+                        let rollback = match self_update::undo_swap(paths) {
+                            Ok(()) => "The current program file was restored.".to_string(),
+                            Err(reason) => {
+                                self.update_recovery_backup = Some(paths.backup.clone());
+                                format!("Automatic restoration failed: {reason}. This running instance remains open.")
+                            }
+                        };
+                        self.update_notice = Some((UpdateNoticeKind::Error, format!(
+                            "{source_context}The new version couldn't be started ({error}). {rollback}"
+                        )));
                     }
                 }
             }
@@ -3229,6 +3546,9 @@ impl OpAutoClickerApp {
                 *total,
                 phase.load(Ordering::Relaxed),
             )),
+            UpdateInstallState::WaitingForStop { ready, .. } => {
+                Some((ready.version.clone(), 0, 0, UPDATE_PHASE_STOPPING))
+            }
             _ => None,
         };
         let update_steps: &[&str] = if is_source_checkout {
@@ -3238,6 +3558,9 @@ impl OpAutoClickerApp {
         };
         let update_step = match &install_progress {
             Some((_version, _done, _total, UPDATE_PHASE_SOURCE)) => 0,
+            Some((_version, _done, _total, UPDATE_PHASE_STOPPING)) => {
+                update_steps.len().saturating_sub(1)
+            }
             Some((_version, _done, _total, UPDATE_PHASE_VERIFYING)) => {
                 if is_source_checkout {
                     2
@@ -3308,6 +3631,10 @@ impl OpAutoClickerApp {
             ),
         };
         let (heading, detail) = match &install_progress {
+            Some((version, _done, _total, UPDATE_PHASE_STOPPING)) => (
+                format!("Stopping clicks before v{version}…"),
+                "Waiting for the click worker to release and finish safely.".to_string(),
+            ),
             Some((version, _done, _total, UPDATE_PHASE_SOURCE)) => (
                 format!("Updating source to v{version}\u{2026}"),
                 "Fast-forwarding the clean main checkout to the exact release tag.".to_string(),
@@ -3448,7 +3775,16 @@ impl OpAutoClickerApp {
             let gap = ui.spacing().item_spacing.x;
             let button_width = ((ui.available_width() - gap) / 2.0_f32).max(0.0_f32);
             if let Some((_version, done, total, phase)) = &install_progress {
-                if *phase == UPDATE_PHASE_SOURCE {
+                if *phase == UPDATE_PHASE_STOPPING {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Waiting for clicks to stop…")
+                                .color(pal.text)
+                                .size(12.0_f32),
+                        );
+                    });
+                } else if *phase == UPDATE_PHASE_SOURCE {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(
@@ -3614,8 +3950,12 @@ impl OpAutoClickerApp {
             self.start_update_check();
         }
         if cancel_clicked {
-            if let UpdateInstallState::Downloading { cancel, .. } = &self.update_install {
-                cancel.store(true, Ordering::Relaxed);
+            match &self.update_install {
+                UpdateInstallState::Downloading { cancel, .. }
+                | UpdateInstallState::WaitingForStop { cancel, .. } => {
+                    cancel.store(true, Ordering::Release)
+                }
+                _ => {}
             }
         }
         if download_clicked && can_install {
@@ -3666,13 +4006,173 @@ impl OpAutoClickerApp {
             self.show_updates = false;
         }
     }
+    /// Draw the dashboard independently of native-window bookkeeping.
+    fn draw_dashboard(&mut self, ctx: &egui::Context) {
+        let pal = self.palette();
+        // Single non-scrolling screen: no ScrollArea, everything fits at
+        // the OS-enforced floor and still fits above it. Growing the
+        // window widens the group boxes and the button grid (all field
+        // widths and control heights stay fixed) up to the content cap
+        // and centers the column beyond it; past the wide threshold
+        // (`adapt_to_window_size` owns the switch) the middle groups go
+        // three-abreast and the buttons form one row. Extra height
+        // loosens the gaps between control clusters by a bounded
+        // amount and gathers the rest above the status strip, so the
+        // groups flow from the top and the status/actions/footer sit
+        // at the bottom edge at any window height (see
+        // `vertical_rhythm`). At the floor size every metric below reduces to the
+        // original classic layout. The top margin leaves room for the
+        // first group title, which rides half above its frame's top
+        // border.
+        let window_size = ctx.screen_rect().size();
+        let wide = self.main_layout == MainLayout::Wide;
+        let portrait = self.main_layout == MainLayout::Portrait;
+        let content_cap = match self.main_layout {
+            MainLayout::Classic => MAIN_CONTENT_MAX_WIDTH,
+            MainLayout::Portrait => MAIN_CONTENT_MAX_WIDTH_PORTRAIT,
+            MainLayout::Wide => MAIN_CONTENT_MAX_WIDTH_WIDE,
+        };
+        let side_margin = Self::centered_side_margin(window_size.x, content_cap);
+        let (fill_height, gap_count) = match self.main_layout {
+            MainLayout::Classic => (MAIN_WINDOW_SIZE[1], 3.0_f32),
+            MainLayout::Portrait => (MAIN_PORTRAIT_FILL_HEIGHT, 4.0_f32),
+            MainLayout::Wide => (MAIN_WIDE_FILL_HEIGHT, 2.0_f32),
+        };
+        let (gap_extra, spring) = Self::vertical_rhythm(window_size.y, fill_height, gap_count);
+        egui::CentralPanel::default()
+            .frame(Frame::none().fill(pal.face).inner_margin(Margin {
+                left: side_margin,
+                right: side_margin,
+                top: 14.0_f32,
+                bottom: 10.0_f32,
+            }))
+            .show(ctx, |ui| {
+                ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
+                    self.draw_interval_group(ui);
+                    if wide {
+                        ui.add_space(7.0_f32 + gap_extra);
+                        self.draw_wide_group_row(ui);
+                        ui.add_space(6.0_f32 + gap_extra);
+                    } else {
+                        ui.add_space(7.0_f32 + gap_extra);
+                        if portrait {
+                            self.draw_portrait_options_and_repeat(ui, gap_extra);
+                        } else {
+                            self.draw_options_and_repeat(ui);
+                        }
+                        ui.add_space(7.0_f32 + gap_extra);
+                        self.draw_position_group(ui);
+                        ui.add_space(6.0_f32 + gap_extra);
+                    }
+                    // Surplus height gathers here: everything below
+                    // (status, actions, footer) is the window's
+                    // bottom cluster and rides at its bottom edge.
+                    ui.add_space(spring);
+
+                    // Reserved one-line status strip; its height never
+                    // changes, so the rows below it stay anchored.
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), 16.0_f32),
+                        Sense::hover(),
+                    );
+                    // Ready-kind messages (session complete, defaults
+                    // restored, …) are painted too — they used to be
+                    // skipped entirely, which silently hid them. An empty
+                    // status (fresh start) shows the theme's idle line so
+                    // the strip is never a dead blank.
+                    let shown: &str = if self.status_text.is_empty() {
+                        "Ready."
+                    } else {
+                        &self.status_text
+                    };
+                    // Semantic state dot: shape + position carry the state,
+                    // not color alone, and while a session runs the dot
+                    // breathes on the already-running repaint heartbeat so
+                    // "working" is visible even from the corner of the eye.
+                    let state_color = self.status_kind.color(pal);
+                    let now = ui.input(|i| i.time);
+                    let dot_color = if self.status_kind == StatusKind::Running {
+                        let pulse = 0.5_f32 + 0.5_f32 * ((now * 3.6_f64).sin() as f32);
+                        Color32::from_rgba_unmultiplied(
+                            state_color.r(),
+                            state_color.g(),
+                            state_color.b(),
+                            140 + (pulse * 115.0_f32) as u8,
+                        )
+                    } else {
+                        state_color
+                    };
+                    let painter = ui.painter_at(rect);
+                    // Status plate in every theme — the Updates window's
+                    // card at strip scale: recessed below the panel in
+                    // the dark themes, the cards' white in Classic. It
+                    // lives entirely inside the reserved 16 px strip,
+                    // so the dot, the text and the rows below never move.
+                    painter.rect(
+                        rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
+                        Rounding::same(6.0_f32),
+                        pal.well_fill,
+                        Stroke::new(1.0_f32, pal.group_border),
+                    );
+                    let dot_center = egui::pos2(rect.left() + 9.0_f32, rect.center().y);
+                    // Kind-change acknowledgement: the dot swells once and
+                    // a ring expands off it, easing out over 280 ms, so a
+                    // state transition is noticed even without reading
+                    // the text. It composes with the Running breathing
+                    // (alpha above) instead of fighting it, and finishes
+                    // exactly at the resting 3.5 px radius.
+                    let pulse_t = Self::status_pulse_t(now, self.status_flash_at);
+                    if let Some(t) = pulse_t {
+                        let ease = 1.0_f32 - (1.0_f32 - t) * (1.0_f32 - t);
+                        painter.circle_stroke(
+                            dot_center,
+                            3.5_f32 + 3.0_f32 * ease,
+                            Stroke::new(
+                                1.5_f32,
+                                Color32::from_rgba_unmultiplied(
+                                    state_color.r(),
+                                    state_color.g(),
+                                    state_color.b(),
+                                    (200.0_f32 * (1.0_f32 - t)) as u8,
+                                ),
+                            ),
+                        );
+                    }
+                    let dot_radius = pulse_t.map_or(3.5_f32, |t| 3.5_f32 + 1.3_f32 * (1.0_f32 - t));
+                    painter.circle_filled(dot_center, dot_radius, dot_color);
+                    painter.text(
+                        egui::pos2(rect.left() + 17.0_f32, rect.center().y),
+                        Align2::LEFT_CENTER,
+                        shown,
+                        FontId::proportional(12.5_f32),
+                        state_color,
+                    );
+
+                    ui.add_space(2.0_f32);
+                    self.draw_action_buttons(ui);
+                    ui.add_space(5.0_f32);
+                    // Portrait puts the reminder on its own line so the
+                    // update and settings buttons never collide with it.
+                    let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
+                    let reminder = format!("{hotkey_name} start/stop  ·  F8 emergency stop");
+                    if portrait {
+                        ui.label(egui::RichText::new(&reminder).color(pal.text_dim).small());
+                        ui.horizontal(|ui| self.draw_footer_actions(ui, pal));
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&reminder).color(pal.text_dim).small());
+                            self.draw_footer_actions(ui, pal);
+                        });
+                    }
+                });
+            });
+    }
 }
 
 impl eframe::App for OpAutoClickerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ui_clock_secs = ctx.input(|i| i.time);
         self.apply_style(ctx);
-        let pal = self.palette();
 
         // One background update check per launch (unless the user
         // switched it off in the Updates window; manual checks are
@@ -3926,262 +4426,7 @@ impl eframe::App for OpAutoClickerApp {
         };
         ctx.request_repaint_after(heartbeat);
 
-        // Single non-scrolling screen: no ScrollArea, everything fits at
-        // the OS-enforced floor and still fits above it. Growing the
-        // window widens the group boxes and the button grid (all field
-        // widths and control heights stay fixed) up to the content cap
-        // and centers the column beyond it; past the wide threshold
-        // (`adapt_to_window_size` owns the switch) the middle groups go
-        // three-abreast and the buttons form one row. Extra height
-        // loosens the gaps between control clusters by a bounded
-        // amount and gathers the rest above the status strip, so the
-        // groups flow from the top and the status/actions/footer sit
-        // at the bottom edge at any window height (see
-        // `vertical_rhythm`). At the floor size every metric below reduces to the
-        // original classic layout. The top margin leaves room for the
-        // first group title, which rides half above its frame's top
-        // border.
-        let window_size = ctx.screen_rect().size();
-        let wide = self.wide_layout;
-        let content_cap = if wide {
-            MAIN_CONTENT_MAX_WIDTH_WIDE
-        } else {
-            MAIN_CONTENT_MAX_WIDTH
-        };
-        let side_margin = Self::centered_side_margin(window_size.x, content_cap);
-        let (fill_height, gap_count) = if wide {
-            (MAIN_WIDE_FILL_HEIGHT, 2.0_f32)
-        } else {
-            (MAIN_WINDOW_SIZE[1], 3.0_f32)
-        };
-        let (gap_extra, spring) = Self::vertical_rhythm(window_size.y, fill_height, gap_count);
-        egui::CentralPanel::default()
-            .frame(Frame::none().fill(pal.face).inner_margin(Margin {
-                left: side_margin,
-                right: side_margin,
-                top: 14.0_f32,
-                bottom: 10.0_f32,
-            }))
-            .show(ctx, |ui| {
-                ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
-                    self.draw_interval_group(ui);
-                    if wide {
-                        ui.add_space(7.0_f32 + gap_extra);
-                        self.draw_wide_group_row(ui);
-                        ui.add_space(6.0_f32 + gap_extra);
-                    } else {
-                        ui.add_space(7.0_f32 + gap_extra);
-                        self.draw_options_and_repeat(ui);
-                        ui.add_space(7.0_f32 + gap_extra);
-                        self.draw_position_group(ui);
-                        ui.add_space(6.0_f32 + gap_extra);
-                    }
-                    // Surplus height gathers here: everything below
-                    // (status, actions, footer) is the window's
-                    // bottom cluster and rides at its bottom edge.
-                    ui.add_space(spring);
-
-                    // Reserved one-line status strip; its height never
-                    // changes, so the rows below it stay anchored.
-                    let (rect, _) = ui.allocate_exact_size(
-                        Vec2::new(ui.available_width(), 16.0_f32),
-                        Sense::hover(),
-                    );
-                    // Ready-kind messages (session complete, defaults
-                    // restored, …) are painted too — they used to be
-                    // skipped entirely, which silently hid them. An empty
-                    // status (fresh start) shows the theme's idle line so
-                    // the strip is never a dead blank.
-                    let shown: &str = if self.status_text.is_empty() {
-                        "Ready."
-                    } else {
-                        &self.status_text
-                    };
-                    // Semantic state dot: shape + position carry the state,
-                    // not color alone, and while a session runs the dot
-                    // breathes on the already-running repaint heartbeat so
-                    // "working" is visible even from the corner of the eye.
-                    let state_color = self.status_kind.color(pal);
-                    let now = ui.input(|i| i.time);
-                    let dot_color = if self.status_kind == StatusKind::Running {
-                        let pulse = 0.5_f32 + 0.5_f32 * ((now * 3.6_f64).sin() as f32);
-                        Color32::from_rgba_unmultiplied(
-                            state_color.r(),
-                            state_color.g(),
-                            state_color.b(),
-                            140 + (pulse * 115.0_f32) as u8,
-                        )
-                    } else {
-                        state_color
-                    };
-                    let painter = ui.painter_at(rect);
-                    // Status plate in every theme — the Updates window's
-                    // card at strip scale: recessed below the panel in
-                    // the dark themes, the cards' white in Classic. It
-                    // lives entirely inside the reserved 16 px strip,
-                    // so the dot, the text and the rows below never move.
-                    painter.rect(
-                        rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
-                        Rounding::same(6.0_f32),
-                        pal.well_fill,
-                        Stroke::new(1.0_f32, pal.group_border),
-                    );
-                    let dot_center = egui::pos2(rect.left() + 9.0_f32, rect.center().y);
-                    // Kind-change acknowledgement: the dot swells once and
-                    // a ring expands off it, easing out over 280 ms, so a
-                    // state transition is noticed even without reading
-                    // the text. It composes with the Running breathing
-                    // (alpha above) instead of fighting it, and finishes
-                    // exactly at the resting 3.5 px radius.
-                    let pulse_t = Self::status_pulse_t(now, self.status_flash_at);
-                    if let Some(t) = pulse_t {
-                        let ease = 1.0_f32 - (1.0_f32 - t) * (1.0_f32 - t);
-                        painter.circle_stroke(
-                            dot_center,
-                            3.5_f32 + 3.0_f32 * ease,
-                            Stroke::new(
-                                1.5_f32,
-                                Color32::from_rgba_unmultiplied(
-                                    state_color.r(),
-                                    state_color.g(),
-                                    state_color.b(),
-                                    (200.0_f32 * (1.0_f32 - t)) as u8,
-                                ),
-                            ),
-                        );
-                    }
-                    let dot_radius = pulse_t.map_or(3.5_f32, |t| 3.5_f32 + 1.3_f32 * (1.0_f32 - t));
-                    painter.circle_filled(dot_center, dot_radius, dot_color);
-                    painter.text(
-                        egui::pos2(rect.left() + 17.0_f32, rect.center().y),
-                        Align2::LEFT_CENTER,
-                        shown,
-                        FontId::proportional(12.5_f32),
-                        state_color,
-                    );
-
-                    ui.add_space(2.0_f32);
-                    self.draw_action_buttons(ui);
-                    ui.add_space(5.0_f32);
-                    // Status-bar style footer: key reminder on the left
-                    // (tracking the real assigned hotkey, in the active
-                    // theme's wording), Updates and Settings entry
-                    // points on the right.
-                    ui.horizontal(|ui| {
-                        let hotkey_name = vk_display_name(self.prefs.toggle_hotkey_vk);
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{hotkey_name} start/stop  ·  F8 emergency stop"
-                            ))
-                            .color(pal.text_dim)
-                            .small(),
-                        );
-                        ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().button_padding = Vec2::new(8.0_f32, 2.0_f32);
-                            let button = egui::Button::new(
-                                egui::RichText::new("Settings…")
-                                    .size(12.0_f32)
-                                    .color(pal.text),
-                            )
-                            .fill(pal.button)
-                            .stroke(Stroke::new(1.0_f32, pal.button_border))
-                            .rounding(Rounding::same(5.0_f32));
-                            let settings_response = ui.add(button).on_hover_text(
-                                "Theme, interface scale, clicking behaviour and the session log",
-                            );
-                            if settings_response.clicked() {
-                                self.show_settings = true;
-                            }
-                            // The Updates entry point reports the
-                            // checker's state in place — including the
-                            // waiting and ready-to-download states — so
-                            // a background verdict is visible without
-                            // opening anything. When a verified in-app
-                            // update is ready and no click/macro session
-                            // is active, this one button starts the whole
-                            // update; the Updates window opens as its
-                            // progress and cancellation surface.
-                            let direct_update = matches!(
-                                self.update_state,
-                                UpdateUiState::Available(_)
-                            ) && self.self_update_possible()
-                                && matches!(self.update_install, UpdateInstallState::Idle)
-                                && !self.engine.is_running()
-                                && !self.macro_recording
-                                && !self.macro_playing;
-                            let (updates_label, updates_color, updates_stroke, updates_hover) =
-                                match &self.update_state {
-                                    UpdateUiState::Available(version) => (
-                                        format!("Update v{version}"),
-                                        pal.success,
-                                        pal.success,
-                                        if direct_update && self.source_checkout().is_some() {
-                                            format!(
-                                                "Update this source checkout and restart into v{version}"
-                                            )
-                                        } else if direct_update {
-                                            format!("Update now and restart into v{version}")
-                                        } else {
-                                            format!(
-                                                "MacroClicker v{version} is available — open update details"
-                                            )
-                                        },
-                                    ),
-                                    UpdateUiState::Checking => (
-                                        "Checking…".to_string(),
-                                        pal.text_dim,
-                                        pal.button_border,
-                                        "Checking GitHub for a newer release".to_string(),
-                                    ),
-                                    UpdateUiState::Failed(_) => (
-                                        "Updates…".to_string(),
-                                        pal.warning,
-                                        pal.button_border,
-                                        "The last update check couldn't finish — open for details"
-                                            .to_string(),
-                                    ),
-                                    _ => (
-                                        "Updates…".to_string(),
-                                        pal.text,
-                                        pal.button_border,
-                                        "See whether a newer MacroClicker release is available"
-                                            .to_string(),
-                                    ),
-                                };
-                            let (updates_label, updates_color, updates_stroke, updates_hover) =
-                                if matches!(
-                                    self.update_install,
-                                    UpdateInstallState::Downloading { .. }
-                                ) {
-                                    (
-                                        "Updating…".to_string(),
-                                        pal.success,
-                                        pal.success,
-                                        "Updating MacroClicker — open for progress".to_string(),
-                                    )
-                                } else {
-                                    (updates_label, updates_color, updates_stroke, updates_hover)
-                                };
-                            let updates_button = egui::Button::new(
-                                egui::RichText::new(updates_label)
-                                    .size(12.0_f32)
-                                    .color(updates_color),
-                            )
-                            .fill(pal.button)
-                            .stroke(Stroke::new(1.0_f32, updates_stroke))
-                            .rounding(Rounding::same(5.0_f32));
-                            let updates_response =
-                                ui.add(updates_button).on_hover_text(updates_hover);
-                            if updates_response.clicked() {
-                                self.show_updates = true;
-                                if direct_update {
-                                    self.start_update_install();
-                                }
-                            }
-                        });
-                    });
-                });
-            });
+        self.draw_dashboard(ctx);
 
         if self.show_settings {
             self.draw_settings_window(ctx);
@@ -4205,5 +4450,702 @@ impl eframe::App for OpAutoClickerApp {
             self.settings_dirty = true;
             self.flush_settings();
         }
+    }
+}
+
+#[cfg(test)]
+mod dashboard_layout_tests {
+    use super::*;
+    use egui::{epaint::Shape, Event, FullOutput, Modifiers, PointerButton, Pos2, RawInput, Rect};
+
+    fn test_app(layout: MainLayout) -> OpAutoClickerApp {
+        let mut app = OpAutoClickerApp::new();
+        app.prefs = AppPrefs::default();
+        app.config = EngineConfig::default();
+        app.sync_interval_editors();
+        app.main_layout = layout;
+        app.install_kind = InstallKind::Unknown;
+        app.exe_path = None;
+        app.settings_path = None;
+        app.update_state = UpdateUiState::Available("1.6.0".to_string());
+        app.status_text = "Ready.".to_string();
+        app
+    }
+
+    fn render(
+        app: &mut OpAutoClickerApp,
+        ctx: &egui::Context,
+        size: Vec2,
+        ppp: f32,
+        events: Vec<Event>,
+    ) -> FullOutput {
+        let mut input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(ppp);
+        ctx.run(input, |ctx| {
+            app.apply_style(ctx);
+            app.draw_dashboard(ctx);
+        })
+    }
+
+    fn collect_text(shape: &Shape, clip: Rect, result: &mut Vec<(String, Rect, Rect)>) {
+        match shape {
+            Shape::Vec(shapes) => {
+                for child in shapes {
+                    collect_text(child, clip, result);
+                }
+            }
+            Shape::Text(text) if !text.galley.job.text.is_empty() => {
+                result.push((
+                    text.galley.job.text.clone(),
+                    text.visual_bounding_rect(),
+                    clip,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    fn text_bounds(output: &FullOutput) -> Vec<(String, Rect, Rect)> {
+        let mut result = Vec::new();
+        for clipped in &output.shapes {
+            collect_text(&clipped.shape, clipped.clip_rect, &mut result);
+        }
+        result
+    }
+
+    #[test]
+    fn dashboard_text_fits_and_does_not_overlap_in_every_composition() {
+        for (layout, size) in [
+            (MainLayout::Classic, Vec2::new(560.0, 456.0)),
+            (MainLayout::Portrait, Vec2::new(400.0, 600.0)),
+            (MainLayout::Portrait, Vec2::new(440.0, 680.0)),
+            (MainLayout::Wide, Vec2::new(700.0, 456.0)),
+            (MainLayout::Wide, Vec2::new(904.0, 456.0)),
+        ] {
+            for ppp in [1.0, 1.25, 1.5, 2.0] {
+                for theme in AppTheme::all() {
+                    let ctx = egui::Context::default();
+                    let mut app = test_app(layout);
+                    app.prefs.theme = theme;
+                    app.prefs.toggle_hotkey_vk = 0x87; // F24, the longest function-key name.
+                    app.config.coordinate_mode = CoordinateMode::FixedScreen;
+                    app.config.fixed_x = -100_000;
+                    app.config.fixed_y = 100_000;
+                    app.repeat_limited = true;
+                    app.config.max_clicks = 1_000_000_000;
+                    let mut output = render(&mut app, &ctx, size, ppp, vec![]);
+                    for _ in 0..5 {
+                        output = render(&mut app, &ctx, size, ppp, vec![]);
+                    }
+                    let text = text_bounds(&output);
+                    for expected in [
+                        "Click interval",
+                        "Click options",
+                        "Click repeat",
+                        "Cursor position",
+                        "Record & Playback",
+                        "Update v1.6.0",
+                        "Settings…",
+                    ] {
+                        assert!(
+                            text.iter().any(|(label, _, _)| label == expected),
+                            "{layout:?} / {theme:?} at {ppp}: missing {expected}"
+                        );
+                    }
+                    let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+                    for (index, (label, rect, clip)) in text.iter().enumerate() {
+                        assert!(
+                            screen.contains_rect(*rect),
+                            "{layout:?} / {theme:?} at {ppp}: {label:?} outside window: {rect:?}"
+                        );
+                        assert!(
+                        clip.expand(0.5).contains_rect(*rect),
+                        "{layout:?} / {theme:?} at {ppp}: {label:?} clipped: {rect:?} by {clip:?}"
+                    );
+                        for (other, other_rect, _) in &text[index + 1..] {
+                            let overlap = rect.intersect(*other_rect);
+                            assert!(
+                            overlap.width() <= 0.5 || overlap.height() <= 0.5,
+                            "{layout:?} / {theme:?} at {ppp}: {label:?} overlaps {other:?}: {overlap:?}"
+                        );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn click_text(app: &mut OpAutoClickerApp, ctx: &egui::Context, label: &str) {
+        let size = Vec2::new(400.0, 600.0);
+        let output = render(app, ctx, size, 1.0, vec![]);
+        let position = text_bounds(&output)
+            .into_iter()
+            .find(|(text, _, _)| text == label)
+            .map(|(_, rect, _)| rect.center())
+            .unwrap_or_else(|| panic!("missing control {label:?}"));
+        let button = |pressed| Event::PointerButton {
+            pos: position,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        };
+        let _ = render(
+            app,
+            ctx,
+            size,
+            1.0,
+            vec![Event::PointerMoved(position), button(true)],
+        );
+        let _ = render(app, ctx, size, 1.0, vec![button(false)]);
+    }
+
+    #[test]
+    fn new_warning_and_error_text_meet_contrast_on_each_surface() {
+        fn luminance(color: Color32) -> f64 {
+            let linear = |channel: u8| {
+                let value = f64::from(channel) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+        }
+        fn contrast(a: Color32, b: Color32) -> f64 {
+            let a = luminance(a);
+            let b = luminance(b);
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        }
+        for palette in [
+            &LIGHT_PALETTE,
+            &DARK_PALETTE,
+            &OLED_PALETTE,
+            &MATRIX_PALETTE,
+            &AURORA_PALETTE,
+        ] {
+            for foreground in [palette.warning, palette.danger] {
+                for background in [palette.face, palette.well_fill] {
+                    assert!(contrast(foreground, background) >= 4.5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn growing_tall_adopts_portrait_then_shrinking_fits_immediately() {
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Classic);
+        app.restore_window_size = false;
+        let raw = |size| RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+            ..Default::default()
+        };
+        for _ in 0..8 {
+            let _ = ctx.run(raw(Vec2::new(560.0, 840.0)), |ctx| {
+                app.adapt_to_window_size(ctx);
+            });
+        }
+        assert_eq!(app.main_layout, MainLayout::Portrait);
+        assert!((app.auto_zoom - 1.4).abs() < 0.001);
+        assert!(app.zoom_transition.is_some(), "growth eases after settling");
+
+        // Model the landed zoom, then pull the physical window down to
+        // 560x600. The live size is neutral size / applied zoom.
+        app.displayed_auto_zoom = app.auto_zoom;
+        app.zoom_transition = None;
+        ctx.set_zoom_factor(1.4);
+        // egui applies a requested zoom at the next frame boundary.
+        let _ = ctx.run(raw(Vec2::new(400.0, 600.0)), |_| {});
+        let _ = ctx.run(raw(Vec2::new(400.0, 600.0 / 1.4)), |ctx| {
+            app.apply_shrink_fit_immediately(ctx, 1.0);
+        });
+        assert_eq!(app.main_layout, MainLayout::Classic);
+        assert!((app.auto_zoom - 1.0).abs() < 0.001);
+        assert!((app.displayed_auto_zoom - 1.0).abs() < 0.001);
+        assert!(app.zoom_transition.is_none());
+        assert_eq!(app.live_window_floor(), Vec2::new(560.0, 456.0));
+    }
+
+    #[test]
+    fn portrait_controls_remain_interactive() {
+        let ctx = egui::Context::default();
+        let mut app = test_app(MainLayout::Portrait);
+        for _ in 0..5 {
+            let _ = render(&mut app, &ctx, Vec2::new(400.0, 600.0), 1.0, vec![]);
+        }
+        click_text(&mut app, &ctx, "Repeat");
+        assert!(app.repeat_limited);
+        click_text(&mut app, &ctx, "Random offset ±");
+        assert!(app.prefs.random_offset_enabled);
+        assert!(app.offset_ms > 0.0);
+        click_text(&mut app, &ctx, "Pick location");
+        assert_eq!(app.config.coordinate_mode, CoordinateMode::FixedScreen);
+        click_text(&mut app, &ctx, "Left");
+        click_text(&mut app, &ctx, "Right");
+        assert_eq!(app.config.mouse_button, MouseButton::Right);
+        click_text(&mut app, &ctx, "Settings…");
+        assert!(app.show_settings);
+        click_text(&mut app, &ctx, "Update v1.6.0");
+        assert!(app.show_updates);
+        click_text(&mut app, &ctx, "Record & Playback");
+        assert!(app.show_macro_window);
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "macroclicker-app-test-{}-{label}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&path).expect("scratch directory");
+        path
+    }
+
+    #[test]
+    fn hotkey_start_cannot_bypass_a_zero_interval() {
+        let mut app = test_app(MainLayout::Portrait);
+        app.hours = 0;
+        app.minutes = 0;
+        app.seconds = 0;
+        app.millis = 0;
+        app.toggle_session();
+        assert!(!app.engine.is_running());
+        assert!(app.status_text.contains("at least 1 millisecond"));
+    }
+
+    #[test]
+    fn hotkey_toggle_commits_the_editors_and_rejects_invalid_offset() {
+        let mut app = test_app(MainLayout::Classic);
+        app.hours = 0;
+        app.minutes = 10;
+        app.seconds = 0;
+        app.millis = 0;
+        app.toggle_session();
+        assert!(app.engine.is_running());
+        assert_eq!(app.config.base_interval_ms, 600_000.0);
+        assert!(app.config.max_interval_ms >= 600_000.0);
+        assert!(app.status_text.contains("every 600000 ms"));
+        assert!(!app.status_text.contains("0.00 CPS"));
+        app.engine.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "click worker did not drain");
+            std::thread::yield_now();
+        }
+        app.minutes = 0;
+        app.millis = 1;
+        app.prefs.random_offset_enabled = true;
+        app.offset_ms = 5.0;
+        app.toggle_session();
+        assert!(!app.engine.is_running());
+        assert!(app.status_text.contains("Random offset is too large"));
+    }
+
+    #[test]
+    fn macro_playback_does_not_multiply_recorded_clicks() {
+        let mut app = test_app(MainLayout::Classic);
+        app.config.click_type = ClickType::Triple;
+        app.hours = 0;
+        app.minutes = 0;
+        app.seconds = 0;
+        app.millis = 1;
+        app.prefs.random_offset_enabled = true;
+        app.offset_ms = 40.0; // invalid for regular clicking, unused by macros
+        assert!(app
+            .macro_recorder
+            .record_click(600_000.0, 50, 60, MouseButton::Right));
+        app.macro_until_stopped = false;
+        app.macro_loops = 2;
+        app.start_macro_playback();
+        assert!(app.engine.is_running());
+        assert!(app.macro_playing);
+        let config = app.engine.session_config_for_test();
+        assert_eq!(config.click_type, ClickType::Single);
+        assert_eq!(config.random_offset_ms, 0.0);
+        assert_eq!(config.max_clicks, 2);
+        assert_eq!(config.input_mode, InputMode::GlobalSendInput);
+        assert_eq!(config.coordinate_mode, CoordinateMode::FixedScreen);
+        app.engine.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "macro worker did not drain");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+    }
+
+    #[test]
+    fn settings_failure_stays_dirty_and_a_later_save_recovers() {
+        let dir = scratch("settings-retry");
+        let path = dir.join("settings.conf");
+        std::fs::create_dir(&path).expect("block target with directory");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(path.clone());
+        app.mark_dirty();
+        assert!(!app.flush_settings());
+        assert!(app.settings_dirty);
+        assert!(app.last_save_error.is_some());
+        std::fs::remove_dir(&path).expect("unblock target");
+        assert!(app.flush_settings());
+        assert!(!app.settings_dirty);
+        assert!(app.last_save_error.is_none());
+        assert!(path.is_file());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn settings_flush_commits_pending_interval_editors() {
+        let dir = scratch("pending-editors");
+        let path = dir.join("settings.conf");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(path.clone());
+        app.hours = 1;
+        app.minutes = 2;
+        app.seconds = 3;
+        app.millis = 4;
+        assert!(app.flush_settings());
+        let document = std::fs::read_to_string(path).expect("saved document");
+        let (config, _) = settings::parse_settings(&document);
+        assert_eq!(config.base_interval_ms, 3_723_004.0);
+        assert!(config.validate().is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn invalid_offset_cannot_discard_other_persisted_settings() {
+        let dir = scratch("invalid-settings");
+        let path = dir.join("settings.conf");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(path.clone());
+        app.prefs.theme = AppTheme::Aurora;
+        app.prefs.random_offset_enabled = true;
+        app.config.mouse_button = MouseButton::Right;
+        app.hours = 0;
+        app.minutes = 0;
+        app.seconds = 0;
+        app.millis = 1;
+        app.offset_ms = 40.0;
+        app.commit_interval_editors();
+        assert!(app.validation_message().is_some());
+        assert!(app.flush_settings());
+        let mut reloaded = test_app(MainLayout::Classic);
+        reloaded.settings_path = Some(path);
+        reloaded.load_persisted();
+        assert_eq!(reloaded.prefs.theme, AppTheme::Aurora);
+        assert_eq!(reloaded.config.mouse_button, MouseButton::Right);
+        assert_eq!(reloaded.config.base_interval_ms, 1.0);
+        assert_eq!(reloaded.config.random_offset_ms, 0.0);
+        assert!(reloaded.config.validate().is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn malformed_saved_offset_and_legacy_mode_do_not_erase_preferences() {
+        let dir = scratch("legacy-settings");
+        let path = dir.join("settings.conf");
+        let config = EngineConfig {
+            base_interval_ms: 1.0,
+            random_offset_ms: 40.0,
+            input_mode: InputMode::BackgroundHwnd,
+            target_hwnd: 99,
+            mouse_button: MouseButton::Right,
+            ..EngineConfig::default()
+        };
+        let prefs = AppPrefs {
+            theme: AppTheme::Matrix,
+            ..AppPrefs::default()
+        };
+        std::fs::write(&path, settings::serialize_settings(&config, &prefs)).expect("fixture");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(path);
+        app.load_persisted();
+        assert_eq!(app.prefs.theme, AppTheme::Matrix);
+        assert_eq!(app.config.base_interval_ms, 1.0);
+        assert_eq!(app.config.random_offset_ms, 0.0);
+        assert_eq!(app.config.mouse_button, MouseButton::Right);
+        assert_eq!(app.config.input_mode, InputMode::GlobalSendInput);
+        assert_eq!(app.config.target_hwnd, 0);
+        assert!(app.config.validate().is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn malformed_saved_engine_fields_keep_independent_preferences() {
+        let dir = scratch("bad-engine-settings");
+        let path = dir.join("settings.conf");
+        let config = EngineConfig {
+            sigma_ms: -1.0,
+            ..EngineConfig::default()
+        };
+        let prefs = AppPrefs {
+            theme: AppTheme::Aurora,
+            ..AppPrefs::default()
+        };
+        std::fs::write(&path, settings::serialize_settings(&config, &prefs)).expect("fixture");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(path);
+        app.load_persisted();
+        assert_eq!(app.prefs.theme, AppTheme::Aurora);
+        assert_eq!(app.config, EngineConfig::default());
+        assert!(app.config.validate().is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cancelling_during_verification_deletes_candidate_and_keeps_source_context() {
+        let dir = scratch("cancel-verify");
+        let exe = dir.join("macro_clicker.exe");
+        std::fs::write(&exe, b"current").expect("exe");
+        let paths = self_update::reserve_update_paths(&exe).expect("candidate");
+        let candidate = paths.download.clone();
+        let cancel = AtomicBool::new(false);
+        let result = OpAutoClickerApp::finish_update_verification(
+            paths,
+            "1.6.0".to_string(),
+            true,
+            &cancel,
+            || {
+                cancel.store(true, Ordering::Release);
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            result,
+            UpdateInstallMessage::Cancelled {
+                source_advanced: true
+            }
+        ));
+        assert!(!candidate.exists());
+        assert_eq!(std::fs::read(&exe).expect("original"), b"current");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn send_verified(app: &mut OpAutoClickerApp, paths: UpdatePaths, cancel: Arc<AtomicBool>) {
+        let (tx, rx) = mpsc::channel();
+        let temp_path = paths.download.clone();
+        tx.send(UpdateInstallMessage::Verified(ReadyUpdate {
+            paths,
+            version: "1.6.0".to_string(),
+            source_advanced: true,
+        }))
+        .expect("send report");
+        app.update_install = UpdateInstallState::Downloading {
+            version: "1.6.0".to_string(),
+            total: 1,
+            downloaded: Arc::new(AtomicU64::new(1)),
+            phase: Arc::new(AtomicU8::new(UPDATE_PHASE_VERIFYING)),
+            cancel,
+            temp_path,
+            source_expected: true,
+            source_advanced: Arc::new(AtomicBool::new(true)),
+            rx,
+        };
+    }
+
+    #[test]
+    fn cancellation_after_verified_report_still_prevents_the_swap() {
+        let dir = scratch("cancel-after-verify");
+        let exe = dir.join("macro_clicker.exe");
+        std::fs::write(&exe, b"current").expect("exe");
+        let paths = self_update::reserve_update_paths(&exe).expect("candidate");
+        std::fs::write(&paths.download, b"replacement").expect("candidate bytes");
+        let candidate = paths.download.clone();
+        let mut app = test_app(MainLayout::Classic);
+        send_verified(&mut app, paths, Arc::new(AtomicBool::new(true)));
+        app.poll_update_install(&egui::Context::default());
+        assert!(matches!(app.update_install, UpdateInstallState::Idle));
+        assert!(app
+            .update_notice
+            .as_ref()
+            .is_some_and(|(_, text)| text.contains("fast-forwarded")));
+        assert_eq!(std::fs::read(&exe).expect("current"), b"current");
+        assert!(!candidate.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verified_update_waits_for_click_worker_and_can_be_cancelled() {
+        let dir = scratch("cancel-stop");
+        let exe = dir.join("macro_clicker.exe");
+        std::fs::write(&exe, b"current").expect("exe");
+        let paths = self_update::reserve_update_paths(&exe).expect("candidate");
+        std::fs::write(&paths.download, b"replacement").expect("candidate bytes");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut app = test_app(MainLayout::Classic);
+        let config = EngineConfig {
+            base_interval_ms: 600_000.0,
+            max_interval_ms: 600_000.0,
+            ..EngineConfig::default()
+        };
+        assert!(app.engine.start(&config).is_ok());
+        send_verified(&mut app, paths, Arc::clone(&cancel));
+        let ctx = egui::Context::default();
+        app.poll_update_install(&ctx);
+        assert!(matches!(
+            app.update_install,
+            UpdateInstallState::WaitingForStop { .. }
+        ));
+        cancel.store(true, Ordering::Release);
+        app.poll_update_install(&ctx);
+        assert!(matches!(app.update_install, UpdateInstallState::Idle));
+        assert_eq!(std::fs::read(&exe).expect("current"), b"current");
+        assert!(app
+            .update_notice
+            .as_ref()
+            .is_some_and(|(_, text)| text.contains("fast-forwarded")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_relaunch_restores_original_and_reports_source_change() {
+        let dir = scratch("failed-relaunch");
+        let exe = dir.join("macro_clicker.exe");
+        std::fs::write(&exe, b"current").expect("exe");
+        let paths = self_update::reserve_update_paths(&exe).expect("candidate");
+        std::fs::write(&paths.download, b"not an executable").expect("candidate");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(dir.join("settings.conf"));
+        app.install_verified_update(
+            &egui::Context::default(),
+            &ReadyUpdate {
+                paths: paths.clone(),
+                version: "1.6.0".to_string(),
+                source_advanced: true,
+            },
+        );
+        assert_eq!(std::fs::read(&exe).expect("restored exe"), b"current");
+        assert!(!paths.backup.exists());
+        let notice = &app.update_notice.as_ref().expect("failure notice").1;
+        assert!(notice.contains("fast-forwarded"));
+        assert!(notice.contains("was restored"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn pre_cancelled_verification_never_runs_the_hash() {
+        let dir = scratch("cancel-before-verify");
+        let exe = dir.join("macro_clicker.exe");
+        std::fs::write(&exe, b"current").expect("exe");
+        let paths = self_update::reserve_update_paths(&exe).expect("candidate");
+        let candidate = paths.download.clone();
+        let cancel = AtomicBool::new(true);
+        let result = OpAutoClickerApp::finish_update_verification(
+            paths,
+            "1.6.0".to_string(),
+            false,
+            &cancel,
+            || panic!("cancelled attempt must not hash"),
+        );
+        assert!(matches!(
+            result,
+            UpdateInstallMessage::Cancelled {
+                source_advanced: false
+            }
+        ));
+        assert!(!candidate.exists());
+        assert_eq!(std::fs::read(&exe).expect("current"), b"current");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_settings_save_prevents_install_and_preserves_original() {
+        let dir = scratch("update-settings-failure");
+        let exe = dir.join("macro_clicker.exe");
+        std::fs::write(&exe, b"current").expect("exe");
+        let paths = self_update::reserve_update_paths(&exe).expect("candidate");
+        std::fs::write(&paths.download, b"replacement").expect("candidate");
+        let settings = dir.join("settings.conf");
+        std::fs::create_dir(&settings).expect("block settings target");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(settings);
+        app.install_verified_update(
+            &egui::Context::default(),
+            &ReadyUpdate {
+                paths: paths.clone(),
+                version: "1.6.0".to_string(),
+                source_advanced: true,
+            },
+        );
+        assert_eq!(std::fs::read(&exe).expect("original"), b"current");
+        assert!(!paths.backup.exists());
+        assert!(!paths.download.exists());
+        assert!(app
+            .update_notice
+            .as_ref()
+            .is_some_and(|(_, text)| text.contains("Settings could not be saved")
+                && text.contains("fast-forwarded")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recovery_backup_blocks_further_in_app_updates() {
+        let dir = scratch("manual-recovery");
+        let exe = dir.join("macro_clicker.exe");
+        let paths = self_update::reserve_update_paths(&exe).expect("candidate");
+        std::fs::write(&paths.backup, b"known-good original").expect("recovery backup");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(dir.join("settings.conf"));
+        app.install_verified_update(
+            &egui::Context::default(),
+            &ReadyUpdate {
+                paths: paths.clone(),
+                version: "1.6.0".to_string(),
+                source_advanced: false,
+            },
+        );
+        assert_eq!(
+            app.update_recovery_backup.as_deref(),
+            Some(paths.backup.as_path())
+        );
+        assert_eq!(
+            std::fs::read(&paths.backup).expect("recovery retained"),
+            b"known-good original"
+        );
+        app.start_update_install();
+        assert!(app
+            .update_notice
+            .as_ref()
+            .is_some_and(|(_, text)| text.contains("restart MacroClicker")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn disconnected_source_worker_resolves_with_checkout_warning() {
+        let dir = scratch("update-worker-disconnect");
+        let exe = dir.join("macro_clicker.exe");
+        std::fs::write(&exe, b"current").expect("exe");
+        let paths = self_update::reserve_update_paths(&exe).expect("candidate");
+        let (sender, receiver) = mpsc::channel();
+        drop(sender);
+        let mut app = test_app(MainLayout::Classic);
+        app.update_install = UpdateInstallState::Downloading {
+            version: "1.6.0".to_string(),
+            total: 1,
+            downloaded: Arc::new(AtomicU64::new(0)),
+            phase: Arc::new(AtomicU8::new(UPDATE_PHASE_SOURCE)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            temp_path: paths.download.clone(),
+            source_expected: true,
+            source_advanced: Arc::new(AtomicBool::new(false)),
+            rx: receiver,
+        };
+        app.poll_update_install(&egui::Context::default());
+        assert!(matches!(app.update_install, UpdateInstallState::Idle));
+        assert!(app
+            .update_notice
+            .as_ref()
+            .is_some_and(|(_, text)| text.contains("source checkout may have changed")));
+        assert!(!paths.download.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

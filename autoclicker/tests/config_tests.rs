@@ -115,7 +115,7 @@ fn atomic_snapshot_round_trip() {
 
     let snapshot = AtomicConfigSnapshot::default();
     snapshot.store(&config);
-    let restored = snapshot.load();
+    let restored = snapshot.try_load().expect("no concurrent writer");
     assert!((restored.base_interval_ms - 12.5).abs() < 1e-12);
     assert!((restored.sigma_ms - 1.25).abs() < 1e-12);
     assert_eq!(restored.coordinate_mode, CoordinateMode::WindowClient);
@@ -167,7 +167,7 @@ fn click_type_and_mouse_button_survive_snapshot() {
 
     let snapshot = AtomicConfigSnapshot::default();
     snapshot.store(&config);
-    let restored = snapshot.load();
+    let restored = snapshot.try_load().expect("no concurrent writer");
     assert_eq!(restored.mouse_button, MouseButton::Middle);
     assert_eq!(restored.click_type, ClickType::Triple);
     assert_eq!(restored.click_type.burst_count(), 3);
@@ -188,4 +188,111 @@ fn defaults_match_4p1_baseline() {
     assert_eq!(config.max_clicks, 0);
     assert_eq!(config.coordinate_mode, CoordinateMode::CurrentCursor);
     assert_eq!(config.input_mode, InputMode::GlobalSendInput);
+}
+
+#[test]
+fn dashboard_supports_long_intervals_and_the_full_offset_range() {
+    let mut config = EngineConfig::default();
+    let one_hour = interval_parts_to_ms(1, 0, 0, 0);
+    config::commit_ui_interval(&mut config, one_hour, 10_000.0);
+    assert_eq!(config.base_interval_ms, 3_600_000.0);
+    assert_eq!(config.max_interval_ms, 3_610_000.0);
+    assert!(config.validate().is_ok());
+
+    let max = interval_parts_to_ms(99, 59, 59, 999);
+    config::commit_ui_interval(&mut config, max, 10_000.0);
+    assert_eq!(config.max_interval_ms, max as f64 + 10_000.0);
+    assert!(config.validate().is_ok());
+
+    config::commit_ui_interval(&mut config, 0, 0.0);
+    assert_eq!(
+        config.base_interval_ms, max as f64,
+        "a zero editor must not overwrite a live session"
+    );
+    assert_eq!(config.random_offset_ms, 0.0);
+}
+
+#[test]
+fn dashboard_still_rejects_offsets_that_would_go_below_the_minimum() {
+    let mut config = EngineConfig::default();
+    config::commit_ui_interval(&mut config, 20, 40.0);
+    assert!(config.validate().is_err());
+    config::commit_ui_interval(&mut config, 100, 40.0);
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn concurrent_config_snapshots_are_complete_even_with_two_writers() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
+    let first = EngineConfig {
+        base_interval_ms: 100.0,
+        random_offset_ms: 40.0,
+        fixed_x: 11,
+        fixed_y: 11,
+        ..EngineConfig::default()
+    };
+    let second = EngineConfig {
+        base_interval_ms: 1000.0,
+        random_offset_ms: 400.0,
+        fixed_x: 222,
+        fixed_y: 222,
+        ..EngineConfig::default()
+    };
+    let snapshot = Arc::new(AtomicConfigSnapshot::default());
+    snapshot.store(&first);
+    let barrier = Arc::new(Barrier::new(3));
+    let initial_writes = Arc::new(AtomicUsize::new(0));
+    let proceed = Arc::new(AtomicBool::new(false));
+    let writers_done = Arc::new(AtomicUsize::new(0));
+    let mut writers = Vec::new();
+    for config in [first.clone(), second.clone()] {
+        let (snapshot, barrier) = (Arc::clone(&snapshot), Arc::clone(&barrier));
+        let (initial_writes, proceed, writers_done) = (
+            Arc::clone(&initial_writes),
+            Arc::clone(&proceed),
+            Arc::clone(&writers_done),
+        );
+        writers.push(std::thread::spawn(move || {
+            barrier.wait();
+            snapshot.store(&config);
+            initial_writes.fetch_add(1, Ordering::Release);
+            while !proceed.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            for _ in 0..20_000 {
+                snapshot.store(&config);
+            }
+            writers_done.fetch_add(1, Ordering::Release);
+        }));
+    }
+    barrier.wait();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while initial_writes.load(Ordering::Acquire) != 2 {
+        if Instant::now() >= deadline {
+            proceed.store(true, Ordering::Release);
+            panic!("writers did not reach the publication checkpoint");
+        }
+        std::thread::yield_now();
+    }
+    let stable = snapshot.try_load();
+    proceed.store(true, Ordering::Release);
+    let stable = stable.expect("both writers paused");
+    assert!(stable == first || stable == second);
+    while writers_done.load(Ordering::Acquire) != 2 {
+        assert!(Instant::now() < deadline, "writers failed to finish");
+        if let Some(value) = snapshot.try_load() {
+            assert!(
+                value == first || value == second,
+                "torn configuration: {value:?}"
+            );
+        }
+        std::hint::spin_loop();
+    }
+    for writer in writers {
+        writer.join().expect("writer thread");
+    }
+    let last = snapshot.try_load().expect("writers finished");
+    assert!(last == first || last == second);
 }
