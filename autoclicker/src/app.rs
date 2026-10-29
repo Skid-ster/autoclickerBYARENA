@@ -25,7 +25,7 @@ use crate::config::{
     commit_ui_interval, interval_parts_to_ms, ms_to_interval_parts, ClickType, CoordinateMode,
     EngineConfig, InputMode, MouseButton,
 };
-use crate::engine::{ClickEngine, STATE_PANIC, STATE_RUNNING, STATE_STOPPING};
+use crate::engine::{ClickEngine, SessionOutcome, STATE_RUNNING, STATE_STOPPING};
 use crate::hotkey::{
     self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, AppTheme,
     AppearanceMode, AppearanceStyle, VK_ESCAPE,
@@ -138,63 +138,63 @@ static DARK_PALETTE: Palette = Palette {
     selection_bg: Color32::from_rgba_premultiplied(24, 48, 78, 150),
 };
 
-// Modern light: cool neutral surfaces with a restrained teal accent.
+// Modern light: porcelain surfaces, ink text and a restrained teal accent.
 static MODERN_LIGHT_PALETTE: Palette = Palette {
     dark: false,
     modern: true,
-    face: Color32::from_rgb(243, 245, 248),
-    button: Color32::from_rgb(248, 250, 252),
-    button_disabled: Color32::from_rgb(231, 238, 244),
-    button_border: Color32::from_rgb(145, 160, 173),
-    hover_fill: Color32::from_rgb(224, 234, 240),
-    pressed_fill: Color32::from_rgb(215, 229, 236),
-    input_bg: Color32::from_rgb(237, 242, 246),
-    input_disabled: Color32::from_rgb(231, 238, 244),
+    face: Color32::from_rgb(238, 243, 245),
+    button: Color32::from_rgb(247, 250, 251),
+    button_disabled: Color32::from_rgb(231, 239, 241),
+    button_border: Color32::from_rgb(111, 135, 144),
+    hover_fill: Color32::from_rgb(223, 238, 240),
+    pressed_fill: Color32::from_rgb(209, 233, 234),
+    input_bg: Color32::from_rgb(236, 243, 244),
+    input_disabled: Color32::from_rgb(231, 239, 241),
     group_fill: Color32::WHITE,
-    well_fill: Color32::from_rgb(237, 242, 246),
-    group_border: Color32::from_rgb(195, 204, 214),
-    input_border: Color32::from_rgb(129, 145, 158),
-    text: Color32::from_rgb(21, 31, 48),
-    group_title: Color32::from_rgb(0, 105, 120),
-    text_dim: Color32::from_rgb(72, 88, 103),
-    text_disabled: Color32::from_rgb(90, 100, 118),
-    accent: Color32::from_rgb(0, 107, 127),
+    well_fill: Color32::from_rgb(233, 241, 242),
+    group_border: Color32::from_rgb(193, 209, 214),
+    input_border: Color32::from_rgb(111, 135, 144),
+    text: Color32::from_rgb(19, 43, 54),
+    group_title: Color32::from_rgb(0, 105, 111),
+    text_dim: Color32::from_rgb(67, 94, 105),
+    text_disabled: Color32::from_rgb(80, 101, 111),
+    accent: Color32::from_rgb(0, 108, 112),
     success: Color32::from_rgb(15, 105, 73),
     danger: Color32::from_rgb(175, 37, 55),
     warning: Color32::from_rgb(121, 75, 5),
-    chart_bg: Color32::from_rgb(237, 242, 246),
-    chart_grid: Color32::from_rgb(202, 213, 222),
+    chart_bg: Color32::from_rgb(236, 243, 244),
+    chart_grid: Color32::from_rgb(200, 215, 219),
     chart_bar_alt: Color32::from_rgba_premultiplied(12, 65, 78, 120),
     selection_bg: Color32::from_rgba_premultiplied(0, 18, 22, 40),
 };
 
-// Modern dark: graphite layers and a bright, cool cyan accent.
+// Modern dark: layered blue-ink neutrals with a luminous teal accent.
 static MODERN_DARK_PALETTE: Palette = Palette {
     dark: true,
     modern: true,
-    face: Color32::from_rgb(16, 17, 23),
-    button: Color32::from_rgb(31, 33, 40),
-    button_disabled: Color32::from_rgb(24, 26, 32),
-    button_border: Color32::from_rgb(94, 105, 119),
-    hover_fill: Color32::from_rgb(40, 43, 53),
-    pressed_fill: Color32::from_rgb(47, 50, 61),
-    input_bg: Color32::from_rgb(17, 20, 27),
-    input_disabled: Color32::from_rgb(24, 26, 32),
-    group_fill: Color32::from_rgb(30, 30, 36),
-    well_fill: Color32::from_rgb(17, 20, 27),
-    group_border: Color32::from_rgb(65, 70, 80),
-    input_border: Color32::from_rgb(95, 111, 128),
-    text: Color32::from_rgb(238, 242, 249),
-    group_title: Color32::from_rgb(129, 192, 203),
-    text_dim: Color32::from_rgb(165, 176, 190),
-    text_disabled: Color32::from_rgb(156, 165, 178),
-    accent: Color32::from_rgb(92, 211, 229),
-    success: Color32::from_rgb(103, 225, 174),
-    danger: Color32::from_rgb(255, 134, 144),
-    warning: Color32::from_rgb(247, 204, 112),
-    chart_bg: Color32::from_rgb(17, 20, 27),
-    chart_grid: Color32::from_rgb(47, 50, 61),
-    chart_bar_alt: Color32::from_rgba_premultiplied(32, 98, 112, 170),
+    face: Color32::from_rgb(11, 18, 26),
+    button: Color32::from_rgb(25, 40, 50),
+    button_disabled: Color32::from_rgb(24, 35, 43),
+    button_border: Color32::from_rgb(97, 120, 135),
+    hover_fill: Color32::from_rgb(39, 60, 72),
+    pressed_fill: Color32::from_rgb(48, 78, 90),
+    input_bg: Color32::from_rgb(15, 27, 36),
+    input_disabled: Color32::from_rgb(24, 35, 43),
+    group_fill: Color32::from_rgb(21, 35, 43),
+    well_fill: Color32::from_rgb(13, 28, 34),
+    group_border: Color32::from_rgb(64, 84, 98),
+    input_border: Color32::from_rgb(112, 133, 149),
+    text: Color32::from_rgb(237, 245, 246),
+    group_title: Color32::from_rgb(168, 217, 213),
+    text_dim: Color32::from_rgb(175, 192, 199),
+    text_disabled: Color32::from_rgb(161, 176, 187),
+    accent: Color32::from_rgb(112, 216, 207),
+    success: Color32::from_rgb(128, 223, 179),
+    danger: Color32::from_rgb(255, 148, 160),
+    warning: Color32::from_rgb(243, 206, 121),
+    chart_bg: Color32::from_rgb(15, 27, 36),
+    chart_grid: Color32::from_rgb(48, 78, 90),
+    chart_bar_alt: Color32::from_rgba_premultiplied(32, 98, 100, 170),
     selection_bg: Color32::from_rgba_premultiplied(12, 43, 48, 100),
 };
 
@@ -435,6 +435,15 @@ enum UpdateInstallMessage {
     Failed(String),
 }
 
+/// Original vector marks used beside the dashboard's four main actions.
+#[derive(Clone, Copy)]
+enum ModernActionIcon {
+    Start,
+    Stop,
+    Hotkeys,
+    Playback,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusKind {
     Ready,
@@ -610,6 +619,9 @@ pub struct OpAutoClickerApp {
     // so the disk is never written while nothing changed.
     settings_path: Option<PathBuf>,
     settings_dirty: bool,
+    /// If the existing file could not be read, never overwrite it with
+    /// defaults during this run; the user can repair it before restarting.
+    settings_load_error: Option<String>,
     last_save_error: Option<String>,
     last_save: Instant,
     last_saved_config: EngineConfig,
@@ -725,6 +737,7 @@ impl OpAutoClickerApp {
             last_base_size: Vec2::ZERO,
             settings_path: Self::settings_file_path(),
             settings_dirty: false,
+            settings_load_error: None,
             last_save_error: None,
             last_save: Instant::now(),
             last_saved_config: EngineConfig::default(),
@@ -820,7 +833,7 @@ impl OpAutoClickerApp {
         let Some(path) = Self::settings_file_path() else {
             return MAIN_WINDOW_SIZE;
         };
-        let Ok(text) = std::fs::read_to_string(path) else {
+        let Ok(text) = settings::read_settings(&path) else {
             return MAIN_WINDOW_SIZE;
         };
         let (_, prefs) = settings::parse_settings(&text);
@@ -843,8 +856,32 @@ impl OpAutoClickerApp {
         let Some(path) = self.settings_path.clone() else {
             return;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return;
+        let text = match settings::read_settings(&path) {
+            Ok(text) => text,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && matches!(std::fs::symlink_metadata(&path), Err(ref metadata_error) if metadata_error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return;
+            }
+            Err(error) => {
+                // A file that cannot be read (including invalid UTF-8 or an
+                // oversized file) is not a fresh install. Never silently
+                // replace it with defaults during this app session.
+                let detail = format!(
+                    "Could not read {}: {error}. The original file was preserved. Close MacroClicker, repair or move the file, then reopen the app.",
+                    path.display()
+                );
+                self.window_size_was_persisted = true;
+                self.settings_load_error = Some(detail.clone());
+                self.last_save_error = Some(detail.clone());
+                self.set_status(
+                    StatusKind::Warning,
+                    "Settings could not be read; open Settings for details.",
+                );
+                self.log(detail);
+                return;
+            }
         };
         // A file existed, so its size (or its defaults) is the
         // user's to keep: no display-aware first-run upgrade.
@@ -935,13 +972,17 @@ impl OpAutoClickerApp {
         self.commit_interval_editors();
         self.last_save = Instant::now();
         let config_to_save = self.settings_config_to_save();
-        let result = match self.settings_path.as_deref() {
-            Some(path) => settings::write_settings_atomic(
-                path,
-                &settings::serialize_settings(&config_to_save, &self.prefs),
-            )
-            .map_err(|error| error.to_string()),
-            None => Err("No settings path is available.".to_string()),
+        let result = if let Some(error) = &self.settings_load_error {
+            Err(error.clone())
+        } else {
+            match self.settings_path.as_deref() {
+                Some(path) => settings::write_settings_atomic(
+                    path,
+                    &settings::serialize_settings(&config_to_save, &self.prefs),
+                )
+                .map_err(|error| error.to_string()),
+                None => Err("No settings path is available.".to_string()),
+            }
         };
         match result {
             Ok(()) => {
@@ -961,7 +1002,9 @@ impl OpAutoClickerApp {
                 if self.last_save_error.as_deref() != Some(error.as_str()) {
                     self.log(format!("Settings not saved: {error}"));
                 }
-                if !self.engine.is_running() && self.status_kind != StatusKind::Panic {
+                if !self.engine.is_running()
+                    && !matches!(self.status_kind, StatusKind::Panic | StatusKind::Error)
+                {
                     self.set_status(
                         StatusKind::Warning,
                         "Settings could not be saved; open Settings for details.",
@@ -975,6 +1018,7 @@ impl OpAutoClickerApp {
 
     fn maybe_autosave(&mut self) {
         if self.settings_dirty
+            && self.settings_load_error.is_none()
             && self.last_save.elapsed() >= Duration::from_millis(SAVE_THROTTLE_MS)
         {
             self.flush_settings();
@@ -1394,6 +1438,8 @@ impl OpAutoClickerApp {
         config.max_clicks = macro_rec::clicks_for_loops(steps.len(), loops);
         match self.engine.start_with_macro(&config, steps) {
             Ok(()) => {
+                // A one-click macro can finish before the next egui frame.
+                self.was_running = true;
                 self.macro_playing = true;
                 self.last_seen_error = None;
                 let count = self.macro_recorder.len();
@@ -1423,10 +1469,80 @@ impl OpAutoClickerApp {
         if let Some(error) = self.engine.last_error() {
             if Some(&error) != self.last_seen_error.as_ref() {
                 self.log(format!("Engine error: {error}"));
-                self.set_status(StatusKind::Error, format!("Error: {error}"));
+                // A nonfatal timer/priority warning must not hide F8 while
+                // the worker is draining. A failed dispatch is reported by
+                // the terminal outcome after it has finished.
+                if self.status_kind != StatusKind::Panic {
+                    self.set_status(StatusKind::Error, format!("Error: {error}"));
+                }
                 self.last_seen_error = Some(error);
             }
         }
+    }
+
+    fn report_session_outcome(&mut self, outcome: SessionOutcome, was_macro: bool) {
+        let count = self.engine.click_count();
+        match outcome {
+            SessionOutcome::Completed => {
+                let label = if was_macro {
+                    "Playback complete"
+                } else {
+                    "Session complete"
+                };
+                self.set_status(
+                    StatusKind::Ready,
+                    format!("{label} — {count} clicks delivered."),
+                );
+                self.log(format!("{label} after {count} clicks."));
+            }
+            SessionOutcome::Stopped => {
+                let label = if was_macro {
+                    "Playback stopped"
+                } else {
+                    "Stopped"
+                };
+                self.set_status(
+                    StatusKind::Ready,
+                    format!("{label} — {count} clicks delivered."),
+                );
+                self.log(format!("{label} after {count} clicks."));
+            }
+            SessionOutcome::Panicked => {
+                self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
+            }
+            SessionOutcome::DispatchFailed => {
+                let error = self.engine.last_error().unwrap_or_else(|| {
+                    "Click delivery failed; the session was aborted.".to_string()
+                });
+                if Some(&error) != self.last_seen_error.as_ref() {
+                    self.log(format!("Engine error: {error}"));
+                }
+                self.last_seen_error = Some(error.clone());
+                self.set_status(StatusKind::Error, format!("Error: {error}"));
+            }
+            SessionOutcome::WorkerLost | SessionOutcome::Pending => {
+                self.set_status(
+                    StatusKind::Error,
+                    "Click worker lost — session aborted. Restart the app before clicking again.",
+                );
+                self.log("Worker thread found dead or ended without a result; session aborted.");
+            }
+        }
+    }
+
+    fn reconcile_session_status(&mut self) {
+        // Use one state snapshot: if the worker finishes immediately after
+        // this read, the next frame will still observe the running-to-idle
+        // transition. A successful start sets was_running immediately.
+        let running = self.engine.is_running();
+        if self.was_running && !running {
+            let was_macro = self.macro_playing;
+            self.macro_playing = false;
+            self.report_session_outcome(self.engine.session_outcome(), was_macro);
+            self.mark_dirty();
+            self.flush_settings();
+        }
+        self.was_running = running;
     }
 
     fn toggle_session(&mut self) {
@@ -1472,6 +1588,8 @@ impl OpAutoClickerApp {
         self.config.target_hwnd = 0;
         match self.engine.start(&self.config) {
             Ok(()) => {
+                // Track the start even if the worker finishes before repaint.
+                self.was_running = true;
                 self.last_seen_error = None;
                 let cps = self.config.target_cps();
                 let pace = if cps < 0.01 {
@@ -1912,6 +2030,14 @@ impl OpAutoClickerApp {
 
     // --------------------------------------------------------- classic widgets
 
+    fn modern_section_tile_color(pal: &Palette) -> Color32 {
+        if pal.dark {
+            Color32::from_rgb(30, 61, 65)
+        } else {
+            Color32::from_rgb(222, 242, 240)
+        }
+    }
+
     /// Small original vector glyphs; no icon font or external library is used.
     fn paint_section_icon(
         painter: &egui::Painter,
@@ -2038,7 +2164,17 @@ impl OpAutoClickerApp {
             let shadow = rect
                 .expand2(Vec2::new(1.0_f32, 0.0_f32))
                 .translate(Vec2::new(0.0_f32, 2.0_f32));
-            let shadow_alpha: u8 = if pal.dark { 72 } else { 36 };
+            let shadow_alpha: u8 = if pal.modern {
+                if pal.dark {
+                    54
+                } else {
+                    24
+                }
+            } else if pal.dark {
+                72
+            } else {
+                36
+            };
             ui.painter().set(
                 slot,
                 egui::Shape::rect_filled(
@@ -2049,7 +2185,8 @@ impl OpAutoClickerApp {
             );
         }
         if pal.modern {
-            // Draw the hover rim after the card without changing its bounds.
+            // Keep the existing in-place hover rim without changing the card's
+            // geometry or registering a separate interactive widget.
             if ui.rect_contains_pointer(rect) {
                 let rim = if pal.dark {
                     Color32::from_rgb(91, 126, 137)
@@ -2060,15 +2197,34 @@ impl OpAutoClickerApp {
                     .rect_stroke(rect, card_rounding, Stroke::new(1.0_f32, rim));
             }
             let painter = ui.painter_at(rect);
-            Self::paint_section_icon(
-                &painter,
-                title,
-                egui::pos2(rect.left() + 17.0_f32, rect.top() + 12.0_f32),
-                pal.accent,
+            // A quiet top edge and a compact icon tile organize the card.
+            painter.line_segment(
+                [
+                    egui::pos2(rect.left() + 12.0_f32, rect.top() + 1.5_f32),
+                    egui::pos2(rect.right() - 12.0_f32, rect.top() + 1.5_f32),
+                ],
+                Stroke::new(
+                    1.0_f32,
+                    if pal.dark {
+                        Color32::from_rgb(42, 61, 69)
+                    } else {
+                        Color32::from_rgb(244, 249, 250)
+                    },
+                ),
             );
+            let tile = egui::Rect::from_min_size(
+                egui::pos2(rect.left() + 8.0_f32, rect.top() + 3.0_f32),
+                Vec2::splat(18.0_f32),
+            );
+            painter.rect_filled(
+                tile,
+                Rounding::same(5.0_f32),
+                Self::modern_section_tile_color(pal),
+            );
+            Self::paint_section_icon(&painter, title, tile.center(), pal.accent);
             let text = egui::RichText::new(title.to_ascii_uppercase())
-                .size(10.5_f32)
-                .extra_letter_spacing(0.5_f32)
+                .size(11.0_f32)
+                .extra_letter_spacing(0.45_f32)
                 .color(pal.group_title);
             let job = egui::WidgetText::from(text).into_layout_job(
                 ui.style(),
@@ -2077,7 +2233,10 @@ impl OpAutoClickerApp {
             );
             let galley = ui.fonts(|fonts| fonts.layout_job(job));
             painter.galley(
-                egui::pos2(rect.left() + 29.0_f32, rect.top() + 5.0_f32),
+                egui::pos2(
+                    rect.left() + 32.0_f32,
+                    rect.top() + 12.0_f32 - galley.size().y / 2.0_f32,
+                ),
                 galley,
                 pal.group_title,
             );
@@ -2187,8 +2346,8 @@ impl OpAutoClickerApp {
             1.0
         };
         (
-            Self::accent_variant(Color32::from_rgb(39, 204, 228), factor),
-            Self::accent_variant(Color32::from_rgb(74, 154, 247), factor),
+            Self::accent_variant(Color32::from_rgb(69, 213, 194), factor),
+            Self::accent_variant(Color32::from_rgb(112, 166, 250), factor),
         )
     }
 
@@ -2201,15 +2360,15 @@ impl OpAutoClickerApp {
         if !enabled {
             return if dark {
                 (
-                    Color32::from_rgb(48, 37, 44),
-                    Color32::from_rgb(104, 81, 91),
-                    Color32::from_rgb(180, 158, 168),
+                    Color32::from_rgb(27, 37, 45),
+                    Color32::from_rgb(76, 94, 105),
+                    Color32::from_rgb(160, 176, 188),
                 )
             } else {
                 (
-                    Color32::from_rgb(239, 229, 231),
-                    Color32::from_rgb(198, 172, 178),
-                    Color32::from_rgb(118, 76, 84),
+                    Color32::from_rgb(230, 237, 239),
+                    Color32::from_rgb(162, 178, 184),
+                    Color32::from_rgb(82, 105, 116),
                 )
             };
         }
@@ -2279,6 +2438,67 @@ impl OpAutoClickerApp {
         painter.add(egui::Shape::mesh(mesh));
     }
 
+    fn modern_action_icon(text: &str, primary: bool, danger: bool) -> Option<ModernActionIcon> {
+        if primary {
+            Some(ModernActionIcon::Start)
+        } else if danger {
+            Some(ModernActionIcon::Stop)
+        } else {
+            match text {
+                "Hotkeys" => Some(ModernActionIcon::Hotkeys),
+                "Record & Playback" | "Record / Play" => Some(ModernActionIcon::Playback),
+                _ => None,
+            }
+        }
+    }
+
+    /// Familiar, single-color vector marks. The visible label remains the
+    /// accessible button name, and icons are omitted when space is tight.
+    fn paint_modern_action_icon(
+        painter: &egui::Painter,
+        icon: ModernActionIcon,
+        center: egui::Pos2,
+        color: Color32,
+    ) {
+        let at = |x, y| center + Vec2::new(x, y);
+        let stroke = Stroke::new(1.2_f32, color);
+        match icon {
+            ModernActionIcon::Start => {
+                painter.add(egui::Shape::convex_polygon(
+                    vec![at(-4.0, -5.0), at(5.0, 0.0), at(-4.0, 5.0)],
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+            ModernActionIcon::Stop => {
+                painter.rect_filled(
+                    egui::Rect::from_center_size(center, Vec2::splat(9.0)),
+                    Rounding::same(1.5),
+                    color,
+                );
+            }
+            ModernActionIcon::Hotkeys => {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(center, Vec2::new(14.0, 10.0)),
+                    Rounding::same(2.0),
+                    stroke,
+                );
+                for x in [-4.0, 0.0, 4.0] {
+                    painter.circle_filled(at(x, -1.5), 0.8, color);
+                }
+                painter.line_segment([at(-3.0, 2.0), at(3.0, 2.0)], stroke);
+            }
+            ModernActionIcon::Playback => {
+                painter.circle_stroke(center, 5.5, stroke);
+                painter.add(egui::Shape::convex_polygon(
+                    vec![at(-1.5, -2.5), at(2.5, 0.0), at(-1.5, 2.5)],
+                    color,
+                    Stroke::NONE,
+                ));
+            }
+        }
+    }
+
     fn toned_button(
         ui: &mut egui::Ui,
         pal: &Palette,
@@ -2345,11 +2565,7 @@ impl OpAutoClickerApp {
             )
         } else {
             (
-                if pal.modern {
-                    Color32::TRANSPARENT
-                } else {
-                    pal.button
-                },
+                pal.button,
                 if danger {
                     pal.danger
                 } else {
@@ -2368,7 +2584,7 @@ impl OpAutoClickerApp {
         let rounding = Rounding::same(if pal.modern { 9.0_f32 } else { 6.0_f32 });
         let painter = ui.painter();
         // A restrained, unblurred drop shadow lifts Modern's primary and
-        // active Stop buttons; ghost actions stay visually quiet.
+        // active Stop buttons; secondary actions stay visually quiet.
         if enabled && !pressed && (!pal.modern || primary || danger) {
             let shadow_alpha = if pal.dark { 110 } else { 26 };
             painter.rect_filled(
@@ -2420,13 +2636,53 @@ impl OpAutoClickerApp {
                 Stroke::new(2.0_f32, focus_color),
             );
         }
-        painter.text(
-            face_rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            FontId::proportional(13.5_f32),
-            text_color,
-        );
+        let icon = if pal.modern {
+            Self::modern_action_icon(text, primary, danger)
+        } else {
+            None
+        };
+        if let Some(icon) = icon {
+            let galley =
+                painter.layout_no_wrap(text.to_owned(), FontId::proportional(13.5_f32), text_color);
+            const ICON_WIDTH: f32 = 14.0;
+            const ICON_GAP: f32 = 6.0;
+            const SIDE_PADDING: f32 = 8.0;
+            let content_width = ICON_WIDTH + ICON_GAP + galley.size().x;
+            if content_width + 2.0 * SIDE_PADDING <= face_rect.width() {
+                let left = face_rect.center().x - content_width / 2.0;
+                Self::paint_modern_action_icon(
+                    painter,
+                    icon,
+                    egui::pos2(left + ICON_WIDTH / 2.0, face_rect.center().y),
+                    text_color,
+                );
+                painter.galley(
+                    egui::pos2(
+                        left + ICON_WIDTH + ICON_GAP,
+                        face_rect.center().y - galley.size().y / 2.0,
+                    ),
+                    galley,
+                    text_color,
+                );
+            } else {
+                // Never crowd the label just to fit an ornament.
+                painter.text(
+                    face_rect.center(),
+                    Align2::CENTER_CENTER,
+                    text,
+                    FontId::proportional(13.5_f32),
+                    text_color,
+                );
+            }
+        } else {
+            painter.text(
+                face_rect.center(),
+                Align2::CENTER_CENTER,
+                text,
+                FontId::proportional(13.5_f32),
+                text_color,
+            );
+        }
         response
     }
 
@@ -3658,7 +3914,10 @@ impl OpAutoClickerApp {
                     .color(pal.text_dim)
                     .small(),
                 );
-                if let Some(error) = &self.last_save_error {
+                if let Some(error) = &self.settings_load_error {
+                    ui.add_space(8.0_f32);
+                    ui.label(egui::RichText::new(error).color(pal.warning).small());
+                } else if let Some(error) = &self.last_save_error {
                     ui.add_space(8.0_f32);
                     ui.label(
                         egui::RichText::new(format!(
@@ -5354,76 +5613,9 @@ impl eframe::App for OpAutoClickerApp {
         // is actually driving, and Start/Stop must recover.
         if self.engine.is_running() && !self.engine.worker_alive() {
             self.engine.force_idle();
-            self.macro_playing = false;
-            self.set_status(
-                StatusKind::Error,
-                "Click worker lost — session aborted. Restart the app before clicking again.",
-            );
-            self.log("Worker thread found dead; engine forced idle.");
+            self.was_running = true;
         }
-        // Detect natural session completion (repeat count reached) so the
-        // status line and persistence react even without a button press.
-        // Manual stops and worker errors keep their own status instead of
-        // being misreported as a clean completion.
-        let was_macro_playback = self.macro_playing;
-        if self.was_running && !self.engine.is_running() && was_macro_playback {
-            self.macro_playing = false;
-            if self.engine.state() != STATE_PANIC {
-                // A manual stop ended the playback early; say so instead of
-                // claiming a clean completion.
-                let verdict = if self.status_kind == StatusKind::Stopping {
-                    "Playback stopped"
-                } else {
-                    "Playback complete"
-                };
-                self.set_status(
-                    StatusKind::Ready,
-                    format!(
-                        "{verdict} — {} clicks delivered.",
-                        self.engine.click_count()
-                    ),
-                );
-                self.log(format!(
-                    "Macro playback finished after {} clicks.",
-                    self.engine.click_count()
-                ));
-            }
-        }
-        if self.was_running && !self.engine.is_running() {
-            let count_reached = !was_macro_playback
-                && self.repeat_limited
-                && self.config.max_clicks > 0
-                && self.engine.click_count() >= self.config.max_clicks;
-            if count_reached && self.engine.state() != STATE_PANIC {
-                self.set_status(
-                    StatusKind::Ready,
-                    format!(
-                        "Session complete — {} clicks delivered.",
-                        self.engine.click_count()
-                    ),
-                );
-                self.log(format!(
-                    "Session finished after {} clicks.",
-                    self.engine.click_count()
-                ));
-            } else if self.status_kind == StatusKind::Stopping {
-                // The worker has fully drained after a manual stop. Without
-                // this confirmation the transient "Stopping…" status would
-                // stay on screen forever — the feedback loop must visibly
-                // close once the engine actually stops.
-                self.set_status(
-                    StatusKind::Ready,
-                    format!("Stopped — {} clicks delivered.", self.engine.click_count()),
-                );
-                self.log(format!(
-                    "Session stopped after {} clicks.",
-                    self.engine.click_count()
-                ));
-            }
-            self.mark_dirty();
-            self.flush_settings();
-        }
-        self.was_running = self.engine.is_running();
+        self.reconcile_session_status();
 
         self.commit_interval_editors();
         self.detect_settings_changes();
@@ -5497,6 +5689,39 @@ mod dashboard_layout_tests {
     use super::*;
     use egui::{epaint::Shape, Event, FullOutput, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
+    // Always model a genuinely newer release, even after the package version
+    // changes. The static labels keep geometry and accessibility expectations
+    // tied to the exact same version that the test UI advertises.
+    fn future_update_version() -> &'static str {
+        static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        VERSION
+            .get_or_init(|| {
+                let (major, minor, patch) =
+                    update::parse_version(env!("CARGO_PKG_VERSION")).expect("package version");
+                let version = format!(
+                    "{major}.{minor}.{}",
+                    patch.checked_add(1).expect("next patch")
+                );
+                assert!(update::is_newer(&version, env!("CARGO_PKG_VERSION")));
+                version
+            })
+            .as_str()
+    }
+
+    fn future_update_footer() -> &'static str {
+        static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        LABEL
+            .get_or_init(|| format!("Update v{}", future_update_version()))
+            .as_str()
+    }
+
+    fn future_update_window() -> &'static str {
+        static LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        LABEL
+            .get_or_init(|| format!("Update to v{}", future_update_version()))
+            .as_str()
+    }
+
     fn test_app(layout: MainLayout) -> OpAutoClickerApp {
         let mut app = OpAutoClickerApp::new();
         app.prefs = AppPrefs::default();
@@ -5506,7 +5731,9 @@ mod dashboard_layout_tests {
         app.install_kind = InstallKind::Unknown;
         app.exe_path = None;
         app.settings_path = None;
-        app.update_state = UpdateUiState::Available("1.6.0".to_string());
+        app.settings_load_error = None;
+        app.last_save_error = None;
+        app.update_state = UpdateUiState::Available(future_update_version().to_string());
         app.status_text = "Ready.".to_string();
         app
     }
@@ -5623,7 +5850,7 @@ mod dashboard_layout_tests {
                             } else {
                                 "Record & Playback"
                             },
-                            "Update v1.6.0",
+                            future_update_footer(),
                             "Settings…",
                         ] {
                             assert!(
@@ -5945,7 +6172,7 @@ mod dashboard_layout_tests {
                 let is_elided = output
                     .shapes
                     .iter()
-                    .find_map(|clipped| elided(&clipped.shape, "Update v1.6.0"));
+                    .find_map(|clipped| elided(&clipped.shape, future_update_footer()));
                 assert_eq!(is_elided, Some(false), "{layout:?}");
             }
             let ctx = egui::Context::default();
@@ -5967,7 +6194,7 @@ mod dashboard_layout_tests {
             let is_elided = output
                 .shapes
                 .iter()
-                .find_map(|clipped| elided(&clipped.shape, "Update to v1.6.0"));
+                .find_map(|clipped| elided(&clipped.shape, future_update_window()));
             assert_eq!(is_elided, Some(false));
         }
     }
@@ -6074,7 +6301,7 @@ mod dashboard_layout_tests {
                     InstallKind::CargoBuild,
                     InstallKind::Unknown,
                 ] {
-                    for version in ["1.6.0", "4294967295.4294967295.4294967295"] {
+                    for version in [future_update_version(), "4294967295.4294967295.4294967295"] {
                         for asset_size in [None, Some(4_000_000), Some(u64::MAX)] {
                             let ctx = egui::Context::default();
                             let mut app = test_app(MainLayout::Slender);
@@ -6275,6 +6502,61 @@ mod dashboard_layout_tests {
                     assert!(app.status_kind == StatusKind::Warning);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn settings_recovery_details_wrap_and_keep_the_reset_control_reachable() {
+        for theme in [
+            AppTheme::Classic,
+            AppTheme::Dark,
+            AppTheme::ModernLight,
+            AppTheme::ModernDark,
+        ] {
+            let size = Vec2::new(420.0, 420.0);
+            let screen = Rect::from_min_size(Pos2::ZERO, size).expand(0.5);
+            let ctx = egui::Context::default();
+            let mut app = test_app(MainLayout::Classic);
+            app.prefs.theme = theme;
+            app.show_settings = true;
+            app.settings_load_error = Some(format!(
+                "Could not read C:/{}: settings file is not UTF-8. The original file was preserved. Close MacroClicker, repair or move the file, then reopen the app.",
+                "long-profile-name/".repeat(15)
+            ));
+            for _ in 0..8 {
+                let _ = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            }
+            let mut output = render_dialog(&mut app, &ctx, size, 1.0, "settings", vec![]);
+            let title = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == "Settings")
+                .expect("settings title");
+            assert!(screen.contains_rect(title.1));
+            for _ in 0..10 {
+                output = render_dialog(
+                    &mut app,
+                    &ctx,
+                    size,
+                    1.0,
+                    "settings",
+                    vec![
+                        Event::PointerMoved(Pos2::new(210.0, 210.0)),
+                        Event::Scroll(Vec2::new(0.0, -1000.0)),
+                    ],
+                );
+            }
+            let reset = text_bounds(&output)
+                .into_iter()
+                .find(|(label, _, _)| label == "Reset all settings to factory defaults")
+                .expect("reset remains reachable");
+            assert!(
+                screen.contains_rect(reset.1),
+                "{theme:?}: reset outside viewport"
+            );
+            assert!(
+                reset.2.expand(0.5).contains_rect(reset.1),
+                "{theme:?}: reset clipped"
+            );
         }
     }
 
@@ -6891,6 +7173,39 @@ mod dashboard_layout_tests {
             assert!(contrast(palette.text_disabled, palette.button_disabled) >= 4.5);
             assert!(contrast(palette.text_disabled, palette.input_disabled) >= 4.5);
             assert!(contrast(palette.text, palette.pressed_fill) >= 4.5);
+            assert!(
+                contrast(
+                    palette.accent,
+                    OpAutoClickerApp::modern_section_tile_color(palette)
+                ) >= 4.5,
+                "section icon must be distinct from its tile"
+            );
+            // Resting input and button outlines must remain identifiable on
+            // their actual adjacent surfaces, not just on the panel face.
+            for (outline, surface) in [
+                (palette.button_border, palette.face),
+                (palette.button_border, palette.button),
+                (palette.input_border, palette.input_bg),
+                (palette.input_border, palette.group_fill),
+            ] {
+                assert!(
+                    contrast(outline, surface) >= 3.0,
+                    "control outline {outline:?} on {surface:?}"
+                );
+            }
+            for surface in [
+                palette.face,
+                palette.group_fill,
+                palette.input_bg,
+                palette.button,
+                palette.hover_fill,
+                palette.pressed_fill,
+            ] {
+                assert!(
+                    contrast(palette.accent, surface) >= 3.0,
+                    "focus accent must be visible on {surface:?}"
+                );
+            }
             let on_accent = if palette.dark {
                 Color32::BLACK
             } else {
@@ -7073,7 +7388,7 @@ mod dashboard_layout_tests {
             assert!(app.show_macro_window);
             click_text_at(&mut app, &ctx, size, "Settings…");
             assert!(app.show_settings);
-            click_text_at(&mut app, &ctx, size, "Update v1.6.0");
+            click_text_at(&mut app, &ctx, size, future_update_footer());
             assert!(app.show_updates);
         }
     }
@@ -7128,7 +7443,7 @@ mod dashboard_layout_tests {
                 assert!(app.show_macro_window);
                 click_text_at(&mut app, &ctx, size, "Settings…");
                 assert!(app.show_settings);
-                click_text_at(&mut app, &ctx, size, "Update v1.6.0");
+                click_text_at(&mut app, &ctx, size, future_update_footer());
                 assert!(app.show_updates);
 
                 // Ten minutes to the first deadline: exercise the real
@@ -7169,7 +7484,7 @@ mod dashboard_layout_tests {
         assert_eq!(app.config.mouse_button, MouseButton::Right);
         click_text(&mut app, &ctx, "Settings…");
         assert!(app.show_settings);
-        click_text(&mut app, &ctx, "Update v1.6.0");
+        click_text(&mut app, &ctx, future_update_footer());
         assert!(app.show_updates);
         click_text(&mut app, &ctx, "Record & Playback");
         assert!(app.show_macro_window);
@@ -7539,6 +7854,19 @@ mod dashboard_layout_tests {
                     egui::pos2(text.left() - 20.0, text.center().y - 9.0),
                     egui::pos2(text.left() - 2.0, text.center().y + 9.0),
                 );
+                let tile = all.iter().find_map(|shape| match shape {
+                    Shape::Rect(rect)
+                        if rect.fill
+                            == OpAutoClickerApp::modern_section_tile_color(app.palette())
+                            && icon_area.contains(rect.rect.center()) =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                });
+                let tile = tile.unwrap_or_else(|| panic!("{title} needs its icon tile"));
+                assert_eq!(tile.size(), Vec2::splat(18.0));
+                assert!(tile.right() < text.left(), "tile must not crowd {title}");
                 let count = all
                     .iter()
                     .filter(|shape| {
@@ -7763,7 +8091,7 @@ mod dashboard_layout_tests {
                     let text = text_bounds(&output);
                     let label = text
                         .iter()
-                        .find(|(label, _, _)| label == "Update v1.6.0")
+                        .find(|(label, _, _)| label == future_update_footer())
                         .expect("full update label")
                         .1;
                     let settings = text
@@ -7806,7 +8134,7 @@ mod dashboard_layout_tests {
                             .iter()
                             .any(|event| matches!(event,
                         egui::output::OutputEvent::Clicked(info)
-                            if info.label.as_deref() == Some("Update v1.6.0"))),
+                            if info.label.as_deref() == Some(future_update_footer()))),
                         "the full accessible button label must be retained"
                     );
                 }
@@ -8008,7 +8336,7 @@ mod dashboard_layout_tests {
                                     }
                                     "update" => {
                                         if old {
-                                            let text = egui::RichText::new("Update to v1.6.0")
+                                            let text = egui::RichText::new(future_update_window())
                                                 .color(pal.text_disabled)
                                                 .size(13.0)
                                                 .strong();
@@ -8033,7 +8361,7 @@ mod dashboard_layout_tests {
                                             OpAutoClickerApp::update_action_button(
                                                 ui,
                                                 pal,
-                                                "Update to v1.6.0",
+                                                future_update_window(),
                                                 false,
                                                 true,
                                                 150.0,
@@ -8400,12 +8728,12 @@ mod dashboard_layout_tests {
                         }
                     }));
                     let _ = render(&mut app, &ctx, size, 1.0, vec![tab(false, false)]);
-                    if labels.iter().any(|label| label == "Update v1.6.0") {
+                    if labels.iter().any(|label| label == future_update_footer()) {
                         break;
                     }
                 }
                 assert!(
-                    labels.iter().any(|label| label == "Update v1.6.0"),
+                    labels.iter().any(|label| label == future_update_footer()),
                     "{theme:?}/{layout:?}: forward Tab never reached Updates: {labels:?}"
                 );
                 let output = render(
@@ -8428,7 +8756,7 @@ mod dashboard_layout_tests {
                     .iter()
                     .any(|event| matches!(event,
                     egui::output::OutputEvent::Clicked(info)
-                        if info.label.as_deref() == Some("Update v1.6.0"))));
+                        if info.label.as_deref() == Some(future_update_footer()))));
                 app.show_updates = false;
                 let mut backward_labels = Vec::new();
                 for _ in 0..48 {
@@ -8519,7 +8847,7 @@ mod dashboard_layout_tests {
             .iter()
             .any(|event| matches!(event,
             egui::output::OutputEvent::Clicked(info)
-                if info.label.as_deref() == Some("Update v1.6.0"))));
+                if info.label.as_deref() == Some(future_update_footer()))));
 
         // With an eligible portable update, clicking the badge follows the
         // existing direct-update path. A deliberately missing parent folder
@@ -8569,7 +8897,7 @@ mod dashboard_layout_tests {
             for _ in 0..5 {
                 let _ = render(&mut app, &ctx, size, 1.0, vec![]);
             }
-            for label in ["Settings…", "Update v1.6.0"] {
+            for label in ["Settings…", future_update_footer()] {
                 let output = render(&mut app, &ctx, size, 1.0, vec![]);
                 let position = text_bounds(&output)
                     .into_iter()
@@ -8597,7 +8925,7 @@ mod dashboard_layout_tests {
     }
 
     #[test]
-    fn modern_actions_paint_distinct_gradient_stop_and_ghost_states() {
+    fn modern_actions_paint_distinct_gradient_stop_and_secondary_states() {
         fn frame(
             app: &OpAutoClickerApp,
             ctx: &egui::Context,
@@ -8699,7 +9027,7 @@ mod dashboard_layout_tests {
             assert!(has_fill(
                 &normal,
                 rects[3],
-                Color32::TRANSPARENT,
+                app.palette().button,
                 app.palette().button_border
             ));
             let (hovered, _) = frame(&app, &ctx, vec![Event::PointerMoved(rects[0].center())]);
@@ -8737,6 +9065,229 @@ mod dashboard_layout_tests {
                 app.palette().hover_fill,
                 app.palette().accent
             ));
+        }
+    }
+
+    #[test]
+    fn modern_action_icons_fit_or_yield_to_the_label_and_keep_accessible_clicks() {
+        fn frame(
+            app: &OpAutoClickerApp,
+            ctx: &egui::Context,
+            ppp: f32,
+            label: &str,
+            width: f32,
+            role: (bool, bool, bool),
+            events: Vec<Event>,
+        ) -> (FullOutput, Rect, bool) {
+            let mut input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(320.0, 120.0))),
+                events,
+                ..Default::default()
+            };
+            input
+                .viewports
+                .entry(egui::ViewportId::ROOT)
+                .or_default()
+                .native_pixels_per_point = Some(ppp);
+            let mut rect = Rect::NOTHING;
+            let mut clicked = false;
+            let output = ctx.run(input, |ctx| {
+                app.apply_style(ctx);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let response = OpAutoClickerApp::toned_button(
+                        ui,
+                        app.palette(),
+                        label,
+                        role.0,
+                        width,
+                        role.1,
+                        role.2,
+                    );
+                    rect = response.rect;
+                    clicked = response.clicked();
+                });
+            });
+            (output, rect, clicked)
+        }
+        fn has_glyph(
+            shape: &Shape,
+            icon: ModernActionIcon,
+            expected_area: Rect,
+            color: Color32,
+        ) -> bool {
+            if let Shape::Vec(children) = shape {
+                return children
+                    .iter()
+                    .any(|child| has_glyph(child, icon, expected_area, color));
+            }
+            if !shape.visual_bounding_rect().intersects(expected_area) {
+                return false;
+            }
+            match (icon, shape) {
+                (ModernActionIcon::Start, Shape::Path(path)) => {
+                    path.fill == color && path.points.len() == 3
+                }
+                (ModernActionIcon::Stop, Shape::Rect(rect)) => {
+                    rect.fill == color && rect.rect.size() == Vec2::splat(9.0)
+                }
+                (ModernActionIcon::Hotkeys, Shape::Rect(rect)) => {
+                    rect.stroke.color == color && rect.rect.size() == Vec2::new(14.0, 10.0)
+                }
+                (ModernActionIcon::Playback, Shape::Circle(circle)) => {
+                    circle.stroke.color == color && (circle.radius - 5.5).abs() < 0.01
+                }
+                _ => false,
+            }
+        }
+        for theme in [AppTheme::ModernLight, AppTheme::ModernDark] {
+            for ppp in [1.0, 1.25, 1.5, 2.0] {
+                for (label, primary, danger) in [
+                    ("Start (F24)", true, false),
+                    ("Stop (Space)", false, true),
+                    ("Hotkeys", false, false),
+                    ("Record & Playback", false, false),
+                    ("Record / Play", false, false),
+                ] {
+                    for roomy in [false, true] {
+                        let ctx = egui::Context::default();
+                        let mut app = test_app(MainLayout::Classic);
+                        app.prefs.theme = theme;
+                        let role = (true, primary, danger);
+                        for _ in 0..5 {
+                            let _ = frame(&app, &ctx, ppp, label, 220.0, role, vec![]);
+                        }
+                        let color = if primary {
+                            Color32::from_rgb(7, 25, 35)
+                        } else if danger {
+                            Color32::WHITE
+                        } else {
+                            app.palette().text
+                        };
+                        let text_width = ctx.fonts(|fonts| {
+                            fonts
+                                .layout_no_wrap(label.to_owned(), FontId::proportional(13.5), color)
+                                .size()
+                                .x
+                        });
+                        // Both widths fit the label. Only the second can also
+                        // accommodate the mark, gap, and 8-point side insets.
+                        let width = text_width + if roomy { 38.0 } else { 12.0 };
+                        let (output, rect, _) = frame(&app, &ctx, ppp, label, width, role, vec![]);
+                        assert!((rect.width() - width).abs() < 0.01);
+                        assert!((rect.height() - 31.0).abs() < 0.01);
+                        let bounds = text_bounds(&output)
+                            .into_iter()
+                            .find(|(text, _, _)| text == label)
+                            .expect("complete visible button label")
+                            .1;
+                        assert!(
+                            rect.expand(0.5).contains_rect(bounds),
+                            "{theme:?}/{ppp}/{label}: label must fit its hit target"
+                        );
+                        let icon = OpAutoClickerApp::modern_action_icon(label, primary, danger)
+                            .expect("dashboard action has a vector mark");
+                        let icon_center = egui::pos2(
+                            rect.center().x - (14.0 + 6.0 + text_width) / 2.0 + 7.0,
+                            rect.center().y,
+                        );
+                        let expected_area = Rect::from_center_size(icon_center, Vec2::splat(16.0));
+                        assert_eq!(
+                            output.shapes.iter().any(|clipped| {
+                                has_glyph(&clipped.shape, icon, expected_area, color)
+                            }),
+                            roomy,
+                            "{theme:?}/{ppp}/{label}: mark must yield when space is tight"
+                        );
+                        if !roomy {
+                            assert!((bounds.center().x - rect.center().x).abs() < 1.0);
+                        }
+                        let position = if roomy { icon_center } else { rect.center() };
+                        let pointer = |pressed| Event::PointerButton {
+                            pos: position,
+                            button: PointerButton::Primary,
+                            pressed,
+                            modifiers: Modifiers::default(),
+                        };
+                        let _ = frame(
+                            &app,
+                            &ctx,
+                            ppp,
+                            label,
+                            width,
+                            role,
+                            vec![Event::PointerMoved(position), pointer(true)],
+                        );
+                        let (output, _, clicked) =
+                            frame(&app, &ctx, ppp, label, width, role, vec![pointer(false)]);
+                        assert!(clicked, "the entire action remains clickable");
+                        assert!(
+                            output.platform_output.events.iter().any(|event| {
+                                matches!(event, egui::output::OutputEvent::Clicked(info)
+                                if info.label.as_deref() == Some(label) && info.enabled)
+                            }),
+                            "{label}: accessible name and enabled state must be unchanged"
+                        );
+                    }
+                }
+                // Disabled Stop still has a recognizable mark, but neither
+                // that mark nor the rest of its hit area can activate it.
+                let ctx = egui::Context::default();
+                let mut app = test_app(MainLayout::Classic);
+                app.prefs.theme = theme;
+                let role = (false, false, true);
+                for _ in 0..5 {
+                    let _ = frame(&app, &ctx, ppp, "Stop (F6)", 160.0, role, vec![]);
+                }
+                let (_, _, color) =
+                    OpAutoClickerApp::modern_stop_tone(app.palette().dark, false, false, false);
+                let text_width = ctx.fonts(|fonts| {
+                    fonts
+                        .layout_no_wrap("Stop (F6)".to_owned(), FontId::proportional(13.5), color)
+                        .size()
+                        .x
+                });
+                let (output, rect, _) = frame(&app, &ctx, ppp, "Stop (F6)", 160.0, role, vec![]);
+                let icon_center = egui::pos2(
+                    rect.center().x - (14.0 + 6.0 + text_width) / 2.0 + 7.0,
+                    rect.center().y,
+                );
+                let expected_area = Rect::from_center_size(icon_center, Vec2::splat(16.0));
+                assert!(output.shapes.iter().any(|clipped| has_glyph(
+                    &clipped.shape,
+                    ModernActionIcon::Stop,
+                    expected_area,
+                    color
+                )));
+                let pointer = |pressed| Event::PointerButton {
+                    pos: icon_center,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: Modifiers::default(),
+                };
+                let _ = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    "Stop (F6)",
+                    160.0,
+                    role,
+                    vec![Event::PointerMoved(icon_center), pointer(true)],
+                );
+                let (output, _, clicked) = frame(
+                    &app,
+                    &ctx,
+                    ppp,
+                    "Stop (F6)",
+                    160.0,
+                    role,
+                    vec![pointer(false)],
+                );
+                assert!(!clicked, "disabled Stop must remain inert");
+                assert!(!output.platform_output.events.iter().any(|event| {
+                    matches!(event, egui::output::OutputEvent::Clicked(info)
+                        if info.label.as_deref() == Some("Stop (F6)"))
+                }));
+            }
         }
     }
 
@@ -9054,6 +9605,229 @@ mod dashboard_layout_tests {
     }
 
     #[test]
+    fn sessions_started_after_a_frame_are_tracked_before_the_next_frame() {
+        let mut app = test_app(MainLayout::Classic);
+        app.hours = 0;
+        app.minutes = 10;
+        app.seconds = 0;
+        app.millis = 0;
+        app.handle_start();
+        assert!(app.engine.is_running());
+        assert!(
+            app.was_running,
+            "a quick session must be tracked immediately"
+        );
+        app.engine.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "worker did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+
+        app.was_running = false;
+        assert!(app
+            .macro_recorder
+            .record_click(600_000.0, 50, 60, MouseButton::Right));
+        app.start_macro_playback();
+        assert!(app.engine.is_running());
+        assert!(app.was_running, "a quick macro must be tracked immediately");
+        app.engine.request_stop();
+        while app.engine.is_running() {
+            assert!(Instant::now() < deadline, "macro worker did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+    }
+
+    #[test]
+    fn failed_playback_does_not_claim_to_have_completed() {
+        let dir = scratch("playback-failure-status");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(dir.join("settings.conf"));
+        // An invalid HWND fails before posting any input. The app's playback
+        // flag exercises its completion handling without injecting a click.
+        let config = EngineConfig {
+            base_interval_ms: 1.0,
+            input_mode: InputMode::BackgroundHwnd,
+            target_hwnd: isize::MAX,
+            ..EngineConfig::default()
+        };
+        app.engine.start(&config).expect("test session");
+        app.macro_playing = true;
+        app.was_running = true;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(
+                Instant::now() < deadline,
+                "invalid target did not stop the worker"
+            );
+            std::thread::yield_now();
+        }
+        app.surface_engine_errors();
+        assert!(app.status_kind == StatusKind::Error);
+        app.reconcile_session_status();
+        assert!(app.status_kind == StatusKind::Error);
+        assert!(
+            app.status_text.contains("Target window was lost"),
+            "{}",
+            app.status_text
+        );
+        assert!(!app.macro_playing);
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn off_desktop_playback_reports_the_failure_even_if_it_finishes_before_repaint() {
+        let dir = scratch("off-desktop-macro");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(dir.join("settings.conf"));
+        assert!(app
+            .macro_recorder
+            .record_click(1.0, i64::MAX, i64::MIN, MouseButton::Left));
+        app.macro_until_stopped = false;
+        app.macro_loops = 1;
+        app.start_macro_playback();
+        assert!(app.was_running);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(
+                Instant::now() < deadline,
+                "off-desktop macro did not terminate"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(app.engine.session_outcome(), SessionOutcome::DispatchFailed);
+        // No intervening surface_engine_errors call: the terminal result must
+        // still expose the error if the worker wins the frame timing race.
+        app.reconcile_session_status();
+        assert!(app.status_kind == StatusKind::Error);
+        assert!(
+            app.status_text.contains("click was not sent"),
+            "{}",
+            app.status_text
+        );
+        assert!(!app.macro_playing);
+        assert!(!app.was_running);
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn off_desktop_fixed_click_fails_without_a_mouse_input() {
+        let dir = scratch("off-desktop-fixed");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(dir.join("settings.conf"));
+        app.hours = 0;
+        app.minutes = 0;
+        app.seconds = 0;
+        app.millis = 1;
+        app.repeat_limited = true;
+        app.config.max_clicks = 1;
+        app.config.coordinate_mode = CoordinateMode::FixedScreen;
+        app.config.fixed_x = i64::MAX;
+        app.config.fixed_y = i64::MIN;
+        app.handle_start();
+        assert!(app.was_running);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.engine.is_running() {
+            assert!(
+                Instant::now() < deadline,
+                "off-desktop click did not terminate"
+            );
+            std::thread::yield_now();
+        }
+        app.reconcile_session_status();
+        assert!(app.status_kind == StatusKind::Error);
+        assert!(
+            app.status_text.contains("click was not sent"),
+            "{}",
+            app.status_text
+        );
+        assert!(!app.was_running);
+        assert_eq!(app.engine.click_count(), 0, "test must not send input");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stopped_and_panicked_macro_sessions_finish_with_the_correct_status() {
+        let dir = scratch("macro-terminal-stop");
+        for panic in [false, true] {
+            let mut app = test_app(MainLayout::Classic);
+            app.settings_path = Some(dir.join(if panic { "panic.conf" } else { "stop.conf" }));
+            assert!(app
+                .macro_recorder
+                .record_click(600_000.0, 50, 60, MouseButton::Left));
+            app.start_macro_playback();
+            assert!(app.was_running);
+            if panic {
+                app.engine.panic_stop();
+            } else {
+                app.engine.request_stop();
+            }
+            // Simulate an unrelated warning arriving while the worker drains.
+            app.set_status(StatusKind::Warning, "Nonfatal timing warning");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.engine.is_running() {
+                assert!(Instant::now() < deadline, "macro did not drain");
+                std::thread::yield_now();
+            }
+            app.reconcile_session_status();
+            if panic {
+                assert!(app.status_kind == StatusKind::Panic);
+                assert!(app.status_text.contains("Panic stop"));
+            } else {
+                assert!(app.status_kind == StatusKind::Ready);
+                assert!(app.status_text.starts_with("Playback stopped"));
+            }
+            assert!(!app.macro_playing);
+            assert_eq!(app.engine.click_count(), 0, "test must not send input");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn terminal_outcomes_are_not_inferred_from_previous_ui_messages() {
+        let mut app = test_app(MainLayout::Classic);
+        // Timer/priority warnings are not terminal failures.
+        app.last_seen_error = Some("timeBeginPeriod was rejected".to_string());
+        app.set_status(StatusKind::Error, "An earlier nonfatal warning");
+        app.report_session_outcome(SessionOutcome::Completed, true);
+        assert!(app.status_kind == StatusKind::Ready);
+        assert!(app.status_text.starts_with("Playback complete"));
+
+        // A status can change while draining: the worker's result is the
+        // source of truth, not whether the old message said "Stopping".
+        app.set_status(StatusKind::Warning, "Another message while stopping");
+        app.report_session_outcome(SessionOutcome::Stopped, true);
+        assert!(app.status_kind == StatusKind::Ready);
+        assert!(app.status_text.starts_with("Playback stopped"));
+        app.report_session_outcome(SessionOutcome::Stopped, false);
+        assert!(app.status_text.starts_with("Stopped"));
+        app.report_session_outcome(SessionOutcome::Panicked, true);
+        assert!(app.status_kind == StatusKind::Panic);
+        app.report_session_outcome(SessionOutcome::WorkerLost, true);
+        assert!(app.status_kind == StatusKind::Error);
+        assert!(app.status_text.contains("worker lost"));
+    }
+
+    #[test]
+    fn failed_settings_save_does_not_hide_a_critical_status() {
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = None;
+        for kind in [StatusKind::Error, StatusKind::Panic] {
+            app.set_status(kind, "Critical session result");
+            app.mark_dirty();
+            assert!(!app.flush_settings());
+            assert!(app.status_kind == kind);
+            assert_eq!(app.status_text, "Critical session result");
+            assert!(app.settings_dirty);
+            assert!(app.last_save_error.is_some());
+        }
+    }
+
+    #[test]
     fn macro_playback_does_not_multiply_recorded_clicks() {
         let mut app = test_app(MainLayout::Classic);
         app.config.click_type = ClickType::Triple;
@@ -9084,6 +9858,54 @@ mod dashboard_layout_tests {
             std::thread::yield_now();
         }
         assert_eq!(app.engine.click_count(), 0, "test must not send input");
+    }
+
+    #[test]
+    fn unreadable_settings_are_preserved_instead_of_overwritten_by_defaults() {
+        let dir = scratch("unreadable-settings");
+        for (name, original) in [
+            (
+                "oversized.conf",
+                vec![b'x'; settings::MAX_SETTINGS_BYTES + 1],
+            ),
+            ("invalid-utf8.conf", vec![0xff, 0xfe, b'X']),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, &original).expect("original file");
+            let mut app = test_app(MainLayout::Classic);
+            app.settings_path = Some(path.clone());
+            app.load_persisted();
+            assert!(app.settings_load_error.is_some());
+            assert!(app.status_kind == StatusKind::Warning);
+            assert!(app.status_text.contains("could not be read"));
+            app.prefs.theme = AppTheme::ModernDark;
+            app.mark_dirty();
+            assert!(!app.flush_settings());
+            assert!(app.settings_dirty);
+            assert_eq!(std::fs::read(&path).expect("file preserved"), original);
+            // Closing or explicitly resetting must not quietly erase the file.
+            app.reset_to_defaults();
+            eframe::App::on_exit(&mut app, None);
+            assert_eq!(
+                std::fs::read(&path).expect("file still preserved"),
+                original
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_missing_settings_file_remains_a_writable_fresh_install() {
+        let dir = scratch("missing-settings");
+        let path = dir.join("settings.conf");
+        let mut app = test_app(MainLayout::Classic);
+        app.settings_path = Some(path.clone());
+        app.load_persisted();
+        assert!(app.settings_load_error.is_none());
+        app.mark_dirty();
+        assert!(app.flush_settings());
+        assert!(path.is_file());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -9213,7 +10035,7 @@ mod dashboard_layout_tests {
         let cancel = AtomicBool::new(false);
         let result = OpAutoClickerApp::finish_update_verification(
             paths,
-            "1.6.0".to_string(),
+            future_update_version().to_string(),
             true,
             &cancel,
             || {
@@ -9237,12 +10059,12 @@ mod dashboard_layout_tests {
         let temp_path = paths.download.clone();
         tx.send(UpdateInstallMessage::Verified(ReadyUpdate {
             paths,
-            version: "1.6.0".to_string(),
+            version: future_update_version().to_string(),
             source_advanced: true,
         }))
         .expect("send report");
         app.update_install = UpdateInstallState::Downloading {
-            version: "1.6.0".to_string(),
+            version: future_update_version().to_string(),
             total: 1,
             downloaded: Arc::new(AtomicU64::new(1)),
             phase: Arc::new(AtomicU8::new(UPDATE_PHASE_VERIFYING)),
@@ -9321,7 +10143,7 @@ mod dashboard_layout_tests {
             &egui::Context::default(),
             &ReadyUpdate {
                 paths: paths.clone(),
-                version: "1.6.0".to_string(),
+                version: future_update_version().to_string(),
                 source_advanced: true,
             },
         );
@@ -9343,7 +10165,7 @@ mod dashboard_layout_tests {
         let cancel = AtomicBool::new(true);
         let result = OpAutoClickerApp::finish_update_verification(
             paths,
-            "1.6.0".to_string(),
+            future_update_version().to_string(),
             false,
             &cancel,
             || panic!("cancelled attempt must not hash"),
@@ -9374,7 +10196,7 @@ mod dashboard_layout_tests {
             &egui::Context::default(),
             &ReadyUpdate {
                 paths: paths.clone(),
-                version: "1.6.0".to_string(),
+                version: future_update_version().to_string(),
                 source_advanced: true,
             },
         );
@@ -9401,7 +10223,7 @@ mod dashboard_layout_tests {
             &egui::Context::default(),
             &ReadyUpdate {
                 paths: paths.clone(),
-                version: "1.6.0".to_string(),
+                version: future_update_version().to_string(),
                 source_advanced: false,
             },
         );
@@ -9431,7 +10253,7 @@ mod dashboard_layout_tests {
         drop(sender);
         let mut app = test_app(MainLayout::Classic);
         app.update_install = UpdateInstallState::Downloading {
-            version: "1.6.0".to_string(),
+            version: future_update_version().to_string(),
             total: 1,
             downloaded: Arc::new(AtomicU64::new(0)),
             phase: Arc::new(AtomicU8::new(UPDATE_PHASE_SOURCE)),

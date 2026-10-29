@@ -316,6 +316,38 @@ fn window_size_is_clamped_and_defaulted() {
 }
 
 #[test]
+fn settings_read_is_bounded_and_rejects_invalid_utf8() {
+    let dir =
+        std::env::temp_dir().join(format!("macroclicker-settings-read-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("directory");
+    let path = dir.join("settings.conf");
+    let at_limit = vec![b'x'; settings::MAX_SETTINGS_BYTES];
+    std::fs::write(&path, &at_limit).expect("write at limit");
+    assert_eq!(
+        settings::read_settings(&path).expect("read at limit").len(),
+        at_limit.len()
+    );
+    let mut too_large = at_limit;
+    too_large.push(b'x');
+    std::fs::write(&path, &too_large).expect("write over limit");
+    assert_eq!(
+        settings::read_settings(&path)
+            .expect_err("reject too large")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    std::fs::write(&path, [0xff, 0xfe]).expect("write invalid UTF-8");
+    assert_eq!(
+        settings::read_settings(&path)
+            .expect_err("reject invalid UTF-8")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn atomic_settings_writes_replace_complete_files_and_clean_the_temp() {
     let dir = std::env::temp_dir().join(format!(
         "macroclicker-settings-write-{}",

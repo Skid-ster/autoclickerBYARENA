@@ -16,10 +16,29 @@ use crate::hotkey::{
     WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 };
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Much larger than a normal settings document, but bounded even if the file
+/// is damaged, maliciously large, or grows while it is being read.
+pub const MAX_SETTINGS_BYTES: usize = 1024 * 1024;
+
+pub fn read_settings(path: &Path) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take((MAX_SETTINGS_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_SETTINGS_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "settings file exceeds the 1 MiB safety limit",
+        ));
+    }
+    String::from_utf8(bytes)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "settings file is not UTF-8"))
+}
 
 /// Write a complete file beside its destination, then atomically replace it.
 /// Each process/attempt has its own create-new temp file, so simultaneous

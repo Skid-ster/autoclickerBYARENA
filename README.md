@@ -49,7 +49,9 @@ Every version tag is compiled by the Windows CI workflow (format check,
 clippy with warnings denied, standalone tests plus Windows app and worker
 tests, release build, and embedded version/GUI-subsystem verification).
 Releases also include `SHA256SUMS.txt` for offline verification. CI refuses a version tag
-unless the tag, Cargo package version, and EXE FileVersion agree.
+unless the tag, Cargo package version, and EXE FileVersion agree. Changes in
+the [Unreleased changelog](CHANGELOG.md#unreleased) are source-only until a
+new release is published.
 
 MacroClicker updates itself after one explicit action. When an update is
 confirmed, the footer **Update vX.Y.Z** button shows a small red **1**;
@@ -133,14 +135,16 @@ the update before the program file is replaced.
   sequence through the same QPC-scheduled worker as ordinary sessions —
   exact buttons, positions and delays, drift-free, loop N times or until
   stopped, and F8 panic-stops instantly mid-playback. Up to 2048 steps
-  per macro.
+  per macro. In the current source, playback stops with an error rather than
+  clicking a different position if a recorded point is no longer on a display.
 - **Appearance + automatic scaling** — open **Settings… → Appearance**
   and choose **Classic** or **Modern**, then **Light** or **Dark**. Modern
-  has graphite or light surfaces, teal-accented vector headings, rounded
-  cards and controls, and Outfit typography. The Start action uses a
-  cyan-to-blue gradient; secondary actions remain visually quiet.
-  Classic retains the familiar light and dark looks. An existing theme is
-  never changed on upgrade: Midnight OLED, Terminal green and Aurora remain
+  has blue-ink or porcelain surfaces, teal-accented vector headings,
+  rounded cards and controls, and Outfit typography. A mint-to-blue Start
+  action and original vector action icons clarify the main controls; icons
+  give way to their labels when space is tight. Classic retains the familiar
+  light and dark looks. An existing theme is never changed on upgrade:
+  Midnight OLED, Terminal green and Aurora remain
   available under **Previous themes**. Classic Light is the fresh default.
   The choice is saved with your settings. Automatic adaptation can still be
   switched off, and saved scale values from older releases are preserved.
@@ -158,7 +162,9 @@ the update before the program file is replaced.
   to every 16 ms) — with an assignment
   dialog; **F8** is a permanently reserved panic stop.
 - Pick location captures the live cursor (`GetCursorPos`); settings persist
-  to `%APPDATA%\op-auto-clicker\settings.conf` and reload on launch.
+  to `%APPDATA%\op-auto-clicker\settings.conf` and reload on launch. The
+  current source preserves an unreadable or oversized file and explains how
+  to repair it in Settings instead of overwriting it with defaults.
 - Dedicated click worker thread — the render thread never runs timing code;
   QPC spin scheduling with no sleep calls, idle parking on a Win32
   manual-reset event, RAII `timeBeginPeriod(1)` and time-critical thread

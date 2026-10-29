@@ -39,7 +39,7 @@ cargo run --release
 cargo test --release
 ```
 
-Eleven integration test binaries run platform-independent logic (135 test
+Twelve integration test binaries run platform-independent logic (141 test
 cases, including the self-update module's fault-injection cases). Windows
 also runs the dashboard and click-worker unit tests:
 
@@ -47,6 +47,9 @@ also runs the dashboard and click-worker unit tests:
   ranges, background HWND requirement, sub-millisecond acceptance, the atomic
   snapshot round trip and concurrent coherent reads, h/m/s/ms interval helpers, random-offset validation,
   long-interval commits, and the 4.1 baseline defaults.
+- `coordinates_tests` — pixel round trips across representative sizes and
+  every supported axis extent, negative origins, bounds and overflow checks,
+  and independent signed mouse-message coordinate words.
 - `humanize_tests` — Box-Muller determinism, seeded RNG reproducibility,
   Gaussian mean/sigma over large samples, zero-sigma exactness, clamp
   guarantees, and the uniform +/- random-offset bounds and distribution.
@@ -73,7 +76,8 @@ also runs the dashboard and click-worker unit tests:
   theme for retired keys, legacy `dark_mode` migration precedence,
   `ui_scale` clamping and window-size round trip, clamping to
   [560x456, 4x that], per-dimension garbage/non-finite tolerance, and
-  complete-file replacement and failed-write recovery.
+  complete-file replacement, failed-write recovery, bounded reads and
+  invalid UTF-8 rejection.
 - `icon_tests` — dimensions, transparent rounded corners, solid accent
   center, two-axis symmetry, the presence of both accent and background
   pixels, anti-aliased edges with a fully opaque core, and byte-for-byte
@@ -180,12 +184,13 @@ automatic adaptation controls.
 - **Classic + Light** (default) keeps the light-gray dialog, white cards,
   familiar border-breaking captions and original controls.
 - **Classic + Dark** keeps the existing Windows-style dark appearance.
-- **Modern + Light** uses cool light surfaces, teal-accented vector card
+- **Modern + Light** uses porcelain surfaces, teal-accented vector card
   headings, inset rounded inputs and the bundled Outfit typeface.
-- **Modern + Dark** uses the same design with graphite surfaces and a
-  brighter teal accent. Both include a cyan-to-blue Start action, distinct
-  active and disabled Stop states, ghost secondary actions and dimmed
-  backgrounds behind dialogs.
+- **Modern + Dark** uses the same design with layered blue-ink surfaces and
+  a brighter teal accent. Both include a mint-to-blue Start action, a neutral
+  disabled Stop, softly surfaced secondary actions and dimmed backgrounds
+  behind dialogs. Original vector action marks make the controls recognizable
+  at a glance and give way to their labels when space is limited.
 
 The choice applies to the dashboard and dialogs and is saved across restarts.
 It retains all click settings and the current responsive composition.
@@ -241,7 +246,10 @@ bar agree.
 - **Cursor position** (full width) — Current location (default) or Pick
   location radio, a real gray **Pick location** button that captures the next
   left-click anywhere on screen via `GetCursorPos` (Esc cancels, the button
-  doubles as "Cancel pick" while armed), plus white X/Y boxes.
+  doubles as "Cancel pick" while armed), plus white X/Y boxes. Fixed points
+  and recorded macro points use the full virtual desktop; if a point no
+  longer lies on a connected display, the session stops with an error instead
+  of clicking elsewhere.
 - **2x2 push-button grid** — **Start (F6)** and **Stop (F6)** (Stop is
   greyed out until a session is running; Start is disabled while running or
   while the interval is invalid), then **Hotkey setting** and
@@ -318,7 +326,11 @@ Settings persist automatically to
 `%APPDATA%\op-auto-clicker\settings.conf` (a hand-editable, tolerant
 key=value document) and reload on launch. A complete, uniquely named
 temporary file is synced and atomically renamed over the old file; a
-failed save stays dirty, is reported, and is retried. An invalid random
+failed save stays dirty, is reported, and is retried. Reads are limited to
+1 MiB. If an existing file cannot be read, is not UTF-8, or exceeds that
+limit, it is preserved rather than overwritten: Settings shows its location
+and asks you to close the app, repair or move the file, and reopen it. Saving
+is blocked for that session, including on reset and exit. An invalid random
 range is saved as zero instead of invalidating unrelated settings. An
 update will not restart while settings cannot be saved. A stale window handle from
 a previous session is never reused.
@@ -338,6 +350,7 @@ a previous session is never reused.
 | `src/settings.rs` | Dependency-free key=value serialization, tolerant parsing and atomic settings writes |
 | `src/telemetry.rs` | Lock-free SPSC ring buffer over atomic `Atom` slots (`Send + Sync`, no `unsafe`), drop-newest back pressure, sliding-window statistics |
 | `src/config.rs` | Configuration struct, validation, h/m/s/ms helpers and the all-atomic runtime snapshot |
+| `src/coordinates.rs` | Bounded virtual-desktop normalization and mouse-message coordinate packing |
 | `src/update.rs` | Pure update decisions: version ordering, release/asset JSON scanning (tag, size, SHA-256 digest), validated release/download/redirect URLs, refresh policy, error headlines and a dependency-free streaming SHA-256 |
 | `src/self_update.rs` | Installation classification and verified self-replacement: guarded/cancellable Git fast-forward, PE and fingerprint checks, per-attempt swap, rollback and recovery preservation |
 | `src/window_layout.rs` | Pure classic/portrait/wide composition selection, hysteresis and proportional fit arithmetic |
@@ -368,9 +381,11 @@ a previous session is never reused.
 
 - Global mode submits arrayed `INPUT` structures to `SendInput`, including a
   two-element move-plus-down array for fixed coordinates using
-  `MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE` with virtual-screen normalized
-  0..65535 mapping. Left, right and middle buttons use their respective
-  down/up flags; the injected count is checked against the request.
+  `MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK` with
+  virtual-desktop normalized 0..65535 mapping. Points outside connected
+  displays, invalid desktop metrics, and axes exceeding the absolute input
+  precision limit fail before the button-down is sent. Left, right and middle
+  buttons use their respective down/up flags; the injected count is checked.
 - The engine-level background delivery path (retained in `src/engine.rs`
   and `src/win32.rs`, not exposed in the UI) validates the HWND, caches
   the client rectangle in atomics
@@ -425,7 +440,10 @@ a previous session is never reused.
     Light and Modern Dark, including each dialog and a restart. Confirm the
     selected appearance persists, controls stay usable at compact, tall and
     wide sizes, and saved OLED/Terminal/Aurora choices remain available under
-    Previous themes without being changed automatically.
+    Previous themes without being changed automatically. In Modern, check
+    the action icons and full labels, the neutral disabled Stop and the active
+    Stop state. Icons may disappear in a narrow layout, but labels must remain
+    readable; Classic retains its existing presentation.
 12. Start a "Repeat until stopped" session, then press Stop: the status
     shows "Stopping…" for at most a moment and then settles on
     "Stopped — N clicks delivered." — it must never remain stuck on
@@ -495,12 +513,11 @@ a previous session is never reused.
     missing result refreshes on open, and the status card must show
     **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**,
     and **Channel**, with the verdict naming the version GitHub reported.
-    With v1.6.0 published, a portable v1.5.2 EXE should show **Update
-    v1.6.0** without opening anything. After updating, the v1.6.0 footer
-    should show no red notification while up to date. To check the new red
-    **1**, use a controlled newer-release fixture or wait for a later
-    release: it should appear only for a confirmed available update, and
-    clicking it must behave like clicking the rest of the button.
+    With v1.7.0 published, a portable v1.6.0 EXE should show **Update
+    v1.7.0** with a red **1** after confirming the available update. The
+    badge must behave like the rest of the button when clicked. After
+    updating, the v1.7.0 footer should show no red notification while up to
+    date; a controlled newer-release fixture can test a future notification.
     It disappears during installation and returns after cancellation or
     failure if the newer version remains confirmed.
     With no session running, press the footer update button: the Updates
@@ -515,9 +532,9 @@ a previous session is never reused.
     the running version was not changed, and keep the current build
     working. **Release notes** opens that version's GitHub page and
     **Copy download link** puts the exact asset URL on the clipboard.
-    For the source path, launch a v1.5.2
-    `target\release\macro_clicker.exe` from a clean `main` checkout
-    after v1.6.0 is published: **Installation** must say
+    For the source path, launch a v1.6.0
+    `target\release\macro_clicker.exe` from a clean `main` checkout still at
+    v1.6.0 after v1.7.0 is published: **Installation** must say
     **Source checkout build**, the stages must begin with **Source**,
     the checkout must land exactly on that release tag, and the app
     must reopen as the new version. Make a tracked local edit and
@@ -539,3 +556,14 @@ a previous session is never reused.
     artifact outside this checkout must offer only the browser
     download, and a portable copy in a read-only folder must fail
     cleanly with the current version untouched.
+19. With a disposable blank target on each display, try fixed-position clicks
+    and a one-step recording at corners and interior points, including a
+    display left of or above the primary one and mixed DPI scales. Confirm
+    the correct pixel is clicked. Disconnect a display or choose coordinates
+    outside all displays: the worker must stop with a clear error and must
+    not click the old cursor position. Check quick finite sessions and macros,
+    Stop and F8 for their distinct terminal statuses.
+20. Back up `%APPDATA%\op-auto-clicker\settings.conf`, then use a disposable
+    oversized or invalid-UTF-8 settings file. Reopen the app, check the
+    recovery instructions in Settings, and verify reset and exit do not
+    overwrite that file. Close the app, restore the backup and reopen it.
