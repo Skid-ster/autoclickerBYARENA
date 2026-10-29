@@ -154,6 +154,8 @@ pub fn wait_for_event(handle: isize, timeout_ms: u32) -> u32 {
 
 pub const WAIT_OBJECT: u32 = WAIT_OBJECT_0;
 pub const WAIT_ERROR: u32 = WAIT_FAILED;
+/// WAIT_TIMEOUT returned by WaitForSingleObject.
+pub const WAIT_TIMED_OUT: u32 = 0x0000_0102;
 
 pub fn set_current_thread_time_critical() -> io::Result<()> {
     // SAFETY: GetCurrentThread returns a pseudo-handle that never needs

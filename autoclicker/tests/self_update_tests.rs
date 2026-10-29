@@ -13,10 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use self_update::{
-    cleanup_stale_update_files, hash_file, install_kind_for_exe, is_amd64_pe, is_cargo_target_exe,
+    cleanup_update_attempt, hash_file, install_kind_for_exe, is_amd64_pe, is_cargo_target_exe,
     is_supported_origin_url, package_version_from_manifest, source_checkout_for_exe,
-    stale_update_files, swap_in_new_exe, undo_swap, update_paths, verify_downloaded_exe,
-    InstallKind,
+    swap_in_new_exe, undo_swap, update_paths, verify_downloaded_exe, InstallKind,
 };
 use update::Sha256;
 
@@ -181,16 +180,21 @@ fn swap_rolls_back_when_the_download_is_missing() {
 }
 
 #[test]
-fn swap_clears_a_stale_backup_from_a_crashed_attempt() {
+fn swap_preserves_an_existing_backup_instead_of_overwriting_it() {
     let dir = scratch_dir("stale-backup");
     let exe = dir.join("macro_clicker.exe");
     let paths = update_paths(&exe, "9");
     fs::write(&exe, b"current").expect("write must work");
     fs::write(&paths.download, b"next").expect("write must work");
     fs::write(&paths.backup, b"ancient crash remains").expect("write must work");
-    swap_in_new_exe(&paths).expect("stale backup must not block the swap");
-    assert_eq!(fs::read(&exe).expect("read"), b"next");
-    assert_eq!(fs::read(&paths.backup).expect("read"), b"current");
+    let error = swap_in_new_exe(&paths).expect_err("existing backup must be preserved");
+    assert!(error.contains("preserved"));
+    assert_eq!(fs::read(&exe).expect("read"), b"current");
+    assert_eq!(
+        fs::read(&paths.backup).expect("read"),
+        b"ancient crash remains"
+    );
+    assert_eq!(fs::read(&paths.download).expect("read"), b"next");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -202,7 +206,7 @@ fn undo_swap_restores_the_original_after_a_failed_launch() {
     fs::write(&exe, b"trusty").expect("write must work");
     fs::write(&paths.download, b"won't start").expect("write must work");
     swap_in_new_exe(&paths).expect("swap must succeed");
-    undo_swap(&paths);
+    undo_swap(&paths).expect("rollback must succeed");
     assert_eq!(fs::read(&exe).expect("read"), b"trusty");
     assert!(!paths.backup.exists());
     assert!(!paths.download.exists());
@@ -302,22 +306,87 @@ egui = "=0.27.2"
 }
 
 #[test]
-fn cleanup_removes_only_update_remains() {
+fn cleanup_removes_only_the_successful_attempts_files() {
     let dir = scratch_dir("cleanup");
     let exe = dir.join("macro_clicker.exe");
+    let current = update_paths(&exe, "123");
+    let other = update_paths(&exe, "124");
     fs::write(&exe, b"the program").expect("write must work");
-    fs::write(dir.join("macro_clicker.exe.old-123"), b"a").expect("write");
-    fs::write(dir.join("macro_clicker.exe.update-123"), b"b").expect("write");
+    fs::write(&current.backup, b"a").expect("write");
+    fs::write(&current.download, b"b").expect("write");
+    fs::write(&other.backup, b"recovery").expect("other backup");
+    fs::write(&other.download, b"other candidate").expect("other download");
     fs::write(dir.join("macro_clicker.exe.old"), b"not ours").expect("write");
     fs::write(dir.join("notes.txt"), b"keep me").expect("write");
 
-    assert_eq!(stale_update_files(&exe).len(), 2);
-    assert_eq!(cleanup_stale_update_files(&exe), 2);
-    assert!(stale_update_files(&exe).is_empty());
+    assert_eq!(cleanup_update_attempt(&current), 2);
+    assert!(!current.backup.exists());
+    assert!(!current.download.exists());
+    assert_eq!(
+        fs::read(&other.backup).expect("other backup retained"),
+        b"recovery"
+    );
+    assert!(other.download.exists());
     assert!(exe.exists());
     assert!(dir.join("macro_clicker.exe.old").exists());
     assert!(dir.join("notes.txt").exists());
-    // Idempotent: a second sweep is a no-op, never an error.
-    assert_eq!(cleanup_stale_update_files(&exe), 0);
+    // Idempotent: a second cleanup is a no-op, never an error.
+    assert_eq!(cleanup_update_attempt(&current), 0);
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn missing_executable_never_causes_cleanup_to_delete_recovery_files() {
+    let dir = scratch_dir("missing-exe");
+    let exe = dir.join("macro_clicker.exe");
+    let paths = update_paths(&exe, "12");
+    fs::write(&paths.backup, b"known good").expect("backup");
+    fs::write(&paths.download, b"candidate").expect("download");
+    assert!(swap_in_new_exe(&paths).is_err());
+    assert_eq!(cleanup_update_attempt(&paths), 0);
+    assert_eq!(fs::read(&paths.backup).expect("backup kept"), b"known good");
+    assert_eq!(
+        fs::read(&paths.download).expect("download kept"),
+        b"candidate"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rollback_refuses_to_overwrite_an_occupied_temporary_file() {
+    let dir = scratch_dir("occupied-rollback");
+    let exe = dir.join("macro_clicker.exe");
+    let paths = update_paths(&exe, "13");
+    fs::write(&exe, b"replacement").expect("exe");
+    fs::write(&paths.backup, b"known good").expect("backup");
+    fs::write(&paths.download, b"other file").expect("occupied temp");
+    let err = undo_swap(&paths).expect_err("occupied path must stop rollback");
+    assert!(err.contains("backup"));
+    assert_eq!(fs::read(&paths.backup).expect("backup kept"), b"known good");
+    assert_eq!(fs::read(&paths.download).expect("temp kept"), b"other file");
+    assert_eq!(fs::read(&exe).expect("exe kept"), b"replacement");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn update_attempts_reserve_distinct_files_and_cleanup_only_their_own() {
+    let dir = scratch_dir("unique-attempts");
+    let exe = dir.join("macro_clicker.exe");
+    fs::write(&exe, b"running").expect("exe");
+    let first = self_update::reserve_update_paths(&exe).expect("first reservation");
+    let second = self_update::reserve_update_paths(&exe).expect("second reservation");
+    assert_ne!(first.id, second.id);
+    assert!(self_update::valid_update_id(&first.id));
+    assert!(!self_update::valid_update_id("../other"));
+    fs::write(&first.backup, b"first backup").expect("backup");
+    fs::write(&second.backup, b"second backup").expect("backup");
+    assert_eq!(self_update::cleanup_update_attempt(&first), 2);
+    assert!(!first.backup.exists());
+    assert!(!first.download.exists());
+    assert_eq!(
+        fs::read(&second.backup).expect("other backup"),
+        b"second backup"
+    );
+    assert!(second.download.exists());
+    let _ = fs::remove_dir_all(dir);
 }

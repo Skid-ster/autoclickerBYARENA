@@ -38,7 +38,7 @@ Everything 4.1 does, plus the parts it cannot:
 | Free resizing, maximize/snap and fit-to-window UI scaling | No* | Yes |
 | Five themes + 75–200 % window scaling | No | Yes |
 | Built-in updates against GitHub releases | No | Yes — one click downloads, SHA-256-verifies, installs and restarts |
-| Open source with Windows CI and 108 automated tests | No | Yes |
+| Open source with Windows CI and automated tests | No | Yes |
 
 \* Resizing/scaling is the researched part: OP's public 4.1 feature
 pages list no resize or UI-scale feature; the winget-catalogued 4.1
@@ -53,9 +53,9 @@ later closed builds are not public, so no stronger claim is made.
 Download the ready-to-run **`macro_clicker.exe`** from the
 [latest GitHub release](https://github.com/Skid-ster/autoclickerBYARENA/releases/latest).
 Every version tag is compiled by the Windows CI workflow (format check,
-clippy with warnings denied, all 108 tests, release build, and embedded
-version/GUI-subsystem verification). Releases also include
-`SHA256SUMS.txt` for offline verification. CI refuses a version tag
+clippy with warnings denied, 128 standalone tests plus Windows app and
+worker tests, release build, and embedded version/GUI-subsystem verification).
+Releases also include `SHA256SUMS.txt` for offline verification. CI refuses a version tag
 unless the tag, Cargo package version, and EXE FileVersion agree.
 
 MacroClicker updates itself after one explicit action. The footer
@@ -108,13 +108,14 @@ the update before the program file is replaced.
   the window — wider, taller, snapped or maximized — measured
   zoom-independently so it can never feed back into itself. Growth
   eases smoothly (~180 ms) onto the exact fit once a drag settles;
-  shrinkage fits back down immediately, and the physical minimum is
-  compensated for the current fit so a large window can always be
+  shrinkage requests a smaller fit without growth easing, and the physical
+  minimum is compensated for the current fit so a large window can always be
   dragged back down without restarting. Total zoom is capped at
   280 %. Panoramic
   windows rearrange the middle groups three-across with a single row
-  of action buttons, and the layout itself stretches to the window's
-  full height, groups flowing from the top with the status and
+  of action buttons; tall, narrow windows reflow interval fields into two
+  rows and stack the middle groups so their controls can grow. The layout
+  itself stretches to the window's full height, groups flowing from the top with the status and
   buttons riding at the bottom edge, so a big window is filled at
   any size or resolution, never a small dialog marooned in empty
   space. A first run (no settings file yet) on a display larger than
@@ -177,20 +178,20 @@ the update before the program file is replaced.
   priority with verified failure reporting. A UI-side watchdog detects a
   dead worker thread and recovers the controls instead of reporting a
   running session forever, engine locks recover from poisoning rather
-  than cascading panics, and settings are written atomically
-  (temp file + rename) so a crash can never corrupt them.
+  than cascading panics, and settings are written by atomic temp-file
+  replacement, with failed saves retained for retry.
 - A semantic status dot leads the status strip (shape and position carry
   the state, not color alone) and breathes gently while a session runs;
   every status change ends in an explicit confirmation line.
 - Global arrayed `SendInput` click delivery driven by a QPC scheduler that
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
-- 108 unit tests over platform-independent modules, plus a Windows CI
-  workflow (format check, clippy with warnings denied, tests, release build
-  and binary artifact), and a generated crosshair application icon.
+- 128 standalone tests over platform-independent modules, plus Windows
+  app and worker tests and a CI workflow (format check, clippy with warnings
+  denied, tests, release build and binary artifact), and a generated crosshair application icon.
 
-The GUI, input injection and worker threads are Windows-specific and are
-acceptance-tested on Windows; see [`autoclicker/README.md`](autoclicker/README.md)
+The GUI, input injection and worker threads are Windows-specific and need
+hands-on Windows acceptance; see [`autoclicker/README.md`](autoclicker/README.md)
 for the full manual checklist and
 [`docs/VERIFICATION.md`](docs/VERIFICATION.md) for the verification record.
 

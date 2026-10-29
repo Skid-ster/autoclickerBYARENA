@@ -16,6 +16,66 @@ use crate::hotkey::{
     WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
 };
 
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Write a complete file beside its destination, then atomically replace it.
+/// Each process/attempt has its own create-new temp file, so simultaneous
+/// instances can never truncate or rename one another's in-flight settings.
+pub fn write_settings_atomic(path: &Path, contents: &str) -> io::Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "settings path has no parent")
+        })?;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "settings path has no file name",
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    for _ in 0..32 {
+        let mut temp_name = name.to_os_string();
+        temp_name.push(format!(
+            ".{}-{stamp}-{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let temp_path = parent.join(temp_name);
+        let mut file = match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let written = file
+            .write_all(contents.as_bytes())
+            .and_then(|()| file.sync_all());
+        drop(file);
+        let result = written.and_then(|()| fs::rename(&temp_path, path));
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        return result;
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not reserve a settings temp file",
+    ))
+}
+
 const SETTINGS_VERSION: &str = "1";
 
 fn parse_bool(value: &str) -> Option<bool> {

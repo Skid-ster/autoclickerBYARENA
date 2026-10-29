@@ -264,3 +264,128 @@ fn window_size_is_clamped_and_defaulted() {
     let (_, prefs) = parse_settings("window_width=-800\nwindow_height=-1\n");
     assert_eq!((prefs.window_width, prefs.window_height), (560, 456));
 }
+
+#[test]
+fn atomic_settings_writes_replace_complete_files_and_clean_the_temp() {
+    let dir = std::env::temp_dir().join(format!(
+        "macroclicker-settings-write-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("nested").join("settings.conf");
+    settings::write_settings_atomic(&path, "first=complete\n").expect("first save");
+    settings::write_settings_atomic(&path, "second=complete\n").expect("replacement");
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("saved file"),
+        "second=complete\n"
+    );
+    assert_eq!(
+        std::fs::read_dir(path.parent().expect("parent"))
+            .expect("dir")
+            .count(),
+        1
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn failed_atomic_settings_write_does_not_destroy_the_old_file() {
+    let dir =
+        std::env::temp_dir().join(format!("macroclicker-settings-fail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let path = dir.join("settings.conf");
+    // A directory at the destination makes the final rename fail on all
+    // supported platforms, without relying on permissions or administrator status.
+    std::fs::create_dir(&path).expect("destination directory");
+    std::fs::write(path.join("keep"), b"known good").expect("marker");
+    assert!(settings::write_settings_atomic(&path, "new settings").is_err());
+    assert_eq!(
+        std::fs::read(path.join("keep")).expect("marker retained"),
+        b"known good"
+    );
+    assert_eq!(
+        std::fs::read_dir(&dir).expect("dir").count(),
+        1,
+        "failed temp removed"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn concurrent_saves_never_expose_a_mixed_or_partial_document() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Barrier};
+    use std::time::{Duration, Instant};
+    let dir = std::env::temp_dir().join(format!(
+        "macroclicker-settings-concurrent-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("directory");
+    let path = Arc::new(dir.join("settings.conf"));
+    let documents = Arc::new(
+        (0..4)
+            .map(|n| format!("writer={n}\n{}", (b'A' + n) as char).repeat(4096))
+            .collect::<Vec<_>>(),
+    );
+    settings::write_settings_atomic(&path, &documents[0]).expect("baseline");
+    let barrier = Arc::new(Barrier::new(5));
+    let finished = Arc::new(AtomicUsize::new(0));
+    let succeeded = Arc::new(AtomicUsize::new(0));
+    let mut writers = Vec::new();
+    for index in 0..4 {
+        let (path, documents, barrier) = (
+            Arc::clone(&path),
+            Arc::clone(&documents),
+            Arc::clone(&barrier),
+        );
+        let (finished, succeeded) = (Arc::clone(&finished), Arc::clone(&succeeded));
+        writers.push(std::thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..12 {
+                // An external sharing violation can fail a Windows rename;
+                // that is reported/retried by the app, never a partial save.
+                if settings::write_settings_atomic(&path, &documents[index]).is_ok() {
+                    succeeded.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            finished.fetch_add(1, Ordering::Release);
+        }));
+    }
+    barrier.wait();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while finished.load(Ordering::Acquire) != 4 {
+        assert!(Instant::now() < deadline, "settings writers did not finish");
+        match std::fs::read_to_string(path.as_ref()) {
+            Ok(document) => assert!(
+                documents.contains(&document),
+                "reader saw a partial or mixed settings file"
+            ),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::PermissionDenied
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(error) => panic!("settings disappeared or became unreadable: {error}"),
+        }
+        std::thread::yield_now();
+    }
+    for writer in writers {
+        writer.join().expect("writer");
+    }
+    assert!(
+        succeeded.load(Ordering::Relaxed) > 0,
+        "all concurrent saves failed"
+    );
+    let final_document = std::fs::read_to_string(path.as_ref()).expect("final settings");
+    assert!(documents.contains(&final_document));
+    assert_eq!(
+        std::fs::read_dir(&dir).expect("directory").count(),
+        1,
+        "temp files cleaned"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}

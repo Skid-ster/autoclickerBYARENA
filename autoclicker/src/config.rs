@@ -2,7 +2,8 @@
 //!
 //! This module is platform-independent so the validation rules can be unit
 //! tested on any operating system. The worker thread never takes a lock to
-//! read its configuration: every field is stored in its own atomic.
+//! read its configuration: every field is stored in its own atomic. A
+//! generation check rejects mixed snapshots when an update is in flight.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicIsize, AtomicU64, Ordering};
 
@@ -178,6 +179,25 @@ impl Default for EngineConfig {
     }
 }
 
+/// Commit the dashboard's interval and checkbox-gated random offset.
+/// The editor supports hours, not just the engine's original 10-second
+/// default clamp. Extend that upper bound to cover the requested interval
+/// and its positive jitter without changing any lower-bound validation.
+/// A zero editor value remains invalid at the UI boundary; the previously
+/// valid base is retained so an in-flight session is not set to zero.
+pub fn commit_ui_interval(config: &mut EngineConfig, total_ms: u64, offset_ms: f64) {
+    if total_ms > 0 {
+        config.base_interval_ms = total_ms as f64;
+    }
+    config.random_offset_ms = offset_ms;
+    if total_ms > 0 && offset_ms.is_finite() && offset_ms >= 0.0 {
+        let requested_max = config.base_interval_ms + offset_ms;
+        if config.max_interval_ms.is_finite() && requested_max > config.max_interval_ms {
+            config.max_interval_ms = requested_max;
+        }
+    }
+}
+
 /// Milliseconds in one hour / minute / second, used by the 4.1-style editors.
 pub const MS_PER_SECOND: u64 = 1_000;
 pub const MS_PER_MINUTE: u64 = 60_000;
@@ -279,9 +299,13 @@ impl EngineConfig {
     }
 }
 
-/// Lock-free configuration mirror. The UI thread calls [`store`] while the
-/// worker calls [`load`] on every click iteration; no mutex is involved.
+/// Configuration mirror with a nonblocking, coherent reader. Writers
+/// serialize through an odd generation; readers accept fields only when the
+/// same even generation surrounds the whole read. The worker makes one
+/// bounded attempt per iteration and keeps its previous valid snapshot when
+/// a writer is in progress, so it never waits in the click path.
 pub struct AtomicConfigSnapshot {
+    generation: AtomicU64,
     base_interval_ms: AtomicU64,
     sigma_ms: AtomicU64,
     sigma_percent: AtomicU64,
@@ -309,6 +333,7 @@ pub struct AtomicConfigSnapshot {
 impl Default for AtomicConfigSnapshot {
     fn default() -> Self {
         let snapshot = Self {
+            generation: AtomicU64::new(0),
             base_interval_ms: AtomicU64::new(0),
             sigma_ms: AtomicU64::new(0),
             sigma_percent: AtomicU64::new(0),
@@ -339,71 +364,104 @@ impl Default for AtomicConfigSnapshot {
 
 impl AtomicConfigSnapshot {
     pub fn store(&self, config: &EngineConfig) {
+        // Sequentially consistent operations give the generation and all
+        // fields a single total order, so no partially published combination
+        // can pass the reader's equal-generation test. Writers (the UI side)
+        // are serialized; there is no lock or unbounded retry on the worker.
+        let generation = loop {
+            let value = self.generation.load(Ordering::SeqCst);
+            if value & 1 == 0
+                && self
+                    .generation
+                    .compare_exchange_weak(
+                        value,
+                        value.wrapping_add(1),
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    )
+                    .is_ok()
+            {
+                break value;
+            }
+            std::hint::spin_loop();
+        };
         self.base_interval_ms
-            .store(config.base_interval_ms.to_bits(), Ordering::Release);
+            .store(config.base_interval_ms.to_bits(), Ordering::SeqCst);
         self.sigma_ms
-            .store(config.sigma_ms.to_bits(), Ordering::Release);
+            .store(config.sigma_ms.to_bits(), Ordering::SeqCst);
         self.sigma_percent
-            .store(config.sigma_percent.to_bits(), Ordering::Release);
+            .store(config.sigma_percent.to_bits(), Ordering::SeqCst);
         self.min_interval_ms
-            .store(config.min_interval_ms.to_bits(), Ordering::Release);
+            .store(config.min_interval_ms.to_bits(), Ordering::SeqCst);
         self.max_interval_ms
-            .store(config.max_interval_ms.to_bits(), Ordering::Release);
+            .store(config.max_interval_ms.to_bits(), Ordering::SeqCst);
         self.hold_mean_ms
-            .store(config.hold_mean_ms.to_bits(), Ordering::Release);
+            .store(config.hold_mean_ms.to_bits(), Ordering::SeqCst);
         self.hold_sigma_ms
-            .store(config.hold_sigma_ms.to_bits(), Ordering::Release);
+            .store(config.hold_sigma_ms.to_bits(), Ordering::SeqCst);
         self.hold_min_ms
-            .store(config.hold_min_ms.to_bits(), Ordering::Release);
+            .store(config.hold_min_ms.to_bits(), Ordering::SeqCst);
         self.hold_max_ms
-            .store(config.hold_max_ms.to_bits(), Ordering::Release);
+            .store(config.hold_max_ms.to_bits(), Ordering::SeqCst);
         self.input_mode
-            .store(config.input_mode as i32, Ordering::Release);
+            .store(config.input_mode as i32, Ordering::SeqCst);
         self.coordinate_mode
-            .store(config.coordinate_mode as i32, Ordering::Release);
-        self.fixed_x.store(config.fixed_x, Ordering::Release);
-        self.fixed_y.store(config.fixed_y, Ordering::Release);
-        self.client_x.store(config.client_x, Ordering::Release);
-        self.client_y.store(config.client_y, Ordering::Release);
-        self.target_hwnd
-            .store(config.target_hwnd, Ordering::Release);
+            .store(config.coordinate_mode as i32, Ordering::SeqCst);
+        self.fixed_x.store(config.fixed_x, Ordering::SeqCst);
+        self.fixed_y.store(config.fixed_y, Ordering::SeqCst);
+        self.client_x.store(config.client_x, Ordering::SeqCst);
+        self.client_y.store(config.client_y, Ordering::SeqCst);
+        self.target_hwnd.store(config.target_hwnd, Ordering::SeqCst);
         self.background_synchronous
-            .store(config.background_synchronous, Ordering::Release);
+            .store(config.background_synchronous, Ordering::SeqCst);
         self.mouse_button
-            .store(config.mouse_button as i32, Ordering::Release);
+            .store(config.mouse_button as i32, Ordering::SeqCst);
         self.click_type
-            .store(config.click_type as i32, Ordering::Release);
+            .store(config.click_type as i32, Ordering::SeqCst);
         self.random_offset_ms
-            .store(config.random_offset_ms.to_bits(), Ordering::Release);
+            .store(config.random_offset_ms.to_bits(), Ordering::SeqCst);
         self.humanize_enabled
-            .store(config.humanize_enabled, Ordering::Release);
-        self.max_clicks.store(config.max_clicks, Ordering::Release);
+            .store(config.humanize_enabled, Ordering::SeqCst);
+        self.max_clicks.store(config.max_clicks, Ordering::SeqCst);
+        self.generation
+            .store(generation.wrapping_add(2), Ordering::SeqCst);
     }
 
-    pub fn load(&self) -> EngineConfig {
-        EngineConfig {
-            base_interval_ms: f64::from_bits(self.base_interval_ms.load(Ordering::Acquire)),
-            sigma_ms: f64::from_bits(self.sigma_ms.load(Ordering::Acquire)),
-            sigma_percent: f64::from_bits(self.sigma_percent.load(Ordering::Acquire)),
-            min_interval_ms: f64::from_bits(self.min_interval_ms.load(Ordering::Acquire)),
-            max_interval_ms: f64::from_bits(self.max_interval_ms.load(Ordering::Acquire)),
-            hold_mean_ms: f64::from_bits(self.hold_mean_ms.load(Ordering::Acquire)),
-            hold_sigma_ms: f64::from_bits(self.hold_sigma_ms.load(Ordering::Acquire)),
-            hold_min_ms: f64::from_bits(self.hold_min_ms.load(Ordering::Acquire)),
-            hold_max_ms: f64::from_bits(self.hold_max_ms.load(Ordering::Acquire)),
-            input_mode: InputMode::from_i32(self.input_mode.load(Ordering::Acquire)),
-            coordinate_mode: CoordinateMode::from_i32(self.coordinate_mode.load(Ordering::Acquire)),
-            fixed_x: self.fixed_x.load(Ordering::Acquire),
-            fixed_y: self.fixed_y.load(Ordering::Acquire),
-            client_x: self.client_x.load(Ordering::Acquire),
-            client_y: self.client_y.load(Ordering::Acquire),
-            target_hwnd: self.target_hwnd.load(Ordering::Acquire),
-            background_synchronous: self.background_synchronous.load(Ordering::Acquire),
-            mouse_button: MouseButton::from_i32(self.mouse_button.load(Ordering::Acquire)),
-            click_type: ClickType::from_i32(self.click_type.load(Ordering::Acquire)),
-            random_offset_ms: f64::from_bits(self.random_offset_ms.load(Ordering::Acquire)),
-            humanize_enabled: self.humanize_enabled.load(Ordering::Acquire),
-            max_clicks: self.max_clicks.load(Ordering::Acquire),
+    /// One nonblocking read attempt. A busy writer or changed generation is
+    /// reported as `None`, never as a mixture of two configurations.
+    pub fn try_load(&self) -> Option<EngineConfig> {
+        let before = self.generation.load(Ordering::SeqCst);
+        if before & 1 != 0 {
+            return None;
+        }
+        let config = EngineConfig {
+            base_interval_ms: f64::from_bits(self.base_interval_ms.load(Ordering::SeqCst)),
+            sigma_ms: f64::from_bits(self.sigma_ms.load(Ordering::SeqCst)),
+            sigma_percent: f64::from_bits(self.sigma_percent.load(Ordering::SeqCst)),
+            min_interval_ms: f64::from_bits(self.min_interval_ms.load(Ordering::SeqCst)),
+            max_interval_ms: f64::from_bits(self.max_interval_ms.load(Ordering::SeqCst)),
+            hold_mean_ms: f64::from_bits(self.hold_mean_ms.load(Ordering::SeqCst)),
+            hold_sigma_ms: f64::from_bits(self.hold_sigma_ms.load(Ordering::SeqCst)),
+            hold_min_ms: f64::from_bits(self.hold_min_ms.load(Ordering::SeqCst)),
+            hold_max_ms: f64::from_bits(self.hold_max_ms.load(Ordering::SeqCst)),
+            input_mode: InputMode::from_i32(self.input_mode.load(Ordering::SeqCst)),
+            coordinate_mode: CoordinateMode::from_i32(self.coordinate_mode.load(Ordering::SeqCst)),
+            fixed_x: self.fixed_x.load(Ordering::SeqCst),
+            fixed_y: self.fixed_y.load(Ordering::SeqCst),
+            client_x: self.client_x.load(Ordering::SeqCst),
+            client_y: self.client_y.load(Ordering::SeqCst),
+            target_hwnd: self.target_hwnd.load(Ordering::SeqCst),
+            background_synchronous: self.background_synchronous.load(Ordering::SeqCst),
+            mouse_button: MouseButton::from_i32(self.mouse_button.load(Ordering::SeqCst)),
+            click_type: ClickType::from_i32(self.click_type.load(Ordering::SeqCst)),
+            random_offset_ms: f64::from_bits(self.random_offset_ms.load(Ordering::SeqCst)),
+            humanize_enabled: self.humanize_enabled.load(Ordering::SeqCst),
+            max_clicks: self.max_clicks.load(Ordering::SeqCst),
+        };
+        if self.generation.load(Ordering::SeqCst) == before {
+            Some(config)
+        } else {
+            None
         }
     }
 }
