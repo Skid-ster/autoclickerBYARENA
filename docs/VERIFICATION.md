@@ -91,6 +91,26 @@ Local verification with Rust 1.88.0:
   measured**, so no timing figure is claimed for it; the design only requires
   that a stop be signalled immediately rather than deferred to the next click.
 
+Re-checked immediately before publication, on the exact release commit, with
+the sandbox Rust 1.88.0 toolchain:
+
+- `rustfmt --edition 2021 --check` over every `src/*.rs`, `tests/*.rs` and
+  `build.rs` is clean.
+- All **14 standalone test binaries** compile with `rustc --test -D warnings`
+  and pass: **153 tests** (config 16, coordinates 4, hotkey 9, humanize 9,
+  icon 6, macro 9, schedule 7, self_update 22, settings 16, stability 7,
+  telemetry 8, texture 2, update 28, window_layout 10). These counts match the
+  totals documented in `README.md` and `autoclicker/README.md`.
+- `clippy-driver -D warnings` reports **no diagnostics** on all fourteen
+  standalone targets, so the platform-independent modules named above are
+  Clippy-clean on this commit as well as on the Windows CI job.
+- The Windows job on `main` for this source was green (format check, Clippy
+  with warnings denied, the Windows test suite including the 120 app/worker
+  tests, the release build, and the GUI-subsystem/FileVersion check), and a
+  version tag re-runs that whole gate before any executable is published. The
+  tag, the package version and the embedded FileVersion are additionally
+  cross-checked by CI, which refuses a tag that disagrees with them.
+
 Hands-on Windows verification remains required for: actual idle CPU at a
 10-minute interval, stop responsiveness during a long wait, worker
 replacement after a real failure, panic containment in the shipped release

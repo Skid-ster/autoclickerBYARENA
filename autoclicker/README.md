@@ -600,10 +600,10 @@ future uptime or guarantee universal stability.
     missing result refreshes on open, and the status card must show
     **Installed**, **Latest**, **Installation**, **Size**, **Checked: just now**,
     and **Channel**, with the verdict naming the version GitHub reported.
-    With v1.9.0 published, a portable v1.8.0 EXE should show **Update
-    v1.9.0** with a red **1** after confirming the available update. The
+    With v1.10.0 published, a portable v1.9.0 EXE should show **Update
+    v1.10.0** with a red **1** after confirming the available update. The
     badge must behave like the rest of the button when clicked. After
-    updating, the v1.9.0 footer should show no red notification while up to
+    updating, the v1.10.0 footer should show no red notification while up to
     date; a controlled newer-release fixture can test a future notification.
     It disappears during installation and returns after cancellation or
     failure if the newer version remains confirmed.
@@ -619,9 +619,9 @@ future uptime or guarantee universal stability.
     the running version was not changed, and keep the current build
     working. **Release notes** opens that version's GitHub page and
     **Copy download link** puts the exact asset URL on the clipboard.
-    For the source path, launch a v1.8.0
+    For the source path, launch a v1.9.0
     `target\release\macro_clicker.exe` from a clean `main` checkout still at
-    v1.8.0 after v1.9.0 is published: **Installation** must say
+    v1.9.0 after v1.10.0 is published: **Installation** must say
     **Source checkout build**, the stages must begin with **Source**,
     the checkout must land exactly on that release tag, and the app
     must reopen as the new version. Make a tracked local edit and
