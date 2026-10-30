@@ -76,9 +76,6 @@ struct Palette {
     success: Color32,
     danger: Color32,
     warning: Color32,
-    chart_bg: Color32,
-    chart_grid: Color32,
-    chart_bar_alt: Color32,
     selection_bg: Color32,
 }
 
@@ -107,9 +104,6 @@ static LIGHT_PALETTE: Palette = Palette {
     success: Color32::from_rgb(16, 124, 16),
     danger: Color32::from_rgb(196, 43, 28),
     warning: Color32::from_rgb(141, 98, 0),
-    chart_bg: Color32::WHITE,
-    chart_grid: Color32::from_rgb(226, 229, 233),
-    chart_bar_alt: Color32::from_rgba_premultiplied(0, 103, 192, 110),
     selection_bg: Color32::from_rgba_premultiplied(0, 103, 192, 60),
 };
 
@@ -139,9 +133,6 @@ static DARK_PALETTE: Palette = Palette {
     success: Color32::from_rgb(106, 200, 112),
     danger: Color32::from_rgb(248, 106, 106),
     warning: Color32::from_rgb(222, 180, 66),
-    chart_bg: Color32::from_rgb(26, 26, 26),
-    chart_grid: Color32::from_rgb(58, 58, 58),
-    chart_bar_alt: Color32::from_rgba_premultiplied(38, 66, 100, 110),
     selection_bg: Color32::from_rgba_premultiplied(24, 48, 78, 150),
 };
 
@@ -170,9 +161,6 @@ static MODERN_LIGHT_PALETTE: Palette = Palette {
     success: Color32::from_rgb(15, 105, 73),
     danger: Color32::from_rgb(175, 37, 55),
     warning: Color32::from_rgb(121, 75, 5),
-    chart_bg: Color32::from_rgb(239, 244, 248),
-    chart_grid: Color32::from_rgb(203, 216, 226),
-    chart_bar_alt: Color32::from_rgba_premultiplied(12, 65, 78, 120),
     selection_bg: Color32::from_rgba_premultiplied(0, 18, 22, 40),
 };
 
@@ -201,9 +189,6 @@ static MODERN_DARK_PALETTE: Palette = Palette {
     success: Color32::from_rgb(128, 223, 179),
     danger: Color32::from_rgb(255, 148, 160),
     warning: Color32::from_rgb(243, 206, 121),
-    chart_bg: Color32::from_rgb(14, 24, 37),
-    chart_grid: Color32::from_rgb(49, 73, 89),
-    chart_bar_alt: Color32::from_rgba_premultiplied(32, 98, 100, 170),
     selection_bg: Color32::from_rgba_premultiplied(12, 43, 48, 100),
 };
 
@@ -232,9 +217,6 @@ static OLED_PALETTE: Palette = Palette {
     success: Color32::from_rgb(98, 212, 120),
     danger: Color32::from_rgb(255, 99, 99),
     warning: Color32::from_rgb(226, 186, 60),
-    chart_bg: Color32::from_rgb(8, 8, 8),
-    chart_grid: Color32::from_rgb(44, 44, 44),
-    chart_bar_alt: Color32::from_rgba_premultiplied(28, 70, 92, 110),
     selection_bg: Color32::from_rgba_premultiplied(18, 48, 64, 150),
 };
 
@@ -263,9 +245,6 @@ static MATRIX_PALETTE: Palette = Palette {
     success: Color32::from_rgb(0, 230, 118),
     danger: Color32::from_rgb(255, 90, 90),
     warning: Color32::from_rgb(210, 200, 70),
-    chart_bg: Color32::from_rgb(5, 10, 5),
-    chart_grid: Color32::from_rgb(22, 48, 22),
-    chart_bar_alt: Color32::from_rgba_premultiplied(0, 92, 48, 110),
     selection_bg: Color32::from_rgba_premultiplied(0, 70, 36, 150),
 };
 
@@ -297,9 +276,6 @@ static AURORA_PALETTE: Palette = Palette {
     success: Color32::from_rgb(92, 224, 150),
     danger: Color32::from_rgb(251, 113, 133),
     warning: Color32::from_rgb(252, 211, 77),
-    chart_bg: Color32::from_rgb(11, 12, 18),
-    chart_grid: Color32::from_rgb(42, 46, 64),
-    chart_bar_alt: Color32::from_rgba_premultiplied(64, 52, 120, 110),
     selection_bg: Color32::from_rgba_premultiplied(52, 42, 104, 150),
 };
 
@@ -456,7 +432,7 @@ enum ModernActionIcon {
     Playback,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum StatusKind {
     Ready,
     Running,
@@ -670,6 +646,10 @@ pub struct OpAutoClickerApp {
     last_saved_config: EngineConfig,
     last_saved_prefs: AppPrefs,
     was_running: bool,
+    /// True while a running session's worker is behind the dispatch it owes.
+    /// It exists so the warning is raised once and cleared once, instead of
+    /// rewriting the status strip on every frame.
+    worker_stalled: bool,
 
     status_kind: StatusKind,
     /// Paint-clock time of the last status-KIND change; the status dot
@@ -789,6 +769,7 @@ impl OpAutoClickerApp {
             last_saved_config: EngineConfig::default(),
             last_saved_prefs: AppPrefs::default(),
             was_running: false,
+            worker_stalled: false,
             status_kind: StatusKind::Ready,
             status_flash_at: f64::NEG_INFINITY,
             ui_clock_secs: 0.0_f64,
@@ -2150,11 +2131,27 @@ impl OpAutoClickerApp {
                 self.set_status(StatusKind::Error, format!("Error: {error}"));
             }
             SessionOutcome::WorkerLost | SessionOutcome::Pending => {
+                // The watchdog replaces a lost worker before this runs, so
+                // the two cases are told apart instead of always sending the
+                // user to restart the application.
+                let recovered = self.engine.worker_alive();
                 self.set_status(
                     StatusKind::Error,
-                    "Click worker lost — session aborted. Restart the app before clicking again.",
+                    if recovered {
+                        "Click worker stopped — session aborted. It was restarted; press Start \
+                         when you are ready."
+                            .to_string()
+                    } else {
+                        "Click worker stopped — session aborted. Restart MacroClicker before \
+                         clicking again."
+                            .to_string()
+                    },
                 );
-                self.log("Worker thread found dead or ended without a result; session aborted.");
+                self.log(format!(
+                    "Worker thread ended without a result; session aborted (replacement \
+                     worker {})",
+                    if recovered { "running" } else { "unavailable" }
+                ));
             }
         }
     }
@@ -2201,2973 +2198,131 @@ impl OpAutoClickerApp {
         }
     }
 
-    fn handle_start(&mut self) {
-        if self.stability_test.is_active() {
-            self.set_status(
-                StatusKind::Warning,
-                "Cancel the stability test before starting another session.",
-            );
-            return;
-        }
-        if self.update_is_finishing() {
-            self.set_status(
-                StatusKind::Warning,
-                "The update is waiting to restart; cancel it before starting.",
-            );
-            return;
-        }
-        // Hotkeys are polled before this frame's normal editor commit.
-        // Commit and validate here as well so F6 never starts with stale
-        // values, and a zero interval cannot bypass the disabled button.
-        self.commit_interval_editors();
-        if let Some(error) = self.validation_message() {
-            self.set_status(StatusKind::Error, format!("Error: {error}"));
-            self.log(format!("Click session rejected: {error}"));
-            return;
-        }
-        // Only global SendInput delivery is exposed by the UI; the target
-        // handle is pinned clear so a stale persisted value can never leak
-        // into a session.
-        self.config.input_mode = InputMode::GlobalSendInput;
-        self.config.target_hwnd = 0;
-        match self.engine.start(&self.config) {
-            Ok(()) => {
-                // Track the start even if the worker finishes before repaint.
-                self.was_running = true;
-                self.last_seen_error = None;
-                let cps = self.config.target_cps();
-                let pace = if cps < 0.01 {
-                    format!("every {} ms", self.interval_total_ms())
-                } else {
-                    format!("at {cps:.2} CPS")
-                };
-                self.set_status(
-                    StatusKind::Running,
-                    format!(
-                        "Running {pace} — {} button, {} click.",
-                        self.config.mouse_button.label().to_lowercase(),
-                        self.config.click_type.label().to_lowercase()
-                    ),
-                );
-                self.log(format!("Click session started {pace}."));
-            }
-            Err(error) => {
-                self.set_status(StatusKind::Error, format!("Start rejected: {error}"));
-                self.log(format!("Start rejected: {error}"));
-            }
-        }
-    }
-
-    fn reset_to_defaults(&mut self) {
-        self.cancel_stability_test(false);
-        self.engine.request_stop();
-        self.config = EngineConfig::default();
-        self.prefs = AppPrefs::default();
-        // Factory defaults include the classic window size: re-apply the
-        // (floor) persisted size once the 100 % zoom has settled. The
-        // reset itself is a deliberate size choice (and flushes one to
-        // disk below), so the one-time fresh-install display default
-        // must not override it when the restore runs.
-        self.window_size_was_persisted = true;
-        self.auto_zoom = 1.0_f32;
-        self.displayed_auto_zoom = 1.0_f32;
-        self.zoom_transition = None;
-        self.applied_user_factor = 1.0_f32;
-        self.zoom_candidate = 1.0_f32;
-        self.main_layout = MainLayout::Classic;
-        self.stable_frames = 0;
-        self.restore_window_size = true;
-        self.repeat_limited = false;
-        self.offset_ms = 0.0;
-        self.picking_location = false;
-        self.sync_interval_editors();
-        self.set_status(StatusKind::Ready, "Factory defaults restored.");
-        self.log("Configuration reset to factory defaults.");
-        self.mark_dirty();
-        self.flush_settings();
-    }
-
-    // ---------------------------------------------------------- interval math
-
-    fn sync_interval_editors(&mut self) {
-        let total = self.config.base_interval_ms.round().max(0.0) as u64;
-        let (hours, minutes, seconds, millis) = ms_to_interval_parts(total);
-        self.hours = hours;
-        self.minutes = minutes;
-        self.seconds = seconds;
-        self.millis = millis;
-    }
-
-    fn commit_interval_editors(&mut self) {
-        let total = interval_parts_to_ms(self.hours, self.minutes, self.seconds, self.millis);
-        // The 4.1 checkbox gates the offset; zero means exact timing.
-        let offset = if self.prefs.random_offset_enabled {
-            self.offset_ms
+    /// The one-line description of the pace a session runs at, shared by the
+    /// status strip and the activity log so the two can never disagree.
+    fn running_pace_text(&self) -> String {
+        let cps = self.config.target_cps();
+        if cps < 0.01 {
+            format!("every {} ms", self.interval_total_ms())
         } else {
-            0.0
-        };
-        commit_ui_interval(&mut self.config, total, offset);
-    }
-
-    fn interval_total_ms(&self) -> u64 {
-        interval_parts_to_ms(self.hours, self.minutes, self.seconds, self.millis)
-    }
-
-    /// Compares the live configuration against the last flushed fingerprint.
-    fn detect_settings_changes(&mut self) {
-        if self.config != self.last_saved_config || self.prefs != self.last_saved_prefs {
-            self.mark_dirty();
+            format!("at {cps:.2} CPS")
         }
     }
 
-    fn validation_message(&self) -> Option<String> {
-        if self.interval_total_ms() == 0 {
-            return Some("Interval must be at least 1 millisecond.".to_string());
-        }
-        self.config.validate().err()
-    }
-
-    // ----------------------------------------------------------- window sizing
-
-    /// Side margin that centers the content column once the window grows
-    /// past the content cap. At (and below) the classic width the result
-    /// is exactly the original 12-point margin in every theme.
-    fn centered_side_margin(window_width: f32, content_cap: f32) -> f32 {
-        if !window_width.is_finite() {
-            return MAIN_SIDE_MARGIN;
-        }
-        let overflow = window_width - 2.0_f32 * MAIN_SIDE_MARGIN - content_cap;
-        MAIN_SIDE_MARGIN + overflow.max(0.0_f32) / 2.0_f32
-    }
-
-    /// The classic floor in live points at a given window-driven fit.
-    /// egui-winit will multiply this by the total zoom when it declares
-    /// the OS minimum, so the division is what keeps the *physical*
-    /// floor tied to the user's percentage alone instead of to the
-    /// transient size of the window.
-    fn live_window_floor_for(auto_zoom: f32) -> Vec2 {
-        let (width, height) = hotkey::window_floor_for_auto_zoom(auto_zoom);
-        Vec2::new(width, height)
-    }
-
-    /// How spare window height is spent. The groups always flow from
-    /// the top of the panel, exactly as they do at the floor size;
-    /// surplus height first loosens every breathing gap between the
-    /// control clusters by an equal share (bounded by
-    /// `MAIN_GAP_EXTRA_MAX` so neighbouring clusters stay visually
-    /// related), and whatever remains collects as one spring directly
-    /// above the status strip. The status strip, action buttons and
-    /// footer therefore ride at the window's bottom edge like a
-    /// status bar at *every* height, instead of the whole column
-    /// floating centered between two voids once the window is much
-    /// taller than the dialog. The returned values always sum (with
-    /// the gaps) to the full surplus, so the column ends flush with
-    /// the panel's bottom margin at any size. `fill_height` is the
-    /// window height at which the active layout's column exactly
-    /// fills the window, so both values are zero there and the
-    /// classic composition is reproduced exactly.
-    fn vertical_rhythm(window_height: f32, fill_height: f32, gaps: f32) -> (f32, f32) {
-        if !window_height.is_finite() || !fill_height.is_finite() || gaps <= 0.0_f32 {
-            return (0.0_f32, 0.0_f32);
-        }
-        let extra = (window_height - fill_height).max(0.0_f32);
-        // Super good aesthetics: Modern scaling uses a slightly more fluid gap distribution
-        // The spring counts as one share alongside the gaps, so the
-        // surplus spreads over every seam in the column instead of
-        // pooling above the status strip; only what the bounded
-        // gaps cannot absorb gathers there.
-        let gap_extra = (extra / (gaps + 1.0_f32)).min(MAIN_GAP_EXTRA_MAX);
-        let spring = (extra - gaps * gap_extra).max(0.0_f32);
-        (gap_extra, spring)
-    }
-
-    /// In a width-limited portrait, use excess space within the four
-    /// cards rather than letting one enormous spring separate the footer.
-    /// The progressively narrower canvases do the actual zoom/reflow;
-    /// this only balances the remaining space when width limits the fit.
-    fn portrait_vertical_rhythm(window_height: f32, fill_height: f32) -> (f32, f32, f32) {
-        const MAX_PORTRAIT_GAP: f32 = 8.0_f32;
-        if !window_height.is_finite() || !fill_height.is_finite() {
-            return (0.0_f32, 0.0_f32, 0.0_f32);
-        }
-        let extra = (window_height - fill_height).max(0.0_f32);
-        let gap = (extra / 5.0_f32).min(MAX_PORTRAIT_GAP);
-        let remaining = (extra - 4.0_f32 * gap).max(0.0_f32);
-        let spring = remaining.min(MAX_PORTRAIT_GAP);
-        // Super good aesthetics: Modern portrait rhythm uses refined card extra space
-        // Reserve a point per card for rounding so the footer still
-        // fits at every pixel density.
-        let extra_per_card = ((remaining - spring) / 4.0_f32 - 1.0_f32).max(0.0_f32);
-        (gap, spring, extra_per_card)
-    }
-
-    /// Shared, platform-independent fit and shape logic uses neutral points.
-    fn fit_auto_zoom(base: Vec2, user_factor: f32, layout: MainLayout) -> f32 {
-        window_layout::fit_auto_zoom((base.x, base.y), user_factor, layout)
-    }
-
-    fn initial_auto_zoom(base: Vec2, user_factor: f32, enabled: bool) -> f32 {
-        window_layout::initial_auto_zoom((base.x, base.y), user_factor, enabled)
-    }
-
-    fn layout_for(base: Vec2, user_factor: f32, current: MainLayout, enabled: bool) -> MainLayout {
-        window_layout::choose_layout((base.x, base.y), user_factor, current, enabled)
-    }
-
-    /// The one-time display-aware opening size for a fresh install,
-    /// in fit-independent persisted points: the classic dialog
-    /// scaled to occupy the same fraction of this monitor as it
-    /// occupies of the 1920x1080 reference, clamped to
-    /// [1, `DISPLAY_DEFAULT_MAX_SCALE`]. The monitor extent is in
-    /// neutral points, so a display Windows already scales at
-    /// 125 % or 150 % is credited for that scaling instead of being
-    /// scaled twice. Any unusable input falls back to the exact
-    /// classic size.
-    fn display_default_window_size(monitor_neutral: Vec2, user_factor: f32) -> Vec2 {
-        let fallback = Vec2::new(MAIN_WINDOW_SIZE[0], MAIN_WINDOW_SIZE[1]);
-        if !monitor_neutral.x.is_finite()
-            || !monitor_neutral.y.is_finite()
-            || monitor_neutral.x <= 0.0_f32
-            || monitor_neutral.y <= 0.0_f32
-            || !user_factor.is_finite()
-            || user_factor <= 0.0_f32
-        {
-            return fallback;
-        }
-        let scale = (monitor_neutral.x / DISPLAY_DEFAULT_REFERENCE[0])
-            .min(monitor_neutral.y / DISPLAY_DEFAULT_REFERENCE[1])
-            .clamp(1.0_f32, DISPLAY_DEFAULT_MAX_SCALE);
-        fallback * scale / user_factor
-    }
-
-    /// Records the live inner size as the size to restore next launch,
-    /// in fit-independent points (live points times the applied
-    /// window-driven factor), so the physical size round-trips no
-    /// matter which fit factor is active when it is written or read.
-    /// Maximized, minimized and fullscreen sizes are never recorded (the
-    /// last normal size is what a restore should return to), sub-floor
-    /// transients are ignored, and recording stays paused while a zoom
-    /// or restore resize is in flight. Persistence itself flows through
-    /// the existing dirty fingerprint and 1-second autosave throttle, so
-    /// a drag-resize writes at most once per second plus once on exit.
-    fn observe_live_window_size(&mut self, ctx: &egui::Context) {
-        if self.restore_window_size
-            || self.pending_resize
-            || Instant::now() < self.window_settle_until
-        {
-            return;
-        }
-        let (size, maximized, minimized, fullscreen) = ctx.input(|i| {
-            let viewport = i.viewport();
-            (
-                i.screen_rect.size(),
-                viewport.maximized,
-                viewport.minimized,
-                viewport.fullscreen,
+    /// The status line a running session owns. Rebuilt verbatim when a
+    /// transient warning (a stalled worker) clears, so returning to
+    /// "running" is a real state change and not a blank strip.
+    fn running_status_text(&self) -> String {
+        let pace = self.running_pace_text();
+        if self.macro_playing {
+            format!("Playing back {pace}.")
+        } else {
+            format!(
+                "Running {pace} — {} button, {} click.",
+                self.config.mouse_button.label().to_lowercase(),
+                self.config.click_type.label().to_lowercase()
             )
-        });
-        if maximized == Some(true) || minimized == Some(true) || fullscreen == Some(true) {
-            return;
-        }
-        // Displayed (not adopted) factor: live points are produced
-        // by the zoom actually applied, so this stays exact even
-        // while a zoom transition is easing between factors. The
-        // floor test must happen in these fit-independent points:
-        // at a 2.8x fit a perfectly valid floor window is only
-        // 200x163 live points, and testing the live size against
-        // 560x456 would discard real user-chosen sizes.
-        // A secondary window may temporarily lower the applied zoom to
-        // fit. Persist the actual viewport size, not the dashboard target.
-        let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
-        let applied_auto_zoom = ctx.zoom_factor() / user_factor;
-        let (base_width, base_height) =
-            hotkey::fit_independent_window_size((size.x, size.y), applied_auto_zoom);
-        // The OS minimum is enforced in physical pixels, so the
-        // converted size can land a fraction below the floor after
-        // rounding; allow that much slack, and treat anything further
-        // below (or not finite) as a transient that must not be
-        // recorded.
-        if !base_width.is_finite()
-            || !base_height.is_finite()
-            || base_width < MAIN_WINDOW_SIZE[0] - 2.0_f32
-            || base_height < MAIN_WINDOW_SIZE[1] - 2.0_f32
-        {
-            return;
-        }
-        let base = Vec2::new(base_width, base_height);
-        let (width, height) = hotkey::sanitize_window_size(f64::from(base.x), f64::from(base.y));
-        if width != self.prefs.window_width || height != self.prefs.window_height {
-            self.prefs.window_width = width;
-            self.prefs.window_height = height;
-            self.mark_dirty();
         }
     }
 
-    /// Re-derives the fit if a legacy saved scale changes, for example
-    /// when restoring defaults. The neutral size (live points times the
-    /// applied zoom) is unchanged by the scale decision, so the fit can
-    /// be solved without growing the physical window from a stale factor.
-    fn sync_fit_for_user_factor(&mut self, ctx: &egui::Context, user_factor: f32) {
-        if self.prefs.auto_scale {
-            let (size, minimized) = ctx.input(|i| (i.screen_rect.size(), i.viewport().minimized));
-            let applied_zoom = ctx.zoom_factor();
-            if minimized != Some(true)
-                && size.x.is_finite()
-                && size.y.is_finite()
-                && size.x > 0.0_f32
-                && size.y > 0.0_f32
-                && applied_zoom.is_finite()
-                && applied_zoom > 0.0_f32
-            {
-                let neutral = size * applied_zoom;
-                self.main_layout = Self::layout_for(neutral, user_factor, self.main_layout, true);
-                self.auto_zoom = Self::fit_auto_zoom(neutral, user_factor, self.main_layout);
-                self.last_base_size = neutral;
-            }
+    /// Admits a worker that has stopped making progress instead of reporting
+    /// a healthy session. The stop flags cannot interrupt a click already
+    /// handed to Windows, so a blocked input call is the one failure the
+    /// engine cannot end by itself; saying so is the honest response. The
+    /// grace is deliberately generous: a slow interval is not a stall.
+    fn report_stalled_worker(&mut self) {
+        const STALL_GRACE_MS: f64 = 2_000.0;
+        let overdue = if self.engine.is_running() {
+            self.engine.dispatch_overdue_ms().unwrap_or(0.0)
         } else {
-            self.auto_zoom = 1.0_f32;
-            self.main_layout = MainLayout::Classic;
-        }
-        self.displayed_auto_zoom = self.auto_zoom;
-        self.zoom_candidate = self.auto_zoom;
-        self.zoom_transition = None;
-        self.stable_frames = 0;
-        self.pending_resize = true;
-        self.window_settle_until = Instant::now() + Duration::from_millis(750);
-        ctx.request_repaint();
-    }
-
-    /// Makes a shrinking window safe on the frame it shrinks.
-    ///
-    /// Growth can wait for the settle/ease path because extra room
-    /// never clips a control. Shrinkage is the opposite: if the old
-    /// fit stayed applied throughout a continuous inward drag, the
-    /// live canvas would fall below the design size (and, with an
-    /// OS minimum declared from that old fit, Windows could stop
-    /// the drag altogether). A lower target therefore snaps the
-    /// displayed fit down immediately. If the window shrinks during
-    /// an upward ease but the new target is still above the
-    /// displayed factor, the ease is simply retargeted so it cannot
-    /// overshoot into a size the window no longer has.
-    fn apply_shrink_fit_immediately(&mut self, ctx: &egui::Context, user_factor: f32) {
-        const FIT_DEADBAND: f32 = 0.011_f32;
-        if !self.prefs.auto_scale || self.restore_window_size {
-            return;
-        }
-        let (size, minimized) = ctx.input(|i| (i.screen_rect.size(), i.viewport().minimized));
-        let applied_zoom = ctx.zoom_factor();
-        if minimized == Some(true)
-            || !size.x.is_finite()
-            || !size.y.is_finite()
-            || size.x <= 0.0_f32
-            || size.y <= 0.0_f32
-            || !applied_zoom.is_finite()
-            || applied_zoom <= 0.0_f32
-        {
-            return;
-        }
-        let neutral = size * applied_zoom;
-        // Re-evaluate the shape during the drag too: a portrait canvas
-        // that no longer fits must reflow back to classic before waiting
-        // for the normal settled-size / growth-easing machinery.
-        let layout = Self::layout_for(neutral, user_factor, self.main_layout, true);
-        if layout != self.main_layout {
-            self.main_layout = layout;
-            self.stable_frames = 0;
-            ctx.request_repaint();
-        }
-        let target = Self::fit_auto_zoom(neutral, user_factor, self.main_layout);
-        if target >= self.auto_zoom - FIT_DEADBAND {
-            return;
-        }
-        self.auto_zoom = target;
-        self.zoom_candidate = target;
-        self.last_base_size = neutral;
-        self.stable_frames = 0;
-        if target < self.displayed_auto_zoom {
-            self.displayed_auto_zoom = target;
-            self.zoom_transition = None;
-        } else if self.zoom_transition.is_some() {
-            self.zoom_transition = Some((self.ui_clock_secs, self.displayed_auto_zoom));
-        }
-        self.window_settle_until = Instant::now() + Duration::from_millis(750);
-        ctx.request_repaint();
-    }
-
-    /// Window-driven presentation: derives the layout mode and the
-    /// target fit factor from the neutral-point window size (live
-    /// points times the total applied zoom — invariant under the
-    /// very zoom changes it drives, which is what makes feedback
-    /// impossible). The layout mode follows immediately (its aspect
-    /// and width bands carry their own hysteresis); a *growing* fit
-    /// applies only once the size has held still for a few
-    /// consecutive frames, so it lands just after a drag ends
-    /// rather than jumping mid-drag. A *shrinking* fit is adopted
-    /// at once (see `apply_shrink_fit_immediately`): waiting would
-    /// leave the design canvas squeezed below its floor while the
-    /// user is still pulling the window inward. A one-percent dead
-    /// band around the applied
-    /// factor keeps physical-pixel rounding from nudging the zoom
-    /// back and forth across a quantization boundary. Runs only
-    /// when the zoom machinery is idle (see `update`), so a factor
-    /// never compounds with an in-flight zoom or restore.
-    fn adapt_to_window_size(&mut self, ctx: &egui::Context) {
-        const SETTLE_FRAMES: u32 = 6;
-        const FIT_DEADBAND: f32 = 0.011_f32;
-        let (size, minimized) = ctx.input(|i| (i.screen_rect.size(), i.viewport().minimized));
-        if minimized == Some(true)
-            || !size.x.is_finite()
-            || !size.y.is_finite()
-            || size.x <= 0.0_f32
-            || size.y <= 0.0_f32
-        {
-            self.stable_frames = 0;
-            return;
-        }
-        // Neutral points via the applied zoom (not the desired one):
-        // this only runs once the applied zoom equals user x fit, so
-        // the measure is the physical window size at 100 % zoom.
-        let base = size * ctx.zoom_factor();
-        let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
-        self.main_layout =
-            Self::layout_for(base, user_factor, self.main_layout, self.prefs.auto_scale);
-        let target = if self.prefs.auto_scale {
-            Self::fit_auto_zoom(base, user_factor, self.main_layout)
-        } else {
-            1.0_f32
+            0.0
         };
-        let size_held = (base.x - self.last_base_size.x).abs() <= 1.5_f32
-            && (base.y - self.last_base_size.y).abs() <= 1.5_f32;
-        if size_held && (target - self.zoom_candidate).abs() <= 0.001_f32 {
-            self.stable_frames = self.stable_frames.saturating_add(1);
-        } else {
-            self.stable_frames = 0;
-            self.zoom_candidate = target;
-        }
-        self.last_base_size = base;
-        let shrink_to_fit = target < self.auto_zoom - FIT_DEADBAND;
-        if (self.stable_frames >= SETTLE_FRAMES || shrink_to_fit)
-            && (target - self.auto_zoom).abs() > FIT_DEADBAND
-        {
-            self.auto_zoom = target;
-            if shrink_to_fit {
-                // Downward fits track the user's drag immediately;
-                // easing down over 180 ms would spend that time with
-                // a canvas smaller than the design floor.
-                self.displayed_auto_zoom = target;
-                self.zoom_transition = None;
-            } else {
-                // Ease the displayed factor to the adopted one (~180 ms,
-                // advanced at the top of `update`) instead of snapping
-                // the whole interface in a single frame.
-                self.zoom_transition = Some((self.ui_clock_secs, self.displayed_auto_zoom));
-            }
-            self.stable_frames = 0;
-            // The live point size this frame still belongs to the old
-            // factor (the new zoom applies next frame), so size
-            // observation must pause from this instant — otherwise the
-            // observer in this very frame would multiply pre-fit
-            // points by the new factor and persist a phantom size.
-            // The zoom bookkeeping refreshes the same deadline when it
-            // runs.
-            self.window_settle_until = Instant::now() + Duration::from_millis(750);
-            ctx.request_repaint();
-        }
-    }
-
-    // --------------------------------------------------------- classic widgets
-
-    /// Recede unit and field labels in Modern, so editable values and
-    /// choices lead the eye. Classic keeps its original text color.
-    fn supporting_text(pal: &Palette) -> Color32 {
-        if pal.modern {
-            pal.text_dim
-        } else {
-            pal.text
-        }
-    }
-
-    fn modern_section_tile_color(pal: &Palette) -> Color32 {
-        if pal.dark {
-            Color32::from_rgb(30, 61, 69)
-        } else {
-            Color32::from_rgb(219, 239, 238)
-        }
-    }
-
-    fn modern_header_color(pal: &Palette) -> Color32 {
-        if pal.dark {
-            Color32::from_rgb(25, 39, 54)
-        } else {
-            Color32::from_rgb(246, 250, 252)
-        }
-    }
-
-    /// Small original vector glyphs; no icon font or external library is used.
-    fn paint_section_icon(
-        painter: &egui::Painter,
-        title: &str,
-        center: egui::Pos2,
-        color: Color32,
-    ) {
-        let stroke = Stroke::new(1.2_f32, color);
-        let at = |x, y| center + Vec2::new(x, y);
-        match title {
-            "Click interval" => {
-                painter.circle_stroke(center, 4.8_f32, stroke);
-                painter.line_segment([center, at(0.0, -3.0)], stroke);
-                painter.line_segment([center, at(2.4, 1.2)], stroke);
-            }
-            "Click options" => {
-                painter.rect_stroke(
-                    egui::Rect::from_center_size(center, Vec2::new(8.0, 11.0)),
-                    Rounding::same(4.0),
-                    stroke,
-                );
-                painter.line_segment([at(0.0, -4.0), at(0.0, -1.0)], stroke);
-            }
-            "Click repeat" => {
-                // Two short circular arcs with arrowheads read as a loop.
-                for segment in [
-                    [at(-4.2, -0.7), at(-3.0, -3.4)],
-                    [at(-3.0, -3.4), at(0.4, -4.5)],
-                    [at(0.4, -4.5), at(3.8, -2.9)],
-                    [at(3.8, -2.9), at(4.4, 0.3)],
-                    [at(4.2, 0.7), at(3.0, 3.4)],
-                    [at(3.0, 3.4), at(-0.4, 4.5)],
-                    [at(-0.4, 4.5), at(-3.8, 2.9)],
-                    [at(-3.8, 2.9), at(-4.4, -0.3)],
-                    [at(2.3, -1.0), at(4.4, 0.3)],
-                    [at(4.4, 0.3), at(5.1, -2.1)],
-                    [at(-2.3, 1.0), at(-4.4, -0.3)],
-                    [at(-4.4, -0.3), at(-5.1, 2.1)],
-                ] {
-                    painter.line_segment(segment, stroke);
-                }
-            }
-            "Cursor position" => {
-                painter.circle_stroke(center, 3.3_f32, stroke);
-                painter.line_segment([at(-5.4, 0.0), at(5.4, 0.0)], stroke);
-                painter.line_segment([at(0.0, -5.4), at(0.0, 5.4)], stroke);
-            }
-            _ => {}
-        }
-    }
-
-    /// Win32 group box: a bordered frame whose title text breaks the top
-    /// border, exactly like the native BS_GROUPBOX control. The box
-    /// always spans the full width handed to it: `Frame` paints exactly
-    /// the rect its contents claim, so the contents claim the whole
-    /// available width first — without this the border would hug the
-    /// widest inner row and stop mid-window. `min_height` lets the
-    /// paired Click options / Click repeat boxes stretch to the same
-    /// bottom edge; the call returns the contents' natural height
-    /// (without `min_height` applied) so the pair can converge on the
-    /// taller of the two.
-    ///
-    /// Both styles use elevated cards. Classic captions break the top
-    /// border; Modern puts the caption inside a rounded, clean-edged card.
-    /// The modern margins are slightly more compact to leave room for the
-    /// typeface's line metrics at the existing window floor.
-    /// A reserved shadow slot is filled behind the real frame, and is
-    /// skipped on a pure-black face where a black shadow cannot be seen.
-    fn group_box<R>(
-        ui: &mut egui::Ui,
-        pal: &Palette,
-        title: &str,
-        min_height: f32,
-        extra_vertical: f32,
-        add: impl FnOnce(&mut egui::Ui) -> R,
-    ) -> (R, f32) {
-        let shadow_slot = if pal.face != Color32::BLACK {
-            Some(ui.painter().add(egui::Shape::Noop))
-        } else {
-            None
-        };
-        let card_rounding = Rounding::same(if pal.modern { 11.0_f32 } else { 8.0_f32 });
-        // This placeholder is inside the frame but before its contents, so
-        // the Modern header wash sits under all controls and never changes
-        // layout, clipping or interaction order.
-        let mut header_slot = None;
-        let mut card_slot = None;
-        let mut material_slot = None;
-        
-        // Super good aesthetics: Modern themes use slightly larger bottom margin for breathing room
-        let top_margin = (if pal.modern { 24.0_f32 } else { 18.0_f32 }) + extra_vertical / 2.0_f32;
-        let bottom_margin = (if pal.modern { 8.0_f32 } else { 12.0_f32 }) + extra_vertical / 2.0_f32;
-
-        let response = Frame::none()
-            .fill(pal.group_fill)
-            .stroke(Stroke::new(1.0_f32, pal.group_border))
-            .rounding(card_rounding)
-            .inner_margin(Margin {
-                left: 12.0_f32,
-                right: 12.0_f32,
-                top: top_margin,
-                bottom: bottom_margin,
-            })
-            .show(ui, |ui| {
-                if let Some(gradient) = pal.custom {
-                    card_slot = Some(ui.painter().add(egui::Shape::Noop));
-                    if Self::material_alpha(pal, gradient) > 0 {
-                        material_slot = Some(ui.painter().add(egui::Shape::Noop));
-                    }
-                }
-                if pal.modern {
-                    header_slot = Some(ui.painter().add(egui::Shape::Noop));
-                }
-                let claim_width = ui.available_width();
-                ui.set_min_width(claim_width);
-                let value = add(ui);
-                // Natural content height, measured before the minimum
-                // claim below grows the box: the frame paints through
-                // the (post-claim) min rect, while the caller learns
-                // how tall the contents actually are on their own.
-                let content = ui.min_rect();
-                let natural_height = content.height().max(0.0_f32);
-                if min_height > natural_height {
-                    // Grow the box by pinning its bottom at an absolute
-                    // y. `set_min_height` cannot do this: it spans the
-                    // requested height forward from the live cursor, so
-                    // the total overshoots by the box's scroll position
-                    // in the window (verified against egui 0.27.2's
-                    // placer: the span starts at `cursor.min`, which
-                    // sits below the content in absolute coordinates).
-                    let target_bottom = content.min.y + min_height.max(natural_height).ceil();
-                    let pin = egui::Rect::from_min_max(
-                        egui::pos2(content.min.x, target_bottom),
-                        egui::pos2(content.min.x, target_bottom),
-                    );
-                    ui.allocate_rect(pin, Sense::hover());
-                }
-                
-                // Super good aesthetics: Modern section tile color wash inside the card
-                if pal.modern && !pal.custom.is_some() {
-                    let painter = ui.painter();
-                    let tile_color = Self::modern_section_tile_color(pal);
-                    painter.rect_filled(
-                        content,
-                        Rounding::same(11.0_f32),
-                        tile_color.lerp(pal.group_fill, 0.98),
-                        Stroke::none(),
-                    );
-                }
-
-                (value, natural_height)
-            });
-        let rect = response.response.rect;
-        if let (Some(slot), Some(gradient)) = (card_slot, pal.custom) {
-            let tint = Self::custom_card_tint(pal);
-            ui.painter().set(
-                slot,
-                Self::custom_gradient_shape(
-                    rect.shrink(1.0),
-                    ui.ctx().screen_rect(),
-                    10.0,
-                    pal.group_fill,
-                    gradient,
-                    tint,
-                ),
-            );
-        }
-        if let (Some(slot), Some(gradient)) = (material_slot, pal.custom) {
-            ui.painter().set(
-                slot,
-                Self::material_shape(
-                    rect.shrink(1.0),
-                    10.0,
-                    Self::material_texture(ui.ctx()),
-                    Self::material_tint(pal, gradient),
-                ),
-            );
-        }
-        if let Some(slot) = header_slot {
-            let header = egui::Rect::from_min_max(
-                rect.min + Vec2::splat(1.0_f32),
-                egui::pos2(
-                    rect.right() - 1.0_f32,
-                    (rect.top() + 23.0_f32).min(rect.bottom()),
-                ),
-            );
-            let wash = Self::modern_header_color(pal);
-            let header_shape = if let Some(gradient) = pal.custom {
-                let background = Self::custom_gradient_shape(
-                    header,
-                    ui.ctx().screen_rect(),
-                    8.0,
-                    wash,
-                    gradient,
-                    Self::custom_header_tint(pal),
-                );
-                if Self::material_alpha(pal, gradient) > 0 {
-                    egui::Shape::Vec(vec![
-                        background,
-                        Self::material_shape(
-                            header,
-                            8.0,
-                            Self::material_texture(ui.ctx()),
-                            Self::material_tint(pal, gradient),
-                        ),
-                    ])
-                } else {
-                    background
-                }
-            } else {
-                egui::Shape::rect_filled(
-                    header,
-                    Rounding {
-                        nw: 10.0_f32,
-                        ne: 10.0_f32,
-                        sw: 0.0_f32,
-                        se: 0.0_f32,
-                    },
-                    wash,
-                )
-            };
-            ui.painter().set(slot, header_shape);
-            
-            // Super good aesthetics: Modern section icon integrated into the header
-            if pal.modern {
-                let painter = ui.painter();
-                let icon_center = egui::pos2(rect.left() + 22.0_f32, header.center().y);
-                Self::paint_section_icon(painter, title, icon_center, pal.accent);
-                // Small accent dot next to icon
-                painter.circle_filled(icon_center, 1.5_f32, pal.accent);
-            }
-        }
-        if let Some(slot) = shadow_slot {
-            // The shadow peeks out below and beside the card only; the
-            // top stays tucked under the card fill.
-            let shadow = rect
-                .expand2(Vec2::new(1.0_f32, 0.0_f32))
-                .translate(Vec2::new(0.0_f32, 2.0_f32));
-            let shadow_alpha: u8 = if pal.dark { 72 } else { 36 };
-            let shadow_shape = if pal.modern {
-                // Two quiet, unblurred layers create a more natural lift
-                // than one dark rim. They never sample or blur the backdrop.
-                let (far, near) = if pal.dark { (22, 34) } else { (9, 16) };
-                egui::Shape::Vec(vec![
-                    egui::Shape::rect_filled(
-                        shadow.shrink2(Vec2::new(2.0, 2.0)),
-                        Rounding::same(11.0),
-                        Color32::from_black_alpha(far),
-                    ),
-                    egui::Shape::rect_filled(
-                        shadow.shrink2(Vec2::new(1.0, 1.0)),
-                        Rounding::same(11.0),
-                        Color32::from_black_alpha(near),
-                    ),
-                ])
-            } else {
-                egui::Shape::rect_filled(
-                    shadow,
-                    Rounding::same(8.0),
-                    Color32::from_black_alpha(shadow_alpha),
-                )
-            };
-            ui.painter().set(slot, shadow_shape);
-        }
-        (response, rect)
-    }e OP Auto Clicker 4.1-style dashboard with
-//! Classic, Modern and Custom appearances, each in Light or Dark.
-//!
-//! The main window is a naturally resizable, non-scrolling rendition of
-//! the classic OP Auto Clicker 4.x controls: four group cards (Click
-//! interval, Click options, Click repeat, Cursor position) above the
-//! authentic 2x2 grid of push buttons. The classic 560x456 size is the
-//! enforced minimum; larger windows scale and reflow the dashboard to
-//! fit, using stacked portrait or three-abreast panoramic compositions.
-//! The optional, explicitly started stability test reports bounded worker
-//! timing totals without claiming that target applications received input.
-//!
-//! All worker interaction goes through atomics. The update thread never
-//! blocks on the worker.
-
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
-
-use egui::{
-    Align2, Color32, FontId, Frame, Grid, Layout, Margin, Pos2, Rect, Rounding, Sense, Stroke, Vec2,
-};
-
-use crate::config::{
-    commit_ui_interval, interval_parts_to_ms, ms_to_interval_parts, ClickType, CoordinateMode,
-    EngineConfig, InputMode, MouseButton,
-};
-use crate::engine::{ClickEngine, SessionOutcome, STATE_RUNNING, STATE_STOPPING};
-use crate::hotkey::{
-    self, is_reserved_panic_vk, is_supported_toggle_vk, vk_display_name, AppPrefs, AppTheme,
-    AppearanceMode, AppearanceStyle, CustomGradient, VK_ESCAPE,
-};
-use crate::macro_rec::{self, MacroRecorder};
-use crate::self_update::{self, InstallKind, UpdatePaths};
-use crate::settings;
-use crate::stability::{self, EndReason as StabilityEndReason, Measurements, Verdict};
-use crate::texture;
-use crate::update::{self, ReleaseAsset, UpdateOutcome};
-use crate::win32;
-use crate::window_layout::{self, MainLayout};
-
-/// Complete color and surface treatment for one appearance. The modern
-/// treatment uses the same responsive compositions, with its own card
-/// captions, typography, controls and colors.
-#[derive(Clone, Copy)]
-struct Palette {
-    dark: bool,
-    modern: bool,
-    custom: Option<CustomGradient>,
-    face: Color32,
-    button: Color32,
-    button_disabled: Color32,
-    button_border: Color32,
-    hover_fill: Color32,
-    pressed_fill: Color32,
-    input_bg: Color32,
-    input_disabled: Color32,
-    /// Group-card surface. One step above `face` in every theme (white
-    /// over the #f0f0f0 dialog in Classic, exactly like the Updates
-    /// window's status plate) so each group reads as an elevated card.
-    group_fill: Color32,
-    /// Status-strip plate surface: recessed one step below the panel in
-    /// the dark themes; in Classic it matches the group cards' white.
-    well_fill: Color32,
-    group_border: Color32,
-    input_border: Color32,
-    text: Color32,
-    /// Color of the group-box caption riding the top border. Kept as its
-    /// own channel so a theme can give captions a different weight than
-    /// body text without touching layout.
-    group_title: Color32,
-    text_dim: Color32,
-    text_disabled: Color32,
-    accent: Color32,
-    success: Color32,
-    danger: Color32,
-    warning: Color32,
-    chart_bg: Color32,
-    chart_grid: Color32,
-    chart_bar_alt: Color32,
-    selection_bg: Color32,
-}
-
-// Classic Windows light palette, matched to the native 4.x screenshots.
-static LIGHT_PALETTE: Palette = Palette {
-    dark: false,
-    modern: false,
-    custom: None,
-    face: Color32::from_rgb(240, 240, 240),
-    button: Color32::from_rgb(236, 236, 236),
-    button_disabled: Color32::from_rgb(245, 245, 245),
-    button_border: Color32::from_rgb(173, 173, 173),
-    hover_fill: Color32::from_rgb(229, 241, 251),
-    pressed_fill: Color32::from_rgb(204, 228, 247),
-    input_bg: Color32::WHITE,
-    input_disabled: Color32::from_rgb(250, 250, 250),
-    group_fill: Color32::WHITE,
-    well_fill: Color32::WHITE,
-    group_border: Color32::from_rgb(166, 166, 166),
-    input_border: Color32::from_rgb(122, 122, 122),
-    text: Color32::from_rgb(28, 28, 28),
-    group_title: Color32::from_rgb(28, 28, 28),
-    text_dim: Color32::from_rgb(102, 102, 102),
-    text_disabled: Color32::from_rgb(166, 166, 166),
-    accent: Color32::from_rgb(0, 103, 192),
-    success: Color32::from_rgb(16, 124, 16),
-    danger: Color32::from_rgb(196, 43, 28),
-    warning: Color32::from_rgb(141, 98, 0),
-    chart_bg: Color32::WHITE,
-    chart_grid: Color32::from_rgb(226, 229, 233),
-    chart_bar_alt: Color32::from_rgba_premultiplied(0, 103, 192, 110),
-    selection_bg: Color32::from_rgba_premultiplied(0, 103, 192, 60),
-};
-
-// Dark counterpart in the Windows 11 dark-dialog spirit: near-black face,
-// slightly lighter sunken fields, light text, brighter accent for contrast.
-static DARK_PALETTE: Palette = Palette {
-    dark: true,
-    modern: false,
-    custom: None,
-    face: Color32::from_rgb(32, 32, 32),
-    button: Color32::from_rgb(51, 51, 51),
-    button_disabled: Color32::from_rgb(40, 40, 40),
-    button_border: Color32::from_rgb(116, 116, 116),
-    hover_fill: Color32::from_rgb(58, 62, 66),
-    pressed_fill: Color32::from_rgb(70, 76, 82),
-    input_bg: Color32::from_rgb(30, 30, 30),
-    input_disabled: Color32::from_rgb(35, 35, 35),
-    group_fill: Color32::from_rgb(40, 40, 40),
-    well_fill: Color32::from_rgb(24, 24, 24),
-    group_border: Color32::from_rgb(108, 108, 108),
-    input_border: Color32::from_rgb(130, 130, 130),
-    text: Color32::from_rgb(235, 235, 235),
-    group_title: Color32::from_rgb(96, 165, 250),
-    text_dim: Color32::from_rgb(158, 158, 158),
-    text_disabled: Color32::from_rgb(118, 118, 118),
-    accent: Color32::from_rgb(96, 165, 250),
-    success: Color32::from_rgb(106, 200, 112),
-    danger: Color32::from_rgb(248, 106, 106),
-    warning: Color32::from_rgb(222, 180, 66),
-    chart_bg: Color32::from_rgb(26, 26, 26),
-    chart_grid: Color32::from_rgb(58, 58, 58),
-    chart_bar_alt: Color32::from_rgba_premultiplied(38, 66, 100, 110),
-    selection_bg: Color32::from_rgba_premultiplied(24, 48, 78, 150),
-};
-
-// Modern light: cool porcelain, deep ink and a restrained teal accent.
-static MODERN_LIGHT_PALETTE: Palette = Palette {
-    dark: false,
-    modern: true,
-    custom: None,
-    face: Color32::from_rgb(239, 242, 247),
-    button: Color32::from_rgb(247, 249, 252),
-    button_disabled: Color32::from_rgb(230, 237, 242),
-    button_border: Color32::from_rgb(96, 122, 138),
-    hover_fill: Color32::from_rgb(224, 237, 242),
-    pressed_fill: Color32::from_rgb(210, 229, 235),
-    input_bg: Color32::from_rgb(239, 244, 248),
-    input_disabled: Color32::from_rgb(230, 237, 242),
-    group_fill: Color32::from_rgb(255, 255, 255),
-    well_fill: Color32::from_rgb(234, 239, 245),
-    group_border: Color32::from_rgb(198, 211, 222),
-    input_border: Color32::from_rgb(96, 122, 138),
-    text: Color32::from_rgb(23, 41, 56),
-    group_title: Color32::from_rgb(0, 94, 105),
-    text_dim: Color32::from_rgb(58, 85, 100),
-    text_disabled: Color32::from_rgb(72, 97, 109),
-    accent: Color32::from_rgb(0, 100, 110),
-    success: Color32::from_rgb(15, 105, 73),
-    danger: Color32::from_rgb(175, 37, 55),
-    warning: Color32::from_rgb(121, 75, 5),
-    chart_bg: Color32::from_rgb(239, 244, 248),
-    chart_grid: Color32::from_rgb(203, 216, 226),
-    chart_bar_alt: Color32::from_rgba_premultiplied(12, 65, 78, 120),
-    selection_bg: Color32::from_rgba_premultiplied(0, 18, 22, 40),
-};
-
-// Modern dark: layered midnight-slate surfaces with a luminous teal accent.
-static MODERN_DARK_PALETTE: Palette = Palette {
-    dark: true,
-    modern: true,
-    custom: None,
-    face: Color32::from_rgb(11, 16, 27),
-    button: Color32::from_rgb(27, 40, 55),
-    button_disabled: Color32::from_rgb(25, 37, 51),
-    button_border: Color32::from_rgb(106, 131, 148),
-    hover_fill: Color32::from_rgb(40, 58, 75),
-    pressed_fill: Color32::from_rgb(49, 73, 89),
-    input_bg: Color32::from_rgb(14, 24, 37),
-    input_disabled: Color32::from_rgb(25, 37, 51),
-    group_fill: Color32::from_rgb(21, 30, 44),
-    well_fill: Color32::from_rgb(13, 23, 34),
-    group_border: Color32::from_rgb(65, 82, 100),
-    input_border: Color32::from_rgb(106, 131, 148),
-    text: Color32::from_rgb(237, 245, 246),
-    group_title: Color32::from_rgb(168, 217, 213),
-    text_dim: Color32::from_rgb(175, 192, 199),
-    text_disabled: Color32::from_rgb(161, 176, 187),
-    accent: Color32::from_rgb(112, 216, 207),
-    success: Color32::from_rgb(128, 223, 179),
-    danger: Color32::from_rgb(255, 148, 160),
-    warning: Color32::from_rgb(243, 206, 121),
-    chart_bg: Color32::from_rgb(14, 24, 37),
-    chart_grid: Color32::from_rgb(49, 73, 89),
-    chart_bar_alt: Color32::from_rgba_premultiplied(32, 98, 100, 170),
-    selection_bg: Color32::from_rgba_premultiplied(12, 43, 48, 100),
-};
-
-// Pure-black dark variant for OLED screens.
-static OLED_PALETTE: Palette = Palette {
-    dark: true,
-    modern: false,
-    custom: None,
-    face: Color32::BLACK,
-    button: Color32::from_rgb(24, 24, 24),
-    button_disabled: Color32::from_rgb(14, 14, 14),
-    button_border: Color32::from_rgb(100, 100, 100),
-    hover_fill: Color32::from_rgb(32, 36, 40),
-    pressed_fill: Color32::from_rgb(44, 50, 56),
-    input_bg: Color32::from_rgb(8, 8, 8),
-    input_disabled: Color32::from_rgb(10, 10, 10),
-    group_fill: Color32::from_rgb(12, 12, 12),
-    well_fill: Color32::BLACK,
-    group_border: Color32::from_rgb(96, 96, 96),
-    input_border: Color32::from_rgb(110, 110, 110),
-    text: Color32::from_rgb(230, 230, 230),
-    group_title: Color32::from_rgb(76, 194, 255),
-    text_dim: Color32::from_rgb(150, 150, 150),
-    text_disabled: Color32::from_rgb(104, 104, 104),
-    accent: Color32::from_rgb(76, 194, 255),
-    success: Color32::from_rgb(98, 212, 120),
-    danger: Color32::from_rgb(255, 99, 99),
-    warning: Color32::from_rgb(226, 186, 60),
-    chart_bg: Color32::from_rgb(8, 8, 8),
-    chart_grid: Color32::from_rgb(44, 44, 44),
-    chart_bar_alt: Color32::from_rgba_premultiplied(28, 70, 92, 110),
-    selection_bg: Color32::from_rgba_premultiplied(18, 48, 64, 150),
-};
-
-// Green-on-black terminal look.
-static MATRIX_PALETTE: Palette = Palette {
-    dark: true,
-    modern: false,
-    custom: None,
-    face: Color32::from_rgb(8, 14, 8),
-    button: Color32::from_rgb(16, 30, 16),
-    button_disabled: Color32::from_rgb(10, 20, 10),
-    button_border: Color32::from_rgb(52, 122, 52),
-    hover_fill: Color32::from_rgb(22, 44, 22),
-    pressed_fill: Color32::from_rgb(30, 60, 30),
-    input_bg: Color32::from_rgb(7, 15, 7),
-    input_disabled: Color32::from_rgb(8, 16, 8),
-    group_fill: Color32::from_rgb(13, 23, 13),
-    well_fill: Color32::from_rgb(4, 8, 4),
-    group_border: Color32::from_rgb(50, 118, 50),
-    input_border: Color32::from_rgb(58, 136, 58),
-    text: Color32::from_rgb(130, 235, 130),
-    group_title: Color32::from_rgb(0, 230, 118),
-    text_dim: Color32::from_rgb(74, 150, 74),
-    text_disabled: Color32::from_rgb(54, 104, 54),
-    accent: Color32::from_rgb(0, 230, 118),
-    success: Color32::from_rgb(0, 230, 118),
-    danger: Color32::from_rgb(255, 90, 90),
-    warning: Color32::from_rgb(210, 200, 70),
-    chart_bg: Color32::from_rgb(5, 10, 5),
-    chart_grid: Color32::from_rgb(22, 48, 22),
-    chart_bar_alt: Color32::from_rgba_premultiplied(0, 92, 48, 110),
-    selection_bg: Color32::from_rgba_premultiplied(0, 70, 36, 150),
-};
-
-// Modern deep-indigo look: layered blue-slate surfaces, violet accent.
-// Every value proofed by contrast script (see docs/VERIFICATION.md):
-// worst enabled text pair 6.11:1, every border >= 3.0:1 on both
-// surfaces it touches.
-static AURORA_PALETTE: Palette = Palette {
-    dark: true,
-    modern: false,
-    custom: None,
-    face: Color32::from_rgb(18, 19, 27),
-    button: Color32::from_rgb(37, 40, 56),
-    button_disabled: Color32::from_rgb(25, 27, 37),
-    button_border: Color32::from_rgb(98, 106, 140),
-    hover_fill: Color32::from_rgb(45, 49, 68),
-    pressed_fill: Color32::from_rgb(55, 60, 84),
-    input_bg: Color32::from_rgb(14, 15, 22),
-    input_disabled: Color32::from_rgb(21, 23, 32),
-    group_fill: Color32::from_rgb(27, 29, 41),
-    well_fill: Color32::from_rgb(12, 13, 19),
-    group_border: Color32::from_rgb(96, 104, 136),
-    input_border: Color32::from_rgb(124, 134, 168),
-    text: Color32::from_rgb(233, 235, 246),
-    group_title: Color32::from_rgb(159, 140, 255),
-    text_dim: Color32::from_rgb(160, 166, 190),
-    text_disabled: Color32::from_rgb(105, 111, 134),
-    accent: Color32::from_rgb(159, 140, 255),
-    success: Color32::from_rgb(92, 224, 150),
-    danger: Color32::from_rgb(251, 113, 133),
-    warning: Color32::from_rgb(252, 211, 77),
-    chart_bg: Color32::from_rgb(11, 12, 18),
-    chart_grid: Color32::from_rgb(42, 46, 64),
-    chart_bar_alt: Color32::from_rgba_premultiplied(64, 52, 120, 110),
-    selection_bg: Color32::from_rgba_premultiplied(52, 42, 104, 150),
-};
-
-/// Fit-independent floor size of the main window: the exact classic
-/// footprint in points with the window-driven fit at 1.0. The size
-/// actually declared to the OS divides this by the applied fit
-/// (`live_window_floor_for`), because egui-winit multiplies a declared
-/// minimum by the total zoom when converting it to physical pixels.
-/// That keeps the physical floor tied to any legacy scale alone,
-/// so enlarging the window can never strand it above a minimum created
-/// by the transient fit. Larger sizes are restored from the persisted
-/// preferences.
-pub const MAIN_WINDOW_SIZE: [f32; 2] = [
-    hotkey::WINDOW_MIN_WIDTH as f32,
-    hotkey::WINDOW_MIN_HEIGHT as f32,
-];
-
-/// Widest the centered content column ever grows, in logical points.
-/// The floor content is 536 points wide (560 minus the side margins);
-/// the cap lets group boxes and the button grid share 200 points of
-/// extra width before extra space becomes side margin instead, so a
-/// maximized window never produces comically wide buttons.
-const MAIN_CONTENT_MAX_WIDTH: f32 = 736.0_f32;
-
-/// Maximum extra gap in the classic and wide compositions. Portrait
-/// compositions use a smaller cap and distribute the rest inside cards.
-const MAIN_GAP_EXTRA_MAX: f32 = 72.0_f32;
-
-/// Widest content column in the wide layout. Three group boxes across
-/// need more elbow room than the stacked classic column before the
-/// side margin takes over.
-const MAIN_CONTENT_MAX_WIDTH_WIDE: f32 = 880.0_f32;
-
-/// Window height at which the wide layout's column exactly fills the
-/// window (its three-across row and single button row are shorter than
-/// the stacked classic column, whose fill height is the 456-point
-/// floor). The vertical rhythm measures spare height from here.
-const MAIN_WIDE_FILL_HEIGHT: f32 = 372.0_f32;
-
-/// Portrait cards are stacked and interval/position controls reflow into
-/// two rows, so their width remains legible as the total zoom grows.
-const MAIN_CONTENT_MAX_WIDTH_PORTRAIT: f32 = 480.0_f32;
-/// Natural portrait-column height (including margins); surplus uses
-/// the bounded portrait rhythm shared with the narrower compositions.
-const MAIN_PORTRAIT_FILL_HEIGHT: f32 = 596.0_f32;
-/// Narrower portrait compositions reflow more controls onto their own
-/// rows, letting height contribute to zoom instead of enormous gaps.
-const MAIN_NARROW_FILL_HEIGHT: f32 = 660.0_f32;
-const MAIN_SLENDER_FILL_HEIGHT: f32 = 710.0_f32;
-
-/// Reference display for the one-time display-aware opening size:
-/// on a fresh install the classic dialog opens occupying the same
-/// fraction of the monitor it occupies on a 1920x1080 screen at
-/// 100 % display scaling, so a 1440p or 4K desktop no longer starts
-/// with a comparatively tiny window. The factor is clamped to
-/// [1, 2] and measured in neutral points, so Windows' own DPI
-/// scaling is never double-counted.
-const DISPLAY_DEFAULT_REFERENCE: [f32; 2] = [1920.0_f32, 1080.0_f32];
-const DISPLAY_DEFAULT_MAX_SCALE: f32 = 2.0_f32;
-
-/// Smallest side margin around the content column, kept at the floor
-/// size so the classic layout is pixel-identical there.
-const MAIN_SIDE_MARGIN: f32 = 12.0_f32;
-
-const LOG_LIMIT: usize = 200;
-const SAVE_THROTTLE_MS: u64 = 1_000;
-/// The badge uses white text on a saturated red that clears 4.5:1.
-const UPDATE_BADGE_RED: Color32 = Color32::from_rgb(190, 20, 36);
-
-/// What the Updates window can currently say about the newest
-/// published release. `Checking` always resolves into exactly one of
-/// the other states: the worker thread reports once on every path,
-/// and a dropped channel counts as `Failed` (see
-/// `poll_update_check`), so the window can never claim to be
-/// checking forever.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum UpdateUiState {
-    NotChecked,
-    Checking,
-    UpToDate,
-    /// Newer release version, without the leading "v".
-    Available(String),
-    /// User-facing reason the check could not complete.
-    Failed(String),
-}
-
-/// Whether the Updates window's transient action notice reports a
-/// successful browser/clipboard action or one the user must recover
-/// from manually. Shape and wording carry the distinction; the
-/// color only reinforces it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UpdateNoticeKind {
-    Info,
-    Error,
-}
-
-/// One finished update check: the upgrade verdict plus the asset
-/// expectations that came with it, or why there is no verdict.
-type UpdateCheckResult = Result<(UpdateOutcome, Option<ReleaseAsset>), String>;
-
-/// Phases reported by the install worker through its shared counter.
-const UPDATE_PHASE_DOWNLOADING: u8 = 0;
-const UPDATE_PHASE_VERIFYING: u8 = 1;
-const UPDATE_PHASE_SOURCE: u8 = 2;
-const UPDATE_PHASE_STOPPING: u8 = 3;
-
-/// The self-update pipeline's place in its one-way journey:
-/// idle, a download/verify worker in flight (with the shared
-/// progress counters the Updates window reads), or the brief
-/// moment after the replacement program has been launched and
-/// this process is on its way out. Every failure resolves back
-/// to Idle with a notice — never a half-installed state.
-enum UpdateInstallState {
-    Idle,
-    Downloading {
-        version: String,
-        total: u64,
-        downloaded: Arc<AtomicU64>,
-        phase: Arc<AtomicU8>,
-        cancel: Arc<AtomicBool>,
-        temp_path: PathBuf,
-        source_expected: bool,
-        source_advanced: Arc<AtomicBool>,
-        rx: mpsc::Receiver<UpdateInstallMessage>,
-    },
-    WaitingForStop {
-        ready: ReadyUpdate,
-        cancel: Arc<AtomicBool>,
-    },
-    Restarting,
-}
-
-/// The download/verify worker's single report. Verification runs
-/// on the worker so the UI thread never hashes a file; only the
-/// millisecond-fast rename swap and relaunch happen here.
-struct ReadyUpdate {
-    paths: UpdatePaths,
-    version: String,
-    source_advanced: bool,
-}
-
-enum UpdateInstallMessage {
-    Verified(ReadyUpdate),
-    Cancelled { source_advanced: bool },
-    Failed(String),
-}
-
-/// Original vector marks used beside the dashboard's four main actions.
-#[derive(Clone, Copy)]
-enum ModernActionIcon {
-    Start,
-    Stop,
-    Hotkeys,
-    Playback,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StatusKind {
-    Ready,
-    Running,
-    Stopping,
-    Panic,
-    Warning,
-    Error,
-}
-
-impl StatusKind {
-    fn color(self, pal: &Palette) -> Color32 {
-        match self {
-            StatusKind::Ready => pal.text_dim,
-            StatusKind::Running => pal.success,
-            StatusKind::Stopping => pal.warning,
-            StatusKind::Panic => pal.danger,
-            StatusKind::Warning => pal.warning,
-            StatusKind::Error => pal.danger,
-        }
-    }
-}
-
-enum StabilityTestState {
-    Idle,
-    Countdown {
-        starts_at: Instant,
-        config: EngineConfig,
-        seconds: u32,
-    },
-    Running {
-        seconds: u32,
-    },
-    Finished {
-        reason: StabilityEndReason,
-        measurements: Measurements,
-        dropped_records: u64,
-        detail: Option<String>,
-    },
-}
-
-impl StabilityTestState {
-    fn is_active(&self) -> bool {
-        matches!(self, Self::Countdown { .. } | Self::Running { .. })
-    }
-
-    fn is_countdown(&self) -> bool {
-        matches!(self, Self::Countdown { .. })
-    }
-}
-
-pub struct OpAutoClickerApp {
-    engine: ClickEngine,
-    config: EngineConfig,
-    prefs: AppPrefs,
-
-    // Click Interval editors (4.1 uses separate h/m/s/ms fields).
-    hours: u64,
-    minutes: u64,
-    seconds: u64,
-    millis: u64,
-    offset_ms: f64,
-    repeat_limited: bool,
-
-    // Screen-point capture for "Pick location".
-    picking_location: bool,
-    pick_was_down: bool,
-
-    // Record & Playback.
-    show_macro_window: bool,
-    macro_recorder: MacroRecorder,
-    macro_recording: bool,
-    macro_record_started: Option<Instant>,
-    macro_lmb_was_down: bool,
-    macro_rmb_was_down: bool,
-    macro_mmb_was_down: bool,
-    macro_until_stopped: bool,
-    macro_loops: u64,
-    macro_playing: bool,
-
-    // Bounded in-memory breadcrumb log (never rendered; kept for parity
-    // with the status strip and capped by LOG_LIMIT).
-    logs: Vec<String>,
-    last_seen_error: Option<String>,
-
-    // Hotkey edge detection.
-    toggle_was_down: bool,
-    f8_was_down: bool,
-    capture_key_was_down: bool,
-
-    // Dialog state.
-    show_hotkey_dialog: bool,
-    capturing: bool,
-    show_settings: bool,
-    show_updates: bool,
-    show_font_license: bool,
-    show_stability_test: bool,
-    stability_test: StabilityTestState,
-    stability_report_copy_requested: Option<Instant>,
-
-    // Update checker: the Updates window's state, the latch for the
-    // once-per-launch background check, and the channel its detached
-    // worker reports through (None while no check is in flight).
-    // The newest version GitHub has ever reported this session and
-    // when the last attempt finished are kept separately, so a
-    // later transient failure never erases a verdict the user can
-    // still act on and the window can say exactly how fresh its
-    // answer is. The notice is the one-line outcome of the last
-    // browser/clipboard action, so no button ever feels dead.
-    update_state: UpdateUiState,
-    update_auto_check_started: bool,
-    update_rx: Option<mpsc::Receiver<UpdateCheckResult>>,
-    update_latest_version: Option<String>,
-    update_last_checked: Option<Instant>,
-    update_notice: Option<(UpdateNoticeKind, String)>,
-    // Self-update: the asset expectations (size + SHA-256) from
-    // the last successful check, the install pipeline's state,
-    // this process's own EXE path (the file an install replaces),
-    // and the latch that suppresses the exit-time settings save
-    // after a relaunch — the new instance has already read the
-    // file this one flushed before swapping, and two writers on
-    // one temp file would only race.
-    update_asset: Option<ReleaseAsset>,
-    update_install: UpdateInstallState,
-    exe_path: Option<PathBuf>,
-    // Classified once at startup: portable EXE, recognized source
-    // checkout, unrecognized Cargo artifact, or unknown. The Updates
-    // window and footer both read this one verdict, so the install
-    // action they offer can never disagree mid-session.
-    install_kind: InstallKind,
-    /// A failed rollback needs manual recovery before another in-app update.
-    update_recovery_backup: Option<PathBuf>,
-    skip_exit_save: bool,
-
-    // Whether a settings file existed at load. A fresh install (no
-    // file) earns the one-time display-aware opening size; any
-    // existing file's size — including an explicit classic floor —
-    // is respected exactly.
-    window_size_was_persisted: bool,
-    // Window-chrome bookkeeping: once the zoom factor for the chosen
-    // scale has been applied, re-declare the minimum size and apply the
-    // floor-aware size correction for that scale.
-    pending_resize: bool,
-    // Apply the persisted window size once (at startup and after a
-    // factory reset) as soon as the zoom factor has settled.
-    restore_window_size: bool,
-    // The native minimum is expressed in physical pixels by egui-winit;
-    // track display density so it can be re-declared after a DPI change.
-    last_native_pixels_per_point: Option<f32>,
-    // Live-size observation stays paused until this instant so the
-    // transient point sizes seen while a zoom, DPI change, or restore
-    // resize is in flight are never mistaken for a size the user chose. The deadline
-    // always resolves: observation resumes whether or not the OS granted
-    // the exact requested size.
-    window_settle_until: Instant,
-    // Tallest content height among the middle row's group boxes (two in
-    // the classic stack, three in the wide layout), rewritten every
-    // frame so the whole row meets at one bottom edge. Seeded with the
-    // classic pair height so the first frame already aligns.
-    row_group_height: f32,
-    // Natural widths of the four interval field+label groups, rewritten
-    // every frame; the row's spare width is split between the groups
-    // so the units spread tastefully without ever overflowing a cell.
-    interval_group_widths: [f32; 4],
-    // Adopted window-driven scale factor (1.0 when the feature is
-    // off or the window fits the design canvas at the user's own
-    // percentage). The total egui zoom is the user's percentage
-    // times this factor.
-    auto_zoom: f32,
-    // The dashboard's displayed fit factor. Secondary windows may
-    // temporarily apply a smaller actual egui zoom. When
-    // `adapt_to_window_size` adopts a larger `auto_zoom`, this eases
-    // toward it over ~180 ms instead of snapping, so an enlargement
-    // lands as one smooth zoom. A smaller fit is applied at once so
-    // an inward drag never has to fight a canvas that is too large
-    // for the shrinking window. It equals `auto_zoom` at rest —
-    // including at startup, where the opening size must never animate.
-    displayed_auto_zoom: f32,
-    // In-flight zoom transition: (paint-clock start, factor it
-    // started from). `None` while the displayed factor is at rest.
-    // The transition is pure presentation: the neutral-point size
-    // the fit reads is live-points x *applied* zoom, exact at every
-    // intermediate value, and the evaluator only runs once the zoom
-    // machinery is idle again — so easing can never feed back into
-    // the fit, the persisted size, or itself.
-    zoom_transition: Option<(f64, f32)>,
-    // The legacy scale for which `auto_zoom` was last derived. A reset
-    // can change it, so the fit is re-derived from the invariant neutral
-    // window size before applying the new total zoom.
-    applied_user_factor: f32,
-    // Shape-aware classic, portrait, or panoramic composition.
-    main_layout: MainLayout,
-    // Upward fit-zoom debounce: the candidate factor and how many
-    // consecutive frames the neutral-point window size has held
-    // still while asking for it. Growth applies only once the size
-    // settles; a downward fit bypasses this debounce so an inward
-    // drag is never resisted by a stale, too-large factor.
-    zoom_candidate: f32,
-    stable_frames: u32,
-    // Last neutral-point window size (live points x total zoom).
-    last_base_size: Vec2,
-
-    // Persistence. The "last saved" fingerprints make the dirty check exact
-    // so the disk is never written while nothing changed.
-    settings_path: Option<PathBuf>,
-    settings_dirty: bool,
-    /// If the existing file could not be read, never overwrite it with
-    /// defaults during this run; the user can repair it before restarting.
-    settings_load_error: Option<String>,
-    last_save_error: Option<String>,
-    last_save: Instant,
-    last_saved_config: EngineConfig,
-    last_saved_prefs: AppPrefs,
-    was_running: bool,
-
-    status_kind: StatusKind,
-    /// Paint-clock time of the last status-KIND change; the status dot
-    /// plays one short acknowledgement pulse from it. `NEG_INFINITY`
-    /// means no pulse — the age test then fails on its own.
-    status_flash_at: f64,
-    /// The frame's paint-clock seconds, re-recorded at the top of every
-    /// update pass so status changes (which happen outside the painter)
-    /// can timestamp themselves against the same clock the dot reads.
-    ui_clock_secs: f64,
-    status_text: String,
-}
-
-impl Default for OpAutoClickerApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl OpAutoClickerApp {
-    pub fn new() -> Self {
-        // A relaunch after a verified self-update carries
-        // `--updated-from=<old version>`; recognizing it earns the
-        // user a confirmation line (and triggers the leftover-file
-        // sweep below). args_os because args() would panic on a
-        // non-UTF-8 argument some launcher invented.
-        let exe_path = std::env::current_exe().ok();
-        let install_kind = exe_path
-            .as_deref()
-            .map(self_update::install_kind_for_exe)
-            .unwrap_or(InstallKind::Unknown);
-        let updated_from = std::env::args_os().find_map(|arg| {
-            let text = arg.to_string_lossy().into_owned();
-            text.strip_prefix("--updated-from=")
-                .filter(|version| update::parse_version(version).is_some())
-                .map(|version| version.strip_prefix('v').unwrap_or(version).to_string())
-        });
-        let updated_attempt = std::env::args_os().find_map(|arg| {
-            let text = arg.to_string_lossy().into_owned();
-            text.strip_prefix("--update-attempt=")
-                .filter(|id| self_update::valid_update_id(id))
-                .map(str::to_string)
-        });
-        let config = EngineConfig::default();
-        let prefs = AppPrefs::default();
-        let (hours, minutes, seconds, millis) =
-            ms_to_interval_parts(config.base_interval_ms as u64);
-        let mut app = Self {
-            engine: ClickEngine::new(),
-            config,
-            prefs,
-            hours,
-            minutes,
-            seconds,
-            millis,
-            offset_ms: 0.0,
-            repeat_limited: false,
-            picking_location: false,
-            pick_was_down: false,
-            show_macro_window: false,
-            macro_recorder: MacroRecorder::new(),
-            macro_recording: false,
-            macro_record_started: None,
-            macro_lmb_was_down: false,
-            macro_rmb_was_down: false,
-            macro_mmb_was_down: false,
-            macro_until_stopped: true,
-            macro_loops: 1,
-            macro_playing: false,
-            logs: vec![
-                "MacroClicker initialized. F6 starts/stops, F8 is the panic stop key.".to_string(),
-            ],
-            last_seen_error: None,
-            toggle_was_down: false,
-            f8_was_down: false,
-            capture_key_was_down: false,
-            show_hotkey_dialog: false,
-            capturing: false,
-            show_settings: false,
-            show_updates: false,
-            show_font_license: false,
-            show_stability_test: false,
-            stability_test: StabilityTestState::Idle,
-            stability_report_copy_requested: None,
-            update_state: UpdateUiState::NotChecked,
-            update_auto_check_started: false,
-            update_rx: None,
-            update_latest_version: None,
-            update_last_checked: None,
-            update_notice: None,
-            update_asset: None,
-            update_install: UpdateInstallState::Idle,
-            exe_path,
-            install_kind,
-            update_recovery_backup: None,
-            skip_exit_save: false,
-            window_size_was_persisted: false,
-            pending_resize: false,
-            restore_window_size: true,
-            last_native_pixels_per_point: None,
-            window_settle_until: Instant::now(),
-            row_group_height: 60.0_f32,
-            interval_group_widths: [0.0_f32; 4],
-            auto_zoom: 1.0_f32,
-            displayed_auto_zoom: 1.0_f32,
-            zoom_transition: None,
-            applied_user_factor: 1.0_f32,
-            main_layout: MainLayout::Classic,
-            zoom_candidate: 1.0_f32,
-            stable_frames: 0,
-            last_base_size: Vec2::ZERO,
-            settings_path: Self::settings_file_path(),
-            settings_dirty: false,
-            settings_load_error: None,
-            last_save_error: None,
-            last_save: Instant::now(),
-            last_saved_config: EngineConfig::default(),
-            last_saved_prefs: AppPrefs::default(),
-            was_running: false,
-            status_kind: StatusKind::Ready,
-            status_flash_at: f64::NEG_INFINITY,
-            ui_clock_secs: 0.0_f64,
-            status_text: String::new(),
-        };
-        app.load_persisted();
-        app.sanitize_loaded_config();
-        app.last_saved_config = app.config.clone();
-        app.last_saved_prefs = app.prefs;
-        // Only clean this successful relaunch's exact attempt. Failed
-        // rollbacks and other instances' in-flight files stay recoverable.
-        if let (Some(exe), Some(id)) = (app.exe_path.clone(), updated_attempt) {
-            if updated_from.is_some() {
-                let paths = self_update::update_paths(&exe, &id);
-                self_update::cleanup_update_attempt(&paths);
-                let _ = std::thread::Builder::new()
-                    .name("macroclicker-update-cleanup".to_string())
-                    .spawn(move || {
-                        for _attempt in 0..8 {
-                            if !paths.backup.exists() && !paths.download.exists() {
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(750));
-                            self_update::cleanup_update_attempt(&paths);
-                        }
-                    });
-            }
-        }
-        if let Some(previous) = updated_from {
-            app.set_status(
-                StatusKind::Ready,
-                format!(
-                    "Updated from v{previous} — now running v{}.",
-                    env!("CARGO_PKG_VERSION")
-                ),
-            );
-            app.log(format!(
-                "Self-update complete: v{previous} was replaced by v{} and restarted.",
-                env!("CARGO_PKG_VERSION")
-            ));
-        }
-        app
-    }
-
-    /// Modes that no longer have an on-screen control are neutralized at
-    /// load so a settings file written by an older build can never strand
-    /// the app in a state the user cannot see or leave (for example a
-    /// persisted background-window delivery whose target handle is long
-    /// dead, or Gaussian humanization silently jittering every interval).
-    /// Runs before the saved-fingerprint snapshot, so nothing is rewritten
-    /// to disk until the user actually changes something.
-    fn sanitize_loaded_config(&mut self) {
-        self.config.input_mode = InputMode::GlobalSendInput;
-        self.config.target_hwnd = 0;
-        self.config.background_synchronous = false;
-        self.config.humanize_enabled = false;
-    }
-
-    // ------------------------------------------------------------ persistence
-
-    fn settings_file_path() -> Option<PathBuf> {
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            if !appdata.is_empty() {
-                return Some(
-                    PathBuf::from(appdata)
-                        .join("op-auto-clicker")
-                        .join("settings.conf"),
-                );
-            }
-        }
-        let exe = std::env::current_exe().ok()?;
-        Some(exe.parent()?.join("settings.conf"))
-    }
-
-    /// The persisted inner size for the not-yet-created main window, read
-    /// through the same tolerant parser the app itself loads with. Any
-    /// problem (no file, unreadable file) falls back to the classic
-    /// floor, and parsed values are already sanitized into the supported
-    /// range, so the OS window can open directly at the right size. The
-    /// running app re-applies the same size once its zoom factor settles,
-    /// which also resolves the invalid-file case back to the defaults.
-    /// Persisted sizes are fit-independent points; the builder wants
-    /// live points, so the opening fit factor is divided back out.
-    /// A missing file (fresh install) returns the classic floor
-    /// here; the running app upgrades that first size to the
-    /// display-aware default once the monitor size is known.
-    pub fn persisted_window_size() -> [f32; 2] {
-        let Some(path) = Self::settings_file_path() else {
-            return MAIN_WINDOW_SIZE;
-        };
-        let Ok(text) = settings::read_settings(&path) else {
-            return MAIN_WINDOW_SIZE;
-        };
-        let (_, prefs) = settings::parse_settings(&text);
-        // Persisted sizes are fit-independent points; the fit
-        // speaks neutral points, one user-factor further.
-        let user_factor = prefs.ui_scale_percent as f32 / 100.0_f32;
-        let neutral = Vec2::new(
-            prefs.window_width as f32 * user_factor,
-            prefs.window_height as f32 * user_factor,
-        );
-        let auto = Self::initial_auto_zoom(neutral, user_factor, prefs.auto_scale);
-        let floor = Self::live_window_floor_for(auto);
-        [
-            (prefs.window_width as f32 / auto).max(floor.x),
-            (prefs.window_height as f32 / auto).max(floor.y),
-        ]
-    }
-
-    fn load_persisted(&mut self) {
-        let Some(path) = self.settings_path.clone() else {
-            return;
-        };
-        let text = match settings::read_settings(&path) {
-            Ok(text) => text,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && matches!(std::fs::symlink_metadata(&path), Err(ref metadata_error) if metadata_error.kind() == std::io::ErrorKind::NotFound) =>
-            {
-                return;
-            }
-            Err(error) => {
-                // A file that cannot be read (including invalid UTF-8 or an
-                // oversized file) is not a fresh install. Never silently
-                // replace it with defaults during this app session.
-                let detail = format!(
-                    "Could not read {}: {error}. The original file was preserved. Close MacroClicker, repair or move the file, then reopen the app.",
-                    path.display()
-                );
-                self.window_size_was_persisted = true;
-                self.settings_load_error = Some(detail.clone());
-                self.last_save_error = Some(detail.clone());
-                self.set_status(
-                    StatusKind::Warning,
-                    "Settings could not be read; open Settings for details.",
-                );
-                self.log(detail);
-                return;
-            }
-        };
-        // A file existed, so its size (or its defaults) is the
-        // user's to keep: no display-aware first-run upgrade.
-        self.window_size_was_persisted = true;
-        let (mut config, mut prefs) = settings::parse_settings(&text);
-        // The dashboard no longer exposes these legacy modes; neutralize
-        // them before validation so an old HWND cannot discard unrelated
-        // valid preferences and controls.
-        config.input_mode = InputMode::GlobalSendInput;
-        config.target_hwnd = 0;
-        config.background_synchronous = false;
-        config.humanize_enabled = false;
-        if config.validate().is_err() {
-            let mut repaired = config.clone();
-            repaired.random_offset_ms = 0.0;
-            if repaired.validate().is_ok() {
-                config = repaired;
-                self.log("Invalid saved random offset reset; other settings kept.");
-                self.set_status(StatusKind::Warning, "Saved offset invalid; reset to zero.");
-            } else {
-                config = EngineConfig::default();
-                self.log("Invalid saved click settings reset; preferences kept.");
-                self.set_status(StatusKind::Warning, "Invalid saved click settings reset.");
-            }
-        }
-        // Backward compatibility: files written before the checkbox existed
-        // encode the intent through a non-zero offset magnitude.
-        if config.random_offset_ms > 0.0 {
-            prefs.random_offset_enabled = true;
-        }
-        self.config = config;
-        self.prefs = prefs;
-        if !hotkey::is_supported_toggle_vk(self.prefs.toggle_hotkey_vk) {
-            self.log("Saved hotkey code was unsupported or reserved; restored F6.");
-            self.prefs.toggle_hotkey_vk = hotkey::DEFAULT_TOGGLE_VK;
-        }
-        self.repeat_limited = self.config.max_clicks != 0;
-        self.offset_ms = self.config.random_offset_ms;
-        // Open at the fit factor (and layout) the persisted size
-        // calls for, so the first frames don't start small and then
-        // scale up. Persisted sizes are fit-independent points; the
-        // fit speaks neutral points, one user-factor further.
-        let user_factor = self.prefs.ui_scale_percent as f32 / 100.0_f32;
-        let neutral = Vec2::new(
-            self.prefs.window_width as f32 * user_factor,
-            self.prefs.window_height as f32 * user_factor,
-        );
-        self.auto_zoom = Self::initial_auto_zoom(neutral, user_factor, self.prefs.auto_scale);
-        self.displayed_auto_zoom = self.auto_zoom;
-        self.applied_user_factor = user_factor;
-        self.zoom_candidate = self.auto_zoom;
-        self.main_layout = Self::layout_for(
-            neutral,
-            user_factor,
-            MainLayout::Classic,
-            self.prefs.auto_scale,
-        );
-        self.sync_interval_editors();
-        self.log(format!("Settings loaded from {}.", path.display()));
-    }
-
-    fn mark_dirty(&mut self) {
-        self.settings_dirty = true;
-    }
-
-    /// An invalid editor should not poison the entire settings file.
-    /// Random offset is the only cross-field validation the dashboard can
-    /// make invalid; keep all other edited fields and persist zero instead.
-    /// Otherwise use the last saved configuration if valid, or defaults.
-    fn settings_config_to_save(&self) -> EngineConfig {
-        if self.config.validate().is_ok() {
-            return self.config.clone();
-        }
-        let mut repaired = self.config.clone();
-        repaired.random_offset_ms = 0.0;
-        if repaired.validate().is_ok() {
-            repaired
-        } else if self.last_saved_config.validate().is_ok() {
-            self.last_saved_config.clone()
-        } else {
-            EngineConfig::default()
-        }
-    }
-
-    fn flush_settings(&mut self) -> bool {
-        // A close/update can occur before the next normal frame commits
-        // the editors. Persist the values currently visible to the user.
-        self.commit_interval_editors();
-        self.last_save = Instant::now();
-        let config_to_save = self.settings_config_to_save();
-        let result = if let Some(error) = &self.settings_load_error {
-            Err(error.clone())
-        } else {
-            match self.settings_path.as_deref() {
-                Some(path) => settings::write_settings_atomic(
-                    path,
-                    &settings::serialize_settings(&config_to_save, &self.prefs),
-                )
-                .map_err(|error| error.to_string()),
-                None => Err("No settings path is available.".to_string()),
-            }
-        };
-        match result {
-            Ok(()) => {
-                self.settings_dirty = false;
-                self.last_saved_config = self.config.clone();
-                self.last_saved_prefs = self.prefs;
-                if self.last_save_error.take().is_some()
-                    && self.status_kind == StatusKind::Warning
-                    && self.status_text == "Settings could not be saved; open Settings for details."
-                {
-                    self.set_status(StatusKind::Ready, "Settings saved.");
-                }
-                true
-            }
-            Err(error) => {
-                self.settings_dirty = true;
-                if self.last_save_error.as_deref() != Some(error.as_str()) {
-                    self.log(format!("Settings not saved: {error}"));
-                }
-                if !self.engine.is_running()
-                    && !matches!(self.status_kind, StatusKind::Panic | StatusKind::Error)
-                {
-                    self.set_status(
-                        StatusKind::Warning,
-                        "Settings could not be saved; open Settings for details.",
-                    );
-                }
-                self.last_save_error = Some(error);
-                false
-            }
-        }
-    }
-
-    fn maybe_autosave(&mut self) {
-        if self.settings_dirty
-            && self.settings_load_error.is_none()
-            && self.last_save.elapsed() >= Duration::from_millis(SAVE_THROTTLE_MS)
-        {
-            self.flush_settings();
-        }
-    }
-
-    // ------------------------------------------------------------- status/log
-
-    fn log(&mut self, line: impl Into<String>) {
-        self.logs.push(line.into());
-        if self.logs.len() > LOG_LIMIT {
-            let drop_count = self.logs.len() - LOG_LIMIT;
-            self.logs.drain(0..drop_count);
-        }
-    }
-
-    fn set_status(&mut self, kind: StatusKind, text: impl Into<String>) {
-        // Only a kind CHANGE earns the dot's acknowledgement pulse; a new
-        // message of the same kind just replaces the text, so chatter
-        // inside one state never re-triggers the motion.
-        if kind != self.status_kind {
-            self.status_flash_at = self.ui_clock_secs;
-        }
-        self.status_kind = kind;
-        self.status_text = text.into();
-    }
-
-    /// Progress (0..1) of the status-dot acknowledgement pulse at paint
-    /// time `now`, given the recorded kind-change time `at`. The pulse
-    /// lives for 280 ms (inside the 150-300 ms motion budget every other
-    /// affordance uses), is paint-only, and ends exactly at the dot's
-    /// resting radius — nothing about it can stick, accumulate or move a
-    /// pixel of layout.
-    fn status_pulse_t(now: f64, at: f64) -> Option<f32> {
-        let age = now - at;
-        if (0.0_f64..0.28_f64).contains(&age) {
-            Some((age / 0.28_f64) as f32)
-        } else {
-            None
-        }
-    }
-
-    // -------------------------------------------------------------- styling
-
-    /// Return a small palette snapshot so closures never borrow the app. The
-    /// original appearances retain their exact static colors; only Custom
-    /// derives surfaces and an accessible accent from the saved colors.
-    fn palette(&self) -> Palette {
-        match self.prefs.theme {
-            AppTheme::Classic => LIGHT_PALETTE,
-            AppTheme::Dark => DARK_PALETTE,
-            AppTheme::ModernLight => MODERN_LIGHT_PALETTE,
-            AppTheme::ModernDark => MODERN_DARK_PALETTE,
-            AppTheme::CustomLight => {
-                Self::custom_palette(MODERN_LIGHT_PALETTE, self.prefs.custom_gradient)
-            }
-            AppTheme::CustomDark => {
-                Self::custom_palette(MODERN_DARK_PALETTE, self.prefs.custom_gradient)
-            }
-            AppTheme::Oled => OLED_PALETTE,
-            AppTheme::Matrix => MATRIX_PALETTE,
-            AppTheme::Aurora => AURORA_PALETTE,
-        }
-    }
-
-    fn mix_color(base: Color32, tint: Color32, amount: f32) -> Color32 {
-        let t = amount.clamp(0.0, 1.0);
-        let mix = |a: u8, b: u8| (f32::from(a) * (1.0 - t) + f32::from(b) * t).round() as u8;
-        Color32::from_rgb(
-            mix(base.r(), tint.r()),
-            mix(base.g(), tint.g()),
-            mix(base.b(), tint.b()),
-        )
-    }
-
-    fn custom_palette(mut pal: Palette, gradient: CustomGradient) -> Palette {
-        let start = Color32::from_rgb(gradient.start[0], gradient.start[1], gradient.start[2]);
-        let end = Color32::from_rgb(gradient.end[0], gradient.end[1], gradient.end[2]);
-        let mean = Self::mix_color(start, end, 0.5);
-        // Bound the tint so arbitrary user colors cannot make normal text
-        // disappear. The gradient itself is also contrast-protected below.
-        let strength = f32::from(gradient.strength.min(100)) / 100.0;
-        let tint = if pal.dark { 0.05 } else { 0.025 } * strength;
-        pal.face = Self::mix_color(pal.face, mean, tint);
-        pal.group_fill = Self::mix_color(pal.group_fill, mean, tint);
-        pal.button = Self::mix_color(pal.button, mean, tint);
-        pal.button_disabled = Self::mix_color(pal.button_disabled, mean, tint);
-        pal.input_bg = Self::mix_color(pal.input_bg, mean, tint);
-        pal.input_disabled = Self::mix_color(pal.input_disabled, mean, tint);
-        pal.well_fill = Self::mix_color(pal.well_fill, mean, tint);
-        pal.hover_fill = Self::mix_color(pal.hover_fill, mean, tint);
-        pal.pressed_fill = Self::mix_color(pal.pressed_fill, mean, tint);
-        pal.accent = if pal.dark {
-            // A lighter warning red keeps its contrast on the brightest
-            // permitted gradient corner.
-            pal.danger = Self::mix_color(pal.danger, Color32::WHITE, 0.22);
-            pal.text_dim = Self::mix_color(pal.text_dim, Color32::WHITE, 0.08);
-            Self::mix_color(Color32::WHITE, mean, 0.25)
-        } else {
-            // Darker status colors leave room for a visible gradient while
-            // keeping small text readable even for black chosen as a color.
-            pal.text_dim = Self::mix_color(Color32::BLACK, pal.text_dim, 0.90);
-            pal.success = Self::mix_color(Color32::BLACK, pal.success, 0.85);
-            pal.danger = Self::mix_color(Color32::BLACK, pal.danger, 0.85);
-            pal.warning = Self::mix_color(Color32::BLACK, pal.warning, 0.85);
-            Self::mix_color(Color32::BLACK, mean, 0.30)
-        };
-        pal.group_title = pal.accent;
-        pal.custom = Some(gradient);
-        pal
-    }
-
-    fn custom_face_tint(pal: &Palette) -> f32 {
-        if pal.dark {
-            0.15
-        } else {
-            0.12
-        }
-    }
-
-    fn custom_card_tint(pal: &Palette) -> f32 {
-        if pal.dark {
-            0.14
-        } else {
-            0.13
-        }
-    }
-
-    fn custom_header_tint(pal: &Palette) -> f32 {
-        if pal.dark {
-            0.16
-        } else {
-            0.15
-        }
-    }
-
-    fn custom_dialog_tint(pal: &Palette) -> f32 {
-        if pal.dark {
-            0.12
-        } else {
-            0.11
-        }
-    }
-
-    fn material_alpha(pal: &Palette, gradient: CustomGradient) -> u8 {
-        let cap = if pal.dark { 8_u16 } else { 12_u16 };
-        (u16::from(gradient.texture_strength.min(100)) * cap / 100) as u8
-    }
-
-    /// Cache one small generated texture per egui context, rather than
-    /// rebuilding or uploading it on every frame. It contains no third-party
-    /// artwork and is static: grain is a material treatment, not motion.
-    fn material_texture(ctx: &egui::Context) -> egui::TextureId {
-        let key = egui::Id::new("macroclicker_custom_material_texture");
-        if let Some(handle) = ctx.data(|data| data.get_temp::<egui::TextureHandle>(key)) {
-            return handle.id();
-        }
-        let pixels = texture::material_alpha_tile()
-            .into_iter()
-            .map(Color32::from_white_alpha)
-            .collect();
-        let image = egui::ColorImage {
-            size: [texture::TILE_SIDE, texture::TILE_SIDE],
-            pixels,
-        };
-        let handle = ctx.load_texture(
-            "custom-material-grain",
-            image,
-            egui::TextureOptions::LINEAR_REPEAT,
-        );
-        let id = handle.id();
-        ctx.data_mut(|data| data.insert_temp(key, handle));
-        id
-    }
-
-    /// A rounded, world-aligned tile meshes the texture into the same
-    /// surfaces as the gradient without painting over their borders.
-    fn material_shape(
-        rect: Rect,
-        radius: f32,
-        texture_id: egui::TextureId,
-        tint: Color32,
-    ) -> egui::Shape {
-        let mut mesh = egui::Mesh::with_texture(texture_id);
-        let tile = texture::TILE_SIDE as f32;
-        let vertex = |point: Pos2| egui::epaint::Vertex {
-            pos: point,
-            uv: egui::pos2(point.x / tile, point.y / tile),
-            color: tint,
-        };
-        mesh.vertices.push(vertex(rect.center()));
-        let radius = radius
-            .max(0.0)
-            .min(rect.width() / 2.0)
-            .min(rect.height() / 2.0);
-        let corners = [
-            (
-                Pos2::new(rect.right() - radius, rect.top() + radius),
-                -90.0_f32,
-            ),
-            (
-                Pos2::new(rect.right() - radius, rect.bottom() - radius),
-                0.0_f32,
-            ),
-            (
-                Pos2::new(rect.left() + radius, rect.bottom() - radius),
-                90.0_f32,
-            ),
-            (
-                Pos2::new(rect.left() + radius, rect.top() + radius),
-                180.0_f32,
-            ),
-        ];
-        const STEPS: u32 = 6;
-        for (center, start_angle) in corners {
-            for step in 0..=STEPS {
-                let radians = (start_angle + 90.0 * step as f32 / STEPS as f32).to_radians();
-                mesh.vertices.push(vertex(
-                    center + Vec2::new(radians.cos(), radians.sin()) * radius,
-                ));
-            }
-        }
-        let perimeter = 4 * (STEPS + 1);
-        for index in 0..perimeter {
-            mesh.add_triangle(0, 1 + index, 1 + (index + 1) % perimeter);
-        }
-        egui::Shape::mesh(mesh)
-    }
-
-    fn material_tint(pal: &Palette, gradient: CustomGradient) -> Color32 {
-        let alpha = Self::material_alpha(pal, gradient);
-        if pal.dark {
-            Color32::from_white_alpha(alpha)
-        } else {
-            Color32::from_black_alpha(alpha)
-        }
-    }
-
-    /// Zero runs left-to-right, 90° top-to-bottom. Project over the whole
-    /// rectangle so diagonal gradients work at every aspect ratio and DPI.
-    fn gradient_position(rect: Rect, point: Pos2, angle_degrees: u16) -> f32 {
-        let angle = f32::from(angle_degrees % 360).to_radians();
-        let (sin, cos) = angle.sin_cos();
-        let span = (rect.width() * cos.abs() + rect.height() * sin.abs()).max(f32::EPSILON);
-        let relative = point - rect.center();
-        (0.5 + (relative.x * cos + relative.y * sin) / span).clamp(0.0, 1.0)
-    }
-
-    fn gradient_mesh(
-        rect: Rect,
-        radius: f32,
-        start: Color32,
-        end: Color32,
-        angle: u16,
-    ) -> egui::Shape {
-        Self::gradient_mesh_in(rect, rect, radius, start, end, angle)
-    }
-
-    /// Sample against a shared canvas rather than restarting the gradient
-    /// in each card. A local canvas is still useful for the preview and
-    /// primary action, where the complete color range is intentional.
-    fn gradient_mesh_in(
-        rect: Rect,
-        canvas: Rect,
-        radius: f32,
-        start: Color32,
-        end: Color32,
-        angle: u16,
-    ) -> egui::Shape {
-        let mut mesh = egui::Mesh::default();
-        let color =
-            |point| Self::mix_color(start, end, Self::gradient_position(canvas, point, angle));
-        mesh.colored_vertex(rect.center(), color(rect.center()));
-        let radius = radius
-            .max(0.0)
-            .min(rect.width() / 2.0)
-            .min(rect.height() / 2.0);
-        let corners = [
-            (
-                Pos2::new(rect.right() - radius, rect.top() + radius),
-                -90.0_f32,
-            ),
-            (
-                Pos2::new(rect.right() - radius, rect.bottom() - radius),
-                0.0_f32,
-            ),
-            (
-                Pos2::new(rect.left() + radius, rect.bottom() - radius),
-                90.0_f32,
-            ),
-            (
-                Pos2::new(rect.left() + radius, rect.top() + radius),
-                180.0_f32,
-            ),
-        ];
-        const STEPS: u32 = 6;
-        for (center, start_angle) in corners {
-            for step in 0..=STEPS {
-                let radians = (start_angle + 90.0 * step as f32 / STEPS as f32).to_radians();
-                let point = center + Vec2::new(radians.cos(), radians.sin()) * radius;
-                mesh.colored_vertex(point, color(point));
-            }
-        }
-        let perimeter = 4 * (STEPS + 1);
-        for index in 0..perimeter {
-            mesh.add_triangle(0, 1 + index, 1 + (index + 1) % perimeter);
-        }
-        egui::Shape::mesh(mesh)
-    }
-
-    fn custom_gradient_shape(
-        rect: Rect,
-        canvas: Rect,
-        radius: f32,
-        base: Color32,
-        gradient: CustomGradient,
-        max_tint: f32,
-    ) -> egui::Shape {
-        let strength = f32::from(gradient.strength.min(100)) / 100.0;
-        let start = Color32::from_rgb(gradient.start[0], gradient.start[1], gradient.start[2]);
-        let end = Color32::from_rgb(gradient.end[0], gradient.end[1], gradient.end[2]);
-        Self::gradient_mesh_in(
-            rect,
-            canvas,
-            radius,
-            Self::mix_color(base, start, max_tint * strength),
-            Self::mix_color(base, end, max_tint * strength),
-            gradient.angle_degrees,
-        )
-    }
-
-    fn apply_style(&self, ctx: &egui::Context) {
-        let palette = self.palette();
-        let pal = &palette;
-        // Font definitions take effect at the next frame. Keep the standard
-        // proportional family present so the first frame (and a switch back
-        // to Classic) is safe, then install the bundled modern face ahead of
-        // egui's default fallbacks only when the style actually changes.
-        let font_id = egui::Id::new("macroclicker_modern_font_installed");
-        let had_modern_font = ctx.data(|data| data.get_temp::<bool>(font_id).unwrap_or(false));
-        if had_modern_font != pal.modern {
-            let mut fonts = egui::FontDefinitions::default();
-            if pal.modern {
-                fonts.font_data.insert(
-                    "Outfit".to_owned(),
-                    egui::FontData::from_static(include_bytes!(
-                        "../assets/fonts/Outfit-Regular.ttf"
-                    )),
-                );
-                fonts.font_data.insert(
-                    "Outfit Medium".to_owned(),
-                    egui::FontData::from_static(include_bytes!(
-                        "../assets/fonts/Outfit-Medium.ttf"
-                    )),
-                );
-                if let Some(proportional) = fonts.families.get_mut(&egui::FontFamily::Proportional)
-                {
-                    // Both families keep egui's fallbacks for symbols that
-                    // Outfit does not contain. Only deliberate headings and
-                    // actions use Medium; body and numeric text stay Regular.
-                    let mut medium = proportional.clone();
-                    medium.insert(0, "Outfit Medium".to_owned());
-                    proportional.insert(0, "Outfit".to_owned());
-                    fonts
-                        .families
-                        .insert(egui::FontFamily::Name("Outfit Medium".into()), medium);
-                }
-            }
-            ctx.set_fonts(fonts);
-            ctx.data_mut(|data| data.insert_temp(font_id, pal.modern));
-            ctx.request_repaint();
-        }
-        let mut style = (*ctx.style()).clone();
-        // Preserve the original egui colors that only Modern customizes;
-        // switching back must not leave traces on Classic or older themes.
-        let base_colors_id = egui::Id::new("macroclicker_base_visual_colors");
-        let base_colors = ctx.data_mut(|data| {
-            if let Some(colors) =
-                data.get_temp::<(Color32, Color32, Color32, Color32)>(base_colors_id)
-            {
-                colors
-            } else {
-                let colors = (
-                    style.visuals.faint_bg_color,
-                    style.visuals.code_bg_color,
-                    style.visuals.warn_fg_color,
-                    style.visuals.error_fg_color,
-                );
-                data.insert_temp(base_colors_id, colors);
-                colors
-            }
-        });
-        style.visuals.dark_mode = pal.dark;
-        style.visuals.panel_fill = pal.face;
-        style.visuals.window_fill = if pal.modern { pal.group_fill } else { pal.face };
-        // DragValue's keyboard-edit mode is a TextEdit, which paints
-        // `extreme_bg_color`; it must match the button-mode field fill.
-        style.visuals.extreme_bg_color = pal.input_bg;
-        style.visuals.window_stroke = Stroke::new(1.0_f32, pal.group_border);
-        // Fill-less buttons (DragValue's button mode) and ComboBoxes paint
-        // `weak_bg_fill`, not `bg_fill`, so every widget state needs both set
-        // explicitly or egui's built-in defaults bleed through with the
-        // wrong contrast for the active theme.
-        style.visuals.widgets.noninteractive.bg_fill = pal.face;
-        style.visuals.widgets.noninteractive.weak_bg_fill = pal.input_disabled;
-        style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.button_border);
-        style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, pal.text);
-        style.visuals.widgets.inactive.bg_fill = pal.input_bg;
-        style.visuals.widgets.inactive.weak_bg_fill = pal.input_bg;
-        style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, pal.text);
-        style.visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, pal.input_border);
-        style.visuals.widgets.hovered.bg_fill = pal.hover_fill;
-        style.visuals.widgets.hovered.weak_bg_fill = pal.hover_fill;
-        style.visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, pal.text);
-        style.visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, pal.accent);
-        style.visuals.widgets.active.bg_fill = pal.pressed_fill;
-        style.visuals.widgets.active.weak_bg_fill = pal.pressed_fill;
-        style.visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, pal.text);
-        style.visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, pal.accent);
-        // `open` drives an expanded ComboBox button; its popup list inherits
-        // the theme's window fill, so the whole dropdown matches.
-        style.visuals.widgets.open.bg_fill = pal.input_bg;
-        style.visuals.widgets.open.weak_bg_fill = pal.input_bg;
-        style.visuals.widgets.open.fg_stroke = Stroke::new(1.0_f32, pal.text);
-        style.visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, pal.input_border);
-        style.visuals.selection.bg_fill = pal.selection_bg;
-        style.visuals.selection.stroke = Stroke::new(1.5_f32, pal.accent);
-        style.visuals.hyperlink_color = pal.accent;
-        if pal.modern {
-            style.visuals.faint_bg_color = pal.well_fill;
-            style.visuals.code_bg_color = pal.input_bg;
-            style.visuals.warn_fg_color = pal.warning;
-            style.visuals.error_fg_color = pal.danger;
-        } else {
-            style.visuals.faint_bg_color = base_colors.0;
-            style.visuals.code_bg_color = base_colors.1;
-            style.visuals.warn_fg_color = base_colors.2;
-            style.visuals.error_fg_color = base_colors.3;
-        }
-        let rounding = Rounding::same(if pal.modern { 8.0_f32 } else { 5.0_f32 });
-        style.visuals.widgets.noninteractive.rounding = rounding;
-        style.visuals.widgets.inactive.rounding = rounding;
-        style.visuals.widgets.hovered.rounding = rounding;
-        style.visuals.widgets.active.rounding = rounding;
-        style.visuals.widgets.open.rounding = rounding;
-        style.spacing.item_spacing = Vec2::new(7.0_f32, 6.0_f32);
-        style.spacing.button_padding = Vec2::new(10.0_f32, 5.0_f32);
-        // Motion that communicates, never performs: state fades finish in
-        // 180 ms — above the ~100 ms "did anything happen?" threshold,
-        // comfortably under the 300 ms sluggishness ceiling.
-        style.animation_time = 0.18_f32;
-        // Modern uses a clean unblurred drop shadow; Classic keeps its
-        // original shadow exactly. Neither style blurs the background.
-        let shadow_alpha: u8 = if pal.dark { 120 } else { 48 };
-        style.visuals.window_shadow = egui::epaint::Shadow {
-            offset: Vec2::new(0.0_f32, 6.0_f32),
-            blur: if pal.modern { 0.0_f32 } else { 18.0_f32 },
-            spread: if pal.modern { 1.0_f32 } else { 0.0_f32 },
-            color: Color32::from_black_alpha(shadow_alpha),
-        };
-        style.visuals.popup_shadow = egui::epaint::Shadow {
-            offset: Vec2::new(0.0_f32, 3.0_f32),
-            blur: if pal.modern { 0.0_f32 } else { 10.0_f32 },
-            spread: 0.0_f32,
-            color: Color32::from_black_alpha(shadow_alpha),
-        };
-        style.visuals.window_rounding = Rounding::same(if pal.modern { 12.0_f32 } else { 8.0_f32 });
-        ctx.set_style(style);
-    }
-
-    /// Font changes take effect at the next egui frame. During the first
-    /// Modern frame, fall back to the regular family rather than asking
-    /// egui for a family that has not been installed yet.
-    fn modern_emphasis_font(ctx: &egui::Context, size: f32) -> FontId {
-        let family = egui::FontFamily::Name("Outfit Medium".into());
-        if ctx.fonts(|fonts| fonts.families().contains(&family)) {
-            FontId::new(size, family)
-        } else {
-            FontId::proportional(size)
-        }
-    }
-
-    // ----------------------------------------------------------- hotkey input
-
-    fn poll_hotkeys(&mut self) {
-        let f8_down = win32::is_f8_down();
-        if f8_down && !self.f8_was_down && self.macro_recording {
-            self.stop_macro_recording("F8");
-        }
-        if f8_down && !self.f8_was_down {
-            if self.cancel_stability_test(true) {
-                self.log("Real-click stability test cancelled by F8.");
-                self.mark_dirty();
-                self.flush_settings();
-            } else if self.engine.is_running() {
-                self.engine.panic_stop();
-                self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
-                self.log("PANIC STOP triggered by F8.");
-                self.mark_dirty();
-                self.flush_settings();
-            }
-        }
-        self.f8_was_down = f8_down;
-
-        // While the assignment dialog is capturing, the toggle key must not
-        // start or stop sessions: every key press belongs to the dialog.
-        // Pretend the toggle is held so a key still physically down when
-        // capture ends cannot produce an immediate start/stop edge.
-        if self.capturing {
-            self.toggle_was_down = true;
-            return;
-        }
-        let toggle_down = self.prefs.hotkeys_enabled
-            && is_supported_toggle_vk(self.prefs.toggle_hotkey_vk)
-            && win32::is_vk_down(self.prefs.toggle_hotkey_vk);
-        if toggle_down && !self.toggle_was_down {
-            self.toggle_session();
-        }
-        self.toggle_was_down = toggle_down;
-    }
-
-    fn poll_hotkey_capture(&mut self) {
-        let escape_down = win32::is_vk_down(VK_ESCAPE);
-        let hit = hotkey::capturable_vks()
-            .into_iter()
-            .find(|vk| win32::is_vk_down(*vk));
-        let any_down = escape_down || hit.is_some();
-        // Act only on a fresh press; keys already held when capture starts
-        // (or held over from the rejection of F8) are ignored until released.
-        let fresh_press = any_down && !self.capture_key_was_down;
-        self.capture_key_was_down = any_down;
-        if !fresh_press {
-            return;
-        }
-
-        if escape_down {
-            self.capturing = false;
-            self.set_status(StatusKind::Ready, "Hotkey assignment cancelled.");
-            return;
-        }
-        let Some(vk) = hit else { return };
-        if is_reserved_panic_vk(vk) {
-            self.set_status(
-                StatusKind::Warning,
-                "F8 is reserved for Panic Stop and cannot be reassigned.",
-            );
-            self.log("Hotkey assignment rejected: F8 is reserved for panic stop.");
-            return;
-        }
-        if is_supported_toggle_vk(vk) {
-            self.prefs.toggle_hotkey_vk = vk;
-            self.capturing = false;
-            let name = vk_display_name(vk);
-            self.set_status(
-                StatusKind::Ready,
-                format!("Start/Stop hotkey set to {name}."),
-            );
-            self.log(format!("Start/Stop hotkey changed to {name}."));
-            self.mark_dirty();
-            self.flush_settings();
-        }
-    }
-
-    // ------------------------------------------------------ location picking
-
-    fn arm_location_pick(&mut self) {
-        if self.stability_test.is_active() {
-            self.set_status(
-                StatusKind::Warning,
-                "Cancel the stability test before choosing a location.",
-            );
-            return;
-        }
-        self.config.coordinate_mode = CoordinateMode::FixedScreen;
-        self.picking_location = true;
-        // The click that pressed the button must not capture itself.
-        self.pick_was_down = true;
-        self.set_status(
-            StatusKind::Warning,
-            "Click anywhere on screen to pick the point — Esc cancels.",
-        );
-    }
-
-    fn poll_pick_capture(&mut self) {
-        if win32::is_vk_down(VK_ESCAPE) {
-            if self.picking_location {
-                self.picking_location = false;
-                self.set_status(StatusKind::Ready, "Location pick cancelled.");
-            }
-            self.pick_was_down = true;
-            return;
-        }
-        let mouse_down = win32::is_vk_down(win32::VK_LBUTTON);
-        if self.picking_location && mouse_down && !self.pick_was_down {
-            if let Some((x, y)) = win32::get_cursor_pos() {
-                self.config.fixed_x = x as i64;
-                self.config.fixed_y = y as i64;
-                self.picking_location = false;
-                self.set_status(
-                    StatusKind::Ready,
-                    format!("Picked screen position ({x}, {y})."),
-                );
-                self.log(format!("Fixed position picked: ({x}, {y})."));
-                self.mark_dirty();
-                self.flush_settings();
-            }
-        }
-        self.pick_was_down = mouse_down;
-    }
-
-    // -------------------------------------------------------- record & play
-
-    fn start_macro_recording(&mut self) {
-        if self.stability_test.is_active() {
-            self.set_status(
-                StatusKind::Warning,
-                "Cancel the stability test before recording.",
-            );
-            return;
-        }
-        if self.update_is_finishing() {
-            self.set_status(
-                StatusKind::Warning,
-                "The update is waiting to restart; cancel it before recording.",
-            );
-            return;
-        }
-        if self.engine.is_running() || self.macro_recording {
-            return;
-        }
-        self.macro_recorder.clear();
-        self.macro_recording = true;
-        self.macro_record_started = Some(Instant::now());
-        // The click that pressed "Record" must not capture itself.
-        self.macro_lmb_was_down = true;
-        self.macro_rmb_was_down = win32::is_vk_down(win32::VK_RBUTTON);
-        self.macro_mmb_was_down = win32::is_vk_down(win32::VK_MBUTTON);
-        self.set_status(
-            StatusKind::Warning,
-            "Recording clicks — click anywhere; clicks on this window are ignored. \
-             Stop with the button, the hotkey or F8.",
-        );
-        self.log("Macro recording started.");
-    }
-
-    fn stop_macro_recording(&mut self, via: &str) {
-        if !self.macro_recording {
-            return;
-        }
-        self.macro_recording = false;
-        self.macro_record_started = None;
-        let count = self.macro_recorder.len();
-        self.set_status(
-            StatusKind::Ready,
-            format!("Recording stopped: {count} steps captured."),
-        );
-        self.log(format!("Macro recording stopped via {via}: {count} steps."));
-    }
-
-    /// Polls the three physical mouse buttons while a recording is armed.
-    /// Runs on the same GetAsyncKeyState heartbeat as the global hotkeys,
-    /// so clicks are captured even while another application is focused.
-    fn poll_macro_record(&mut self) {
-        let Some(started) = self.macro_record_started else {
-            return;
-        };
-        let lmb = win32::is_vk_down(win32::VK_LBUTTON);
-        let rmb = win32::is_vk_down(win32::VK_RBUTTON);
-        let mmb = win32::is_vk_down(win32::VK_MBUTTON);
-        let edges = [
-            (lmb && !self.macro_lmb_was_down, MouseButton::Left),
-            (rmb && !self.macro_rmb_was_down, MouseButton::Right),
-            (mmb && !self.macro_mmb_was_down, MouseButton::Middle),
-        ];
-        self.macro_lmb_was_down = lmb;
-        self.macro_rmb_was_down = rmb;
-        self.macro_mmb_was_down = mmb;
-
-        for (pressed, button) in edges {
-            if !pressed {
-                continue;
-            }
-            // Clicks aimed at MacroClicker itself (stopping the recording,
-            // moving the window) never belong in the macro.
-            if win32::foreground_is_own_process() {
-                continue;
-            }
-            let Some((x, y)) = win32::get_cursor_pos() else {
-                continue;
-            };
-            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-            if !self
-                .macro_recorder
-                .record_click(elapsed_ms, x as i64, y as i64, button)
-            {
-                self.stop_macro_recording("step limit");
+        if overdue > STALL_GRACE_MS {
+            if !self.worker_stalled {
+                self.worker_stalled = true;
                 self.set_status(
                     StatusKind::Warning,
                     format!(
-                        "Recording stopped: the {} step limit was reached.",
-                        macro_rec::MAX_STEPS
+                        "Click worker is {:.1} s behind schedule — the target may not be \
+                         responding.",
+                        overdue / 1000.0_f64
                     ),
                 );
-                return;
-            }
-        }
-    }
-
-    fn start_macro_playback(&mut self) {
-        if self.stability_test.is_active() {
-            self.set_status(
-                StatusKind::Warning,
-                "Cancel the stability test before playback.",
-            );
-            return;
-        }
-        if self.update_is_finishing() {
-            self.set_status(
-                StatusKind::Warning,
-                "The update is waiting to restart; cancel it before playback.",
-            );
-            return;
-        }
-        if self.engine.is_running() || self.macro_recording || self.macro_recorder.is_empty() {
-            return;
-        }
-        self.commit_interval_editors();
-        let steps: std::sync::Arc<[macro_rec::MacroStep]> =
-            std::sync::Arc::from(self.macro_recorder.steps().to_vec());
-        let loops = if self.macro_until_stopped {
-            0
-        } else {
-            self.macro_loops.max(1)
-        };
-        let mut config = self.config.clone();
-        config.input_mode = InputMode::GlobalSendInput;
-        config.coordinate_mode = CoordinateMode::FixedScreen;
-        config.target_hwnd = 0;
-        // Each recorded step is one physical click with its own recorded
-        // delay. Dashboard burst and random-offset choices are irrelevant to
-        // playback and must neither multiply nor invalidate recorded steps.
-        config.click_type = ClickType::Single;
-        config.random_offset_ms = 0.0;
-        config.max_clicks = macro_rec::clicks_for_loops(steps.len(), loops);
-        match self.engine.start_with_macro(&config, steps) {
-            Ok(()) => {
-                // A one-click macro can finish before the next egui frame.
-                self.was_running = true;
-                self.macro_playing = true;
-                self.last_seen_error = None;
-                let count = self.macro_recorder.len();
-                let loops_text = if loops == 0 {
-                    "until stopped".to_string()
-                } else {
-                    format!("{loops}x")
-                };
-                self.set_status(
-                    StatusKind::Running,
-                    format!("Playing macro — {count} steps, {loops_text}."),
-                );
                 self.log(format!(
-                    "Macro playback started: {count} steps, {loops_text}."
+                    "Click worker fell {:.1} s behind its next scheduled click.",
+                    overdue / 1000.0_f64
                 ));
             }
-            Err(error) => {
-                self.set_status(StatusKind::Error, format!("Error: {error}"));
-                self.log(format!("Macro playback rejected: {error}"));
+        } else if self.worker_stalled {
+            self.worker_stalled = false;
+            if self.engine.is_running() {
+                self.set_status(StatusKind::Running, self.running_status_text());
+                self.log("Click worker caught up with its schedule.");
             }
         }
     }
 
-    // ------------------------------------------------------------- engine I/O
-
-    fn surface_engine_errors(&mut self) {
-        if let Some(error) = self.engine.last_error() {
-            if Some(&error) != self.last_seen_error.as_ref() {
-                self.log(format!("Engine error: {error}"));
-                // A nonfatal timer/priority warning must not hide F8 while
-                // the worker is draining. A failed dispatch is reported by
-                // the terminal outcome after it has finished.
-                if self.status_kind != StatusKind::Panic {
-                    self.set_status(StatusKind::Error, format!("Error: {error}"));
-                }
-                self.last_seen_error = Some(error);
-            }
-        }
-    }
-
-    fn empty_stability_measurements(seconds: u32) -> Measurements {
-        Measurements {
-            requested_seconds: seconds,
-            elapsed_ms: 0.0,
-            completed_cycles: 0,
-            late_cycles: 0,
-            max_deadline_lateness_ms: None,
-            warning: false,
-        }
-    }
-
-    fn finish_stability_test(
-        &mut self,
-        reason: StabilityEndReason,
-        measurements: Measurements,
-        dropped_records: u64,
-        detail: Option<String>,
-    ) {
-        let verdict = stability::assess(reason, measurements);
-        let (kind, message) = match verdict {
-            Verdict::Good => (
-                StatusKind::Ready,
-                "Stability test complete: timing was good.",
-            ),
-            Verdict::TimingIssues => (
-                StatusKind::Warning,
-                "Stability test complete: timing issues observed.",
-            ),
-            Verdict::Warning => (
-                StatusKind::Warning,
-                "Stability test complete with an engine warning.",
-            ),
-            Verdict::InsufficientData => (
-                StatusKind::Warning,
-                "Stability test: not enough data for a verdict.",
-            ),
-            Verdict::Interrupted => (
-                StatusKind::Warning,
-                "Stability test interrupted; no pass was issued.",
-            ),
-            Verdict::Failed => (
-                StatusKind::Error,
-                "Stability test failed; open the test for details.",
-            ),
-        };
-        if reason == StabilityEndReason::Panicked {
-            self.set_status(
-                StatusKind::Panic,
-                "Panic stop interrupted the stability test.",
-            );
-        } else {
-            self.set_status(kind, message);
-        }
-        self.log(message);
-        self.stability_report_copy_requested = None;
-        self.stability_test = StabilityTestState::Finished {
-            reason,
-            measurements,
-            dropped_records,
-            detail,
-        };
-    }
-
-    fn begin_stability_test(&mut self) {
-        if self.stability_test.is_active() {
-            return;
-        }
-        let seconds = hotkey::sanitize_stability_seconds(self.prefs.stability_test_seconds);
-        self.prefs.stability_test_seconds = seconds;
-        self.commit_interval_editors();
-        let error = if self.engine.is_running()
-            || self.macro_recording
-            || self.picking_location
-            || self.capturing
-        {
-            Some("Stop the current activity and finish any capture first.".to_string())
-        } else if self.update_is_finishing() {
-            Some("The update is waiting to restart.".to_string())
-        } else if !self.engine.worker_alive() {
-            Some("The click worker is unavailable. Restart the app before testing.".to_string())
-        } else {
-            self.validation_message()
-        };
-        if let Some(error) = error {
-            self.finish_stability_test(
-                StabilityEndReason::StartRejected,
-                Self::empty_stability_measurements(seconds),
-                0,
-                Some(error),
-            );
-            return;
-        }
-        // Freeze the current settings now, before the countdown. The
-        // worker clears only the repeat limit in its own private snapshot.
-        let mut config = self.config.clone();
-        config.input_mode = InputMode::GlobalSendInput;
-        config.target_hwnd = 0;
-        self.stability_report_copy_requested = None;
-        self.stability_test = StabilityTestState::Countdown {
-            starts_at: Instant::now() + Duration::from_secs(stability::COUNTDOWN_SECONDS),
-            config,
-            seconds,
-        };
-        self.set_status(
-            StatusKind::Warning,
-            "Real-click test starting in 3 seconds — move to a safe target.",
-        );
-        self.log("Real-click stability test countdown started.");
-        self.mark_dirty();
-    }
-
-    /// Cancel the countdown or ask the worker to stop. A timed run remains
-    /// Running until the worker has released its button and reported a
-    /// terminal outcome; no interruption is ever presented as a pass.
-    fn cancel_stability_test(&mut self, panic: bool) -> bool {
-        match &self.stability_test {
-            StabilityTestState::Countdown { seconds, .. } => {
-                let seconds = *seconds;
-                self.finish_stability_test(
-                    if panic {
-                        StabilityEndReason::Panicked
-                    } else {
-                        StabilityEndReason::Stopped
-                    },
-                    Self::empty_stability_measurements(seconds),
-                    0,
-                    Some("Cancelled during the countdown; no test clicks were sent.".to_string()),
-                );
-                if panic {
-                    self.set_status(
-                        StatusKind::Panic,
-                        "Panic stop cancelled the real-click test.",
-                    );
-                }
-                true
-            }
-            StabilityTestState::Running { .. } => {
-                if panic {
-                    self.engine.panic_stop();
-                    self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
-                } else {
-                    self.engine.request_stop();
-                    self.set_status(StatusKind::Stopping, "Stopping the stability test…");
-                }
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn advance_stability_test(&mut self) {
-        let ready = matches!(
-            &self.stability_test,
-            StabilityTestState::Countdown { starts_at, .. } if Instant::now() >= *starts_at
-        );
-        if !ready {
-            return;
-        }
-        let previous = std::mem::replace(&mut self.stability_test, StabilityTestState::Idle);
-        if let StabilityTestState::Countdown {
-            starts_at,
-            config,
-            seconds,
-        } = previous
-        {
-            // A frozen UI must not unexpectedly start injecting input long
-            // after the user agreed to the short countdown.
-            if Instant::now().saturating_duration_since(starts_at) > Duration::from_secs(2) {
-                self.finish_stability_test(
-                    StabilityEndReason::Stopped,
-                    Self::empty_stability_measurements(seconds),
-                    0,
-                    Some("The countdown expired while the app was unresponsive; no test clicks were sent. Start again when ready.".to_string()),
-                );
-                return;
-            }
-            if self.update_is_finishing() {
-                self.finish_stability_test(
-                    StabilityEndReason::Stopped,
-                    Self::empty_stability_measurements(seconds),
-                    0,
-                    Some("Cancelled before clicking because an update is restarting.".to_string()),
-                );
-                return;
-            }
-            if self.engine.is_running()
-                || self.macro_recording
-                || self.picking_location
-                || self.capturing
-            {
-                self.finish_stability_test(
-                    StabilityEndReason::StartRejected,
-                    Self::empty_stability_measurements(seconds),
-                    0,
-                    Some("Another activity began during the countdown; no test clicks were sent. Stop that activity and try again.".to_string()),
-                );
-                return;
-            }
-            match self.engine.start_stability_test(&config, seconds) {
-                Ok(()) => {
-                    self.stability_test = StabilityTestState::Running { seconds };
-                    self.was_running = true;
-                    self.last_seen_error = None;
-                    self.set_status(
-                        StatusKind::Running,
-                        "Real-click stability test running — F8 stops it.",
-                    );
-                    self.log(format!(
-                        "Real-click stability test started for {seconds} seconds."
-                    ));
-                }
-                Err(error) => self.finish_stability_test(
-                    StabilityEndReason::StartRejected,
-                    Self::empty_stability_measurements(seconds),
-                    0,
-                    Some(error),
-                ),
-            }
-        }
-    }
-
-    fn finish_stability_from_engine(&mut self, outcome: SessionOutcome, seconds: u32) {
-        let reason = match outcome {
-            SessionOutcome::Completed => StabilityEndReason::Finished,
-            SessionOutcome::Stopped => StabilityEndReason::Stopped,
-            SessionOutcome::Panicked => StabilityEndReason::Panicked,
-            SessionOutcome::DispatchFailed => StabilityEndReason::DispatchFailed,
-            SessionOutcome::WorkerLost | SessionOutcome::Pending => StabilityEndReason::WorkerLost,
-        };
-        let telemetry = self.engine.telemetry();
-        let detail = self.engine.last_error();
-        let measurements = Measurements {
-            requested_seconds: seconds,
-            elapsed_ms: self.engine.elapsed_ms(),
-            completed_cycles: telemetry.total_clicks(),
-            late_cycles: telemetry.missed_deadlines(),
-            max_deadline_lateness_ms: self.engine.test_max_lateness_ms(),
-            warning: detail.is_some(),
-        };
-        self.finish_stability_test(reason, measurements, telemetry.dropped_records(), detail);
-    }
-
-    /// Only ordinary click sessions follow live dashboard edits. Playback
-    /// and the real-click test own immutable worker snapshots.
-    fn push_live_config_if_ordinary(&mut self) {
-        if self.engine.is_running() && !self.macro_playing && !self.stability_test.is_active() {
-            if let Err(error) = self.engine.update_config(&self.config) {
-                if self.last_seen_error.as_deref() != Some(error.as_str()) {
-                    self.log(format!("Engine error: {error}"));
-                    self.set_status(StatusKind::Error, format!("Error: {error}"));
-                    self.last_seen_error = Some(error);
-                }
-            }
-        }
-    }
-
-    fn report_session_outcome(&mut self, outcome: SessionOutcome, was_macro: bool) {
-        let count = self.engine.click_count();
-        match outcome {
-            SessionOutcome::Completed => {
-                let label = if was_macro {
-                    "Playback complete"
-                } else {
-                    "Session complete"
-                };
-                self.set_status(
-                    StatusKind::Ready,
-                    format!("{label} — {count} clicks delivered."),
-                );
-                self.log(format!("{label} after {count} clicks."));
-            }
-            SessionOutcome::Stopped => {
-                let label = if was_macro {
-                    "Playback stopped"
-                } else {
-                    "Stopped"
-                };
-                self.set_status(
-                    StatusKind::Ready,
-                    format!("{label} — {count} clicks delivered."),
-                );
-                self.log(format!("{label} after {count} clicks."));
-            }
-            SessionOutcome::Panicked => {
-                self.set_status(StatusKind::Panic, "Panic stop triggered by F8.");
-            }
-            SessionOutcome::DispatchFailed => {
-                let error = self.engine.last_error().unwrap_or_else(|| {
-                    "Click delivery failed; the session was aborted.".to_string()
-                });
-                if Some(&error) != self.last_seen_error.as_ref() {
-                    self.log(format!("Engine error: {error}"));
-                }
-                self.last_seen_error = Some(error.clone());
-                self.set_status(StatusKind::Error, format!("Error: {error}"));
-            }
-            SessionOutcome::WorkerLost | SessionOutcome::Pending => {
-                self.set_status(
-                    StatusKind::Error,
-                    "Click worker lost — session aborted. Restart the app before clicking again.",
-                );
-                self.log("Worker thread found dead or ended without a result; session aborted.");
-            }
-        }
-    }
-
-    fn reconcile_session_status(&mut self) {
-        // Use one state snapshot: if the worker finishes immediately after
-        // this read, the next frame will still observe the running-to-idle
-        // transition. A successful start sets was_running immediately.
-        let running = self.engine.is_running();
-        if self.was_running && !running {
-            let was_macro = self.macro_playing;
-            self.macro_playing = false;
-            if let StabilityTestState::Running { seconds } = &self.stability_test {
-                self.finish_stability_from_engine(self.engine.session_outcome(), *seconds);
+    /// The idle status line. It says what the next Start will actually do
+    /// instead of a bare "Ready.", so the current button, click type, target
+    /// and pace are legible at a glance without reading every card. The
+    /// strip ellipsizes it on narrow windows and the hover shows it whole.
+    fn idle_status_text(config: &EngineConfig) -> String {
+        let cps = config.target_cps();
+        let pace = if cps < 0.01 {
+            let total_ms = config.base_interval_ms.floor().max(0.0_f64) as u64;
+            let (hours, minutes, seconds, millis) = crate::config::ms_to_interval_parts(total_ms);
+            if hours > 0 {
+                format!("every {hours}:{minutes:02}:{seconds:02}.{millis:03}")
             } else {
-                self.report_session_outcome(self.engine.session_outcome(), was_macro);
+                format!("every {minutes}:{seconds:02}.{millis:03}")
             }
-            self.mark_dirty();
-            self.flush_settings();
-        }
-        self.was_running = running;
+        } else {
+            format!("{cps:.2} CPS")
+        };
+        let place = if config.coordinate_mode == CoordinateMode::FixedScreen {
+            format!("at {}, {}", config.fixed_x, config.fixed_y)
+        } else {
+            "at the cursor".to_string()
+        };
+        let repeat = if config.max_clicks > 0 {
+            format!(" ×{}", config.max_clicks)
+        } else {
+            String::new()
+        };
+        format!(
+            "Ready — {} {} click {}{}, {}.",
+            config.mouse_button.label().to_lowercase(),
+            config.click_type.label().to_lowercase(),
+            place,
+            repeat,
+            pace
+        )
     }
 
-    fn toggle_session(&mut self) {
-        if self.stability_test.is_countdown() {
-            self.cancel_stability_test(false);
-            return;
+    /// The live counters a running session owns, painted inside the status
+    /// strip's reserved row: delivered clicks (and the repeat budget when
+    /// one is set) or elapsed time. Bounded to a short line so a very large
+    /// repeat count can never crowd the status text out.
+    fn live_session_metrics(&self) -> Option<String> {
+        if !self.engine.is_running() {
+            return None;
         }
-        if self.macro_recording {
-            self.stop_macro_recording("hotkey");
-            return;
-        }
-        if self.engine.state() == STATE_STOPPING {
-            return;
-        }
-        if self.engine.is_running() {
-            self.engine.request_stop();
-            self.set_status(StatusKind::Stopping, "Stopping…");
-            self.log("Stop requested via hotkey.");
-            self.mark_dirty();
-            self.flush_settings();
+        const MAX_METRIC_CHARS: usize = 20;
+        let count = self.engine.click_count();
+        let text = if self.config.max_clicks > 0 {
+            format!(
+                "{} / {}",
+                count.min(self.config.max_clicks),
+                self.config.max_clicks
+            )
         } else {
-            self.handle_start();
+            let elapsed = (self.engine.elapsed_ms() / 1000.0_f64).max(0.0_f64);
+            format!("{count} clicks · {elapsed:.1} s")
+        };
+        if text.chars().count() > MAX_METRIC_CHARS {
+            Some(format!("{count} clicks"))
+        } else {
+            Some(text)
         }
     }
 
@@ -5204,22 +2359,13 @@ impl OpAutoClickerApp {
             Ok(()) => {
                 // Track the start even if the worker finishes before repaint.
                 self.was_running = true;
+                self.worker_stalled = false;
                 self.last_seen_error = None;
-                let cps = self.config.target_cps();
-                let pace = if cps < 0.01 {
-                    format!("every {} ms", self.interval_total_ms())
-                } else {
-                    format!("at {cps:.2} CPS")
-                };
-                self.set_status(
-                    StatusKind::Running,
-                    format!(
-                        "Running {pace} — {} button, {} click.",
-                        self.config.mouse_button.label().to_lowercase(),
-                        self.config.click_type.label().to_lowercase()
-                    ),
-                );
-                self.log(format!("Click session started {pace}."));
+                self.set_status(StatusKind::Running, self.running_status_text());
+                self.log(format!(
+                    "Click session started {}.",
+                    self.running_pace_text()
+                ));
             }
             Err(error) => {
                 self.set_status(StatusKind::Error, format!("Start rejected: {error}"));
@@ -5341,7 +2487,6 @@ impl OpAutoClickerApp {
             return (0.0_f32, 0.0_f32);
         }
         let extra = (window_height - fill_height).max(0.0_f32);
-        // Super good aesthetics: Modern scaling uses a slightly more fluid gap distribution
         // The spring counts as one share alongside the gaps, so the
         // surplus spreads over every seam in the column instead of
         // pooling above the status strip; only what the bounded
@@ -5364,7 +2509,6 @@ impl OpAutoClickerApp {
         let gap = (extra / 5.0_f32).min(MAX_PORTRAIT_GAP);
         let remaining = (extra - 4.0_f32 * gap).max(0.0_f32);
         let spring = remaining.min(MAX_PORTRAIT_GAP);
-        // Super good aesthetics: Modern portrait rhythm uses refined card extra space
         // Reserve a point per card for rounding so the footer still
         // fits at every pixel density.
         let extra_per_card = ((remaining - spring) / 4.0_f32 - 1.0_f32).max(0.0_f32);
@@ -6690,8 +3834,6 @@ impl OpAutoClickerApp {
     fn draw_interval_group(&mut self, ui: &mut egui::Ui, extra_vertical: f32) {
         let palette = self.palette();
         let pal = &palette;
-        // Super good aesthetics: Modern font for group title
-        let title_font = if pal.modern { Self::modern_emphasis_font(ui.ctx(), 14.0_f32) } else { FontId::proportional(13.0_f32) };
         let _ = Self::group_box(ui, pal, "Click interval", 0.0_f32, extra_vertical, |ui| {
             if self.main_layout == MainLayout::Slender {
                 // Stacked unit labels allow two fields per row even on the
@@ -7074,8 +4216,6 @@ impl OpAutoClickerApp {
         let pal = &palette;
         let row_height = self.row_group_height.max(0.0_f32);
         let mut taller_natural = 0.0_f32;
-        // Super good aesthetics: Modern font for group titles in columns
-        let title_font = if pal.modern { Self::modern_emphasis_font(ui.ctx(), 14.0_f32) } else { FontId::proportional(13.0_f32) };
         ui.columns(2, |columns| {
             let (_, left_natural) = Self::group_box(
                 &mut columns[0],
@@ -7156,8 +4296,6 @@ impl OpAutoClickerApp {
     fn draw_position_group(&mut self, ui: &mut egui::Ui, extra_vertical: f32) {
         let palette = self.palette();
         let pal = &palette;
-        // Super good aesthetics: Modern font for group title
-        let title_font = if pal.modern { Self::modern_emphasis_font(ui.ctx(), 14.0_f32) } else { FontId::proportional(13.0_f32) };
         let _ = Self::group_box(ui, pal, "Cursor position", 0.0_f32, extra_vertical, |ui| {
             if self.main_layout.is_portrait() {
                 if self.main_layout == MainLayout::Slender {
@@ -7300,10 +4438,6 @@ impl OpAutoClickerApp {
         let palette = self.palette();
         let pal = &palette;
         let gap = ui.spacing().item_spacing.x;
-        // Super good aesthetics: Modern button font and rounding
-        if pal.modern {
-            ui.style_mut().text_styles.button.font_id = Self::modern_emphasis_font(ui.ctx(), 13.0_f32);
-        }
         if self.main_layout == MainLayout::Wide {
             // One row of four: the wide canvas earns the flatter,
             // single-glance action strip.
@@ -7376,10 +4510,6 @@ impl OpAutoClickerApp {
     fn draw_footer_actions(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().button_padding = Vec2::new(8.0_f32, 2.0_f32);
-            // Super good aesthetics: Modern footer font
-            if pal.modern {
-                ui.style_mut().text_styles.button.font_id = Self::modern_emphasis_font(ui.ctx(), 12.0_f32);
-            }
             let settings_hover = pal.modern.then(|| ui.painter().add(egui::Shape::Noop));
             let button = egui::Button::new(
                 egui::RichText::new("Settings…")
@@ -9670,21 +6800,13 @@ impl OpAutoClickerApp {
             let (gap, spring) = Self::vertical_rhythm(window_size.y, fill_height, gap_count);
             (gap, spring, 0.0_f32)
         };
-        
-        // Modern aesthetic: use Outfit font for emphasis and better surface treatments
-        let font_style = if pal.modern {
-            Self::modern_emphasis_font(ctx, 14.0_f32)
-        } else {
-            FontId::proportional(13.0_f32)
-        };
-
         egui::CentralPanel::default()
             .frame(Frame::none().fill(pal.face).inner_margin(Margin {
                 left: side_margin,
                 right: side_margin,
-                // Modern's inset caption needs less space above the first card,
-                // but we add a slight top padding for the Modern header wash.
-                top: if pal.modern { 12.0_f32 } else { 14.0_f32 },
+                // Classic captions straddle the first border; Modern's
+                // inset caption needs less space above the first card.
+                top: if pal.modern { 8.0_f32 } else { 14.0_f32 },
                 bottom: 10.0_f32,
             }))
             .show(ctx, |ui| {
@@ -9708,26 +6830,7 @@ impl OpAutoClickerApp {
                         ));
                     }
                 }
-                
-                // Super good aesthetics: apply a subtle tile background for Modern themes
-                if pal.modern {
-                    let painter = ctx.layer_painter(ui.layer_id());
-                    let tile_color = Self::modern_section_tile_color(pal);
-                    painter.rect_filled(
-                        ctx.screen_rect(),
-                        Rounding::none(),
-                        tile_color.lerp(pal.face, 0.95), // Very subtle tint
-                        Stroke::none(),
-                    );
-                }
-
                 ui.with_layout(Layout::top_down(egui::Align::LEFT), |ui| {
-                    // Modern typography for the whole dashboard
-                    if pal.modern {
-                        ui.style_mut().text_styles.normal.font_id = font_style;
-                        ui.style_mut().text_styles.small.font_id = font_style.smaller();
-                    }
-
                     self.draw_interval_group(ui, extra_per_card);
                     if wide {
                         ui.add_space(7.0_f32 + gap_extra);
@@ -9760,8 +6863,11 @@ impl OpAutoClickerApp {
                     // skipped entirely, which silently hid them. An empty
                     // status (fresh start) shows the theme's idle line so
                     // the strip is never a dead blank.
+                    // An empty status (fresh start) shows what the next
+                    // Start will do, so the strip is never a dead blank.
+                    let idle_line = Self::idle_status_text(&self.config);
                     let shown: &str = if self.status_text.is_empty() {
-                        "Ready."
+                        &idle_line
                     } else {
                         &self.status_text
                     };
@@ -9793,10 +6899,9 @@ impl OpAutoClickerApp {
                     // the dark themes, the cards' white in Classic. It
                     // lives entirely inside the reserved 16 px strip,
                     // so the dot, the text and the rows below never move.
-                    // Super good aesthetics: Modern status strip uses rounded tile
                     painter.rect(
                         rect.shrink2(Vec2::new(0.0_f32, 1.0_f32)),
-                        Rounding::same(if pal.modern { 8.0_f32 } else { 6.0_f32 }),
+                        Rounding::same(6.0_f32),
                         pal.well_fill,
                         Stroke::new(1.0_f32, pal.group_border),
                     );
@@ -9826,23 +6931,47 @@ impl OpAutoClickerApp {
                     }
                     let dot_radius = pulse_t.map_or(3.5_f32, |t| 3.5_f32 + 1.3_f32 * (1.0_f32 - t));
                     painter.circle_filled(dot_center, dot_radius, dot_color);
-                    
-                    // Super good aesthetics: Modern status text uses emphasis font
-                    let job_font = if pal.modern { font_style } else { FontId::proportional(12.5_f32) };
+                    // Live session counters share the reserved row: the
+                    // status line keeps the left side, the delivered-click
+                    // readout is painted right-aligned at the far end, and
+                    // the status line's truncation budget gives way to it.
+                    // Nothing here can change the strip's height, so the
+                    // rows below stay anchored at every window size.
+                    let metrics = self.live_session_metrics();
+                    let metrics_galley = metrics.as_ref().map(|text| {
+                        ui.fonts(|fonts| {
+                            fonts.layout_job(egui::text::LayoutJob::simple_singleline(
+                                text.clone(),
+                                FontId::proportional(12.0_f32),
+                                Self::supporting_text(pal),
+                            ))
+                        })
+                    });
+                    let metrics_reserve = metrics_galley
+                        .as_ref()
+                        .map_or(0.0_f32, |galley| galley.size().x + 10.0_f32);
+                    let status_budget = rect.width() - 21.0_f32 - metrics_reserve;
+                    let show_metrics = metrics_galley.is_some() && status_budget >= 90.0_f32;
+
+                    // Long errors must not silently run off a narrow
+                    // status plate. Ellipsize the visible line and expose
+                    // the complete, unchanged message on hover and to
+                    // accessibility integrations.
+                    let available = if show_metrics {
+                        status_budget
+                    } else {
+                        rect.width() - 21.0_f32
+                    };
                     let mut job = egui::text::LayoutJob::simple_singleline(
                         shown.to_owned(),
-                        job_font,
+                        FontId::proportional(12.5_f32),
                         state_color,
                     );
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(
-                        (rect.width() - 21.0_f32).max(0.0_f32),
-                    );
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(available.max(0.0_f32));
                     let galley = ui.fonts(|fonts| fonts.layout_job(job));
+                    let status_elided = galley.elided;
                     status_response
                         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, shown));
-                    if galley.elided {
-                        status_response.on_hover_text(shown);
-                    }
                     painter.galley(
                         egui::pos2(
                             rect.left() + 17.0_f32,
@@ -9851,6 +6980,37 @@ impl OpAutoClickerApp {
                         galley,
                         state_color,
                     );
+                    let mut metrics_hover: Option<String> = None;
+                    if show_metrics {
+                        if let (Some(galley), Some(text)) = (&metrics_galley, metrics.as_ref()) {
+                            painter.galley(
+                                egui::pos2(
+                                    rect.right() - 6.0_f32 - galley.size().x,
+                                    rect.center().y - galley.size().y / 2.0_f32,
+                                ),
+                                galley.clone(),
+                                Self::supporting_text(pal),
+                            );
+                            // The counters are the only thing on the strip
+                            // that is not already words, so they say what
+                            // they are on hover.
+                            metrics_hover = Some(format!("{text} — delivered this session"));
+                        }
+                    }
+                    // One hover for the whole strip: the full status line
+                    // when it was ellipsized, plus the counter legend.
+                    match (status_elided, metrics_hover) {
+                        (true, Some(metrics_line)) => {
+                            status_response.on_hover_text(format!("{shown}\n{metrics_line}"));
+                        }
+                        (true, None) => {
+                            status_response.on_hover_text(shown);
+                        }
+                        (false, Some(metrics_line)) => {
+                            status_response.on_hover_text(metrics_line);
+                        }
+                        (false, None) => {}
+                    }
 
                     ui.add_space(2.0_f32);
                     self.draw_action_buttons(ui);
@@ -10061,14 +7221,29 @@ impl eframe::App for OpAutoClickerApp {
         self.advance_stability_test();
         self.push_live_config_if_ordinary();
         // Watchdog: if the dedicated worker thread ever died while a
-        // session is marked running, force the engine back to idle and say
-        // so — the UI must never report a running session that no thread
-        // is actually driving, and Start/Stop must recover.
+        // session is marked running, end that session honestly and replace
+        // the worker, so Start/Stop recover without an app restart. The
+        // replacement is bounded (see `ClickEngine::ensure_worker`); when it
+        // is refused, the refusal is reported instead of being swallowed.
         if self.engine.is_running() && !self.engine.worker_alive() {
-            self.engine.force_idle();
             self.was_running = true;
+            match self.engine.ensure_worker() {
+                Ok(true) => {
+                    self.log(format!(
+                        "Click worker stopped unexpectedly and was replaced (restart {} of {}).",
+                        self.engine.worker_restarts(),
+                        crate::engine::MAX_WORKER_RESTARTS
+                    ));
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.set_status(StatusKind::Error, format!("Error: {error}"));
+                    self.log(format!("Click worker could not be replaced: {error}"));
+                }
+            }
         }
         self.reconcile_session_status();
+        self.report_stalled_worker();
 
         self.commit_interval_editors();
         self.detect_settings_changes();
@@ -15877,6 +13052,146 @@ mod dashboard_layout_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Waits for a running engine to reach idle. Test-only helper: the
+    /// worker needs up to one interval to notice a stop request, so waiting
+    /// on wall-clock time (never used inside the click path) is what keeps
+    /// these assertions from being a race.
+    fn stop_engine(engine: &ClickEngine) {
+        engine.request_stop();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while engine.is_running() {
+            assert!(Instant::now() < deadline, "engine never became idle");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn the_idle_status_line_says_what_start_will_do() {
+        let config = crate::config::EngineConfig::default();
+        let line = OpAutoClickerApp::idle_status_text(&config);
+        assert_eq!(line, "Ready — left single click at the cursor, 10.00 CPS.");
+        // A fixed point names it, and a repeat budget is shown.
+        let mut fixed = config.clone();
+        fixed.coordinate_mode = CoordinateMode::FixedScreen;
+        fixed.fixed_x = -12;
+        fixed.fixed_y = 640;
+        fixed.max_clicks = 500;
+        let line = OpAutoClickerApp::idle_status_text(&fixed);
+        assert_eq!(
+            line,
+            "Ready — left single click at -12, 640 ×500, 10.00 CPS."
+        );
+        // Very slow intervals read as a duration, not as 0.00 CPS.
+        let mut slow = config.clone();
+        slow.base_interval_ms = 3_600_000.0_f64;
+        let line = OpAutoClickerApp::idle_status_text(&slow);
+        assert!(line.contains("every 1:00:00.000"), "{line}");
+        // And the line stays short enough to fit the reserved strip.
+        assert!(line.len() <= 64, "{line}");
+    }
+
+    #[test]
+    fn live_session_metrics_stay_bounded_and_only_appear_while_running() {
+        let mut app = test_app(MainLayout::Classic);
+        assert_eq!(app.live_session_metrics(), None, "idle shows no counters");
+        // An unbounded repeat counts clicks and elapsed time.
+        app.worker_stalled = false;
+        app.engine
+            .start(&crate::config::EngineConfig::default())
+            .expect("start");
+        app.was_running = true;
+        let metrics = app
+            .live_session_metrics()
+            .expect("a running session reports counters");
+        assert!(metrics.contains("clicks"), "{metrics}");
+        assert!(metrics.chars().count() <= 24, "{metrics}");
+        // A finite repeat shows progress against the budget instead.
+        app.config.max_clicks = 500;
+        let bounded = app.live_session_metrics().expect("bounded counters");
+        assert_eq!(bounded, "0 / 500");
+        // A very large budget still fits on the strip.
+        app.config.max_clicks = u64::MAX;
+        let huge = app.live_session_metrics().expect("huge counters");
+        assert!(huge.chars().count() <= 24, "{huge}");
+        assert!(huge.contains("clicks"), "{huge}");
+        stop_engine(&app.engine);
+        assert_eq!(app.live_session_metrics(), None);
+    }
+
+    #[test]
+    fn a_stalled_worker_is_admitted_and_the_recovery_is_announced() {
+        let mut app = test_app(MainLayout::Classic);
+        app.engine
+            .start(&crate::config::EngineConfig::default())
+            .expect("start");
+        app.was_running = true;
+        // On time: the running line is left exactly as it was.
+        let running = app.running_status_text();
+        app.set_status(StatusKind::Running, running.clone());
+        app.report_stalled_worker();
+        assert_eq!(app.status_kind, StatusKind::Running);
+        assert_eq!(app.status_text, running);
+        assert!(!app.worker_stalled);
+        // Behind schedule: one warning, and it names the delay.
+        let three_seconds = crate::timing::ms_to_ticks(3_000.0_f64);
+        app.engine
+            .publish_dispatch_deadline_for_test(crate::timing::qpc_now() - three_seconds);
+        app.report_stalled_worker();
+        assert_eq!(app.status_kind, StatusKind::Warning);
+        assert!(
+            app.status_text.contains("behind schedule"),
+            "{}",
+            app.status_text
+        );
+        assert!(app.worker_stalled);
+        // It is raised once, not rewritten every frame.
+        let warned = app.status_text.clone();
+        app.engine.publish_dispatch_deadline_for_test(
+            crate::timing::qpc_now() - crate::timing::ms_to_ticks(4_000.0_f64),
+        );
+        app.report_stalled_worker();
+        assert_eq!(app.status_text, warned);
+        // Catching up returns the strip to the running line it replaced.
+        app.engine.clear_dispatch_deadline_for_test();
+        app.report_stalled_worker();
+        assert_eq!(app.status_kind, StatusKind::Running);
+        assert_eq!(app.status_text, running);
+        assert!(!app.worker_stalled);
+        stop_engine(&app.engine);
+    }
+
+    #[test]
+    fn a_lost_worker_is_replaced_by_the_watchdog_and_reported_once() {
+        let mut app = test_app(MainLayout::Classic);
+        app.engine
+            .start(&crate::config::EngineConfig::default())
+            .expect("start");
+        app.was_running = true;
+        app.engine.simulate_worker_loss_for_test();
+        assert!(!app.engine.worker_alive());
+        // The watchdog path from `update`: replace, log, then reconcile.
+        match app.engine.ensure_worker() {
+            Ok(true) => app.log(format!(
+                "Click worker stopped unexpectedly and was replaced (restart {}).",
+                app.engine.worker_restarts()
+            )),
+            other => panic!("the worker must be replaceable, got {other:?}"),
+        }
+        app.reconcile_session_status();
+        assert!(
+            app.status_text.contains("was restarted"),
+            "{}",
+            app.status_text
+        );
+        assert_eq!(app.engine.worker_restarts(), 1);
+        // And the replacement can start the next session.
+        app.worker_stalled = false;
+        app.set_status(StatusKind::Ready, "Ready.");
+        app.handle_start();
+        assert!(app.engine.is_running(), "the replacement driver must start");
+        stop_engine(&app.engine);
+    }
+
     #[test]
     fn terminal_outcomes_are_not_inferred_from_previous_ui_messages() {
         let mut app = test_app(MainLayout::Classic);
@@ -15899,7 +13214,14 @@ mod dashboard_layout_tests {
         assert!(app.status_kind == StatusKind::Panic);
         app.report_session_outcome(SessionOutcome::WorkerLost, true);
         assert!(app.status_kind == StatusKind::Error);
-        assert!(app.status_text.contains("worker lost"));
+        // A lost worker is now replaced by the watchdog before this runs, so
+        // the message promises recovery rather than an application restart.
+        assert!(app.status_text.contains("worker stopped"));
+        assert!(
+            app.status_text.contains("was restarted"),
+            "{}",
+            app.status_text
+        );
     }
 
     #[test]

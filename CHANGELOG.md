@@ -7,6 +7,48 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-30
+
+### Added
+
+- Idle-cheap scheduling for long intervals. A wait longer than the precision
+  window parks on a dedicated stop event in slices of at most 250 ms and
+  QPC-spins only the final 12 ms before a dispatch, so a 10-minute interval
+  no longer holds a logical CPU at 100 %. Fast clicking keeps the pure spin
+  schedule it has always had, and no click is dispatched later than before.
+- Self-healing for a lost click worker. The watchdog replaces a worker that
+  is gone, up to 8 replacements per run, and reports it once in recovery
+  wording. Past that budget the status says the worker can no longer be
+  restarted instead of retrying in a loop.
+- Honest lateness reporting. The worker publishes the dispatch it owes, and
+  falling more than 2 s behind raises a single non-repeating warning that
+  names the delay and clears back to the running line once the dispatch lands.
+- A status line that is never blank. When idle it states exactly what Start
+  will do, following the button, click type, coordinate mode, repeat limit
+  and interval: `Ready — left single click at the cursor, 10.00 CPS.`
+- Live session counters in the status strip's reserved row: delivered clicks
+  (and the repeat budget when one is set) or elapsed time, bounded to a short
+  line, with a hover tooltip that also reveals any elided status text.
+
+### Changed
+
+- A panic inside the click loop is contained and reported as an error status
+  with the session ending cleanly, instead of the worker thread dying and the
+  UI continuing to show a session that is not running. The release profile is
+  built with `panic = "unwind"` so the containment ships in the executable.
+- Removed the three unused dashboard chart colors; every remaining theme
+  entry is referenced by the paint path.
+
+### Fixed
+
+- Stop, the start/stop hotkey, F8, the repeat limit and window close now
+  interrupt a long wait instead of waiting for the next scheduled click, and a
+  stop signal from a previous session can no longer end the next one early.
+- A lost worker no longer leaves the dashboard showing a running session with
+  no way to recover short of restarting the app.
+- The empty status area before the first action no longer reads as a blank
+  strip with no indication of what the current settings will do.
+
 ## [1.9.0] - 2026-10-29
 
 ### Added
@@ -234,7 +276,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   precision QPC click engine, Record & Playback, global hotkeys, themes,
   resizable/scaling window, persistent settings, and Windows CI releases.
 
-[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/Skid-ster/autoclickerBYARENA/compare/v1.6.0...v1.7.0
