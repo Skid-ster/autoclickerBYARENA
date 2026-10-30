@@ -5,6 +5,98 @@ Windows, what was executed, and what remains to be run on a Windows
 10 21H2+/11 x64 machine. The app targets Windows only; the Linux sandbox used
 for development has no Windows SDK, display server, or access to crates.io.
 
+## v1.10.0: Idle-time click scheduling, self-healing worker, honest status
+
+This round changes *how long waits are spent*, *what happens when the click
+worker is lost or panics*, and *what the status strip says when nothing is
+happening*. The QPC spin schedule is unchanged for fast clicking: a wait only
+parks when the part before the 12 ms spin tail is longer than the smallest
+park worth handing to the OS, so no dispatch is later than it was before.
+These changes are **not in the published v1.9.0 binary**.
+
+### Source restored from `v1.9.0` before this round began
+
+`main` reached this round in a state that could not be built, and that is
+recorded here because it changes what v1.10.0 contains:
+
+- The v1.9.1 tag (PR #42) left `autoclicker/src/app.rs` corrupted: a copy of
+  the file's own first 2,792 lines is spliced into the middle of it at line
+  2971, and the splice clobbered one line into `    }e OP Auto Clicker
+  4.1-style dashboard with`. The file therefore fails to parse.
+- The same file also calls egui APIs that do not exist in the pinned
+  `egui = "=0.27.2"`: `Color32::lerp`, `Stroke::none`, `Rounding::none`,
+  `FontId::smaller` and named `text_styles` accessors such as
+  `.text_styles.button` (in 0.27 `text_styles` is a `BTreeMap<TextStyle,
+  FontId>`). Thirteen such errors remain after the duplicated block is
+  removed by hand.
+- Its Windows CI job failed in 22 seconds and the pull request was merged
+  regardless. No release was ever published from that tag — the newest
+  published release is **v1.9.0** — so no user-facing binary carries it.
+
+v1.10.0 is therefore built on the last compiling dashboard source, the
+v1.9.0 revision of `app.rs`, with this round's changes on top. No other file
+differs between v1.9.0 and v1.9.1, so the engine, Win32, timing, update and
+layout modules are unaffected. The v1.9.1 dashboard changes are not part of
+this release; carrying them would require porting them to egui 0.27.2 (or
+upgrading egui), which is a separate round rather than a stability fix.
+
+Local verification with Rust 1.88.0:
+
+- **120 app/worker tests** passed in an actual-egui harness using a stub
+  eframe and simulated Win32, input and timing (96 of them in `app.rs`). New
+  tests cover: a park that is interrupted by a stop and by a session deadline;
+  a wait too short to park that still lands on time; an overdue dispatch being
+  reported in milliseconds and only while a cycle is actually owed; worker
+  failure recovery ending the session as lost with an explicit error; the
+  replacement budget (`MAX_WORKER_RESTARTS`, 8) being exhausted instead of
+  spawning for ever; a lost worker being replaced by the watchdog and reported
+  once with recovery wording; a stalled worker's warning clearing back to the
+  exact running line; live metrics staying bounded (≤20 characters) and absent
+  while idle; and the idle status line naming the button, click type,
+  coordinate mode, repeat limit and pace. No real desktop input was injected.
+- **153 standalone tests across 14 binaries** passed with `rustc --test
+  -D warnings`, unchanged from the v1.9.0 baseline.
+- **Clippy with warnings denied** is clean on the harness sources (verified
+  live with a deliberate `&Vec` canary), and `cargo fmt --check` and
+  `git diff --check` pass.
+- **Contrast of the new status-strip counters and status text**, computed
+  against the well fill and the dialog face for all seven palettes, worst
+  case first:
+
+  | palette | counters / plate | status / plate | counters / face |
+  | --- | --- | --- | --- |
+  | Modern Light (worst) | 6.82:1 | 12.88:1 | 7.03:1 |
+  | Modern Dark | 9.62:1 | 16.33:1 | 10.13:1 |
+  | Matrix | 13.59:1 | 13.59:1 | 13.15:1 |
+  | Classic Dark | 14.89:1 | 14.89:1 | 13.67:1 |
+  | Aurora | 16.33:1 | 16.33:1 | 15.58:1 |
+  | Midnight OLED | 16.83:1 | 16.83:1 | 16.83:1 |
+  | Classic Light | 17.04:1 | 17.04:1 | 14.95:1 |
+
+  All pairs meet 4.5:1. This is a computation over the palette literals in
+  `app.rs`, not a screenshot measurement. Custom Light/Dark generate their
+  surfaces from the two chosen RGB colors at run time, so they are covered by
+  the RGB-cube-corner audit recorded for v1.9.0 rather than by this table.
+- **16 headless real-egui renders** (8 window sizes × Classic Light and Modern
+  Dark: 480×400, 560×456, 600×500, 700×600, 900×700, 1180×850, 760×1000 and
+  1920×1080) were rasterized on the CPU from the tessellated meshes and the
+  real font atlas. Every frame is **100 % painted** (no unpainted region at any
+  size) and contains **no elided text** — no label is clipped at any tested
+  size. Six themes were additionally rasterized at the 560×456 floor and show
+  the expected surface color and luminance (mean luma 20–40 for the dark
+  themes, 223–237 for the light ones). These are software reconstructions of
+  real egui output, not native screenshots.
+- The park/wake path was exercised on Linux against a simulated manual-reset
+  event. **The wake latency of `WaitForSingleObject` on Windows was not
+  measured**, so no timing figure is claimed for it; the design only requires
+  that a stop be signalled immediately rather than deferred to the next click.
+
+Hands-on Windows verification remains required for: actual idle CPU at a
+10-minute interval, stop responsiveness during a long wait, worker
+replacement after a real failure, panic containment in the shipped release
+binary, mixed-DPI and multi-monitor behavior, and real input timing. Test only
+on a safe disposable target.
+
 ## v1.9.0: Custom appearance and real-click stability test
 
 The current source adds Custom Light/Dark, two persisted RGB colors, rotation,

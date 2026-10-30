@@ -2,10 +2,30 @@
 //!
 //! The egui render thread never executes timing code. It swaps the atomic
 //! configuration snapshot and reads the lock-free telemetry store; the worker
-//! parks on a manual-reset event while idle and runs a QPC spin schedule while
+//! parks on a manual-reset event while idle and runs a QPC schedule while
 //! active. No sleep call exists anywhere in the active click path.
+//!
+//! Two events drive the worker. `wake_event` starts a session; `abort_event`
+//! ends one. Waits inside a session are QPC-spun for the last
+//! [`SPIN_TAIL_MS`], and — only when the wait is long enough that parking
+//! cannot move the dispatch instant — the portion before that tail is parked
+//! on `abort_event` in slices of at most [`MAX_PARK_MS`]. Fast clicking keeps
+//! the pure spin it has always had; long intervals no longer hold a whole
+//! logical CPU at 100 %, which is itself a timing risk (heat, throttling and
+//! battery). A stop, a panic or a session deadline always lands inside one
+//! slice, so responsiveness is unchanged.
+//!
+//! Failure handling is deliberate: a panic inside the click loop is caught and
+//! reported instead of taking the worker thread with it, and a worker that is
+//! lost for any reason is replaced by [`ClickEngine::ensure_worker`] (bounded
+//! by [`MAX_WORKER_RESTARTS`]). A worker that is alive but blocked inside an
+//! input call cannot be interrupted, so it is *observed* instead: the worker
+//! publishes the dispatch it owes ([`ClickEngine::dispatch_overdue_ms`]) and
+//! the UI reports lateness rather than claiming a healthy session.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, AtomicU8, Ordering,
+};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -111,13 +131,41 @@ impl RectCache {
     }
 }
 
+/// Long waits park on a kernel event for the part that cannot affect click
+/// precision and spin the tail, so an hour-long interval no longer holds a
+/// logical CPU at 100 % (heat and throttling are themselves timing risks).
+/// The last [`SPIN_TAIL_MS`] before a deadline is always QPC-spun, and waits
+/// shorter than [`MIN_PARK_MS`] below the tail never park at all: fast
+/// clicking keeps the pure spin schedule it has always had.
+const SPIN_TAIL_MS: f64 = 12.0;
+/// Smallest park worth handing to the OS. Below this the kernel wait costs
+/// more than it saves and could return late relative to a 1 ms timer.
+const MIN_PARK_MS: f64 = 4.0;
+/// Long parks are issued in slices so a stop, a panic or a session deadline
+/// is always honoured inside one slice, whatever the interval.
+const MAX_PARK_MS: u32 = 250;
+/// A replacement worker is spawned at most this many times per engine. Past
+/// it the engine reports itself permanently unavailable instead of spawning
+/// in a loop, which is the honest outcome for a process that keeps losing
+/// its worker thread.
+pub const MAX_WORKER_RESTARTS: u32 = 8;
+
 struct Shared {
     wake_event: i64,
+    /// Signalled by every stop and panic request. Long waits park on it, so
+    /// an hour-long interval is still interrupted in well under a slice.
+    abort_event: i64,
     terminate: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     panic: Arc<AtomicBool>,
     state: Arc<AtomicI32>,
     outcome: AtomicU8,
+    /// QPC tick the worker currently owes a dispatch at, or 0 when it is not
+    /// inside a scheduled cycle. Published by the worker, read by the UI's
+    /// stall detector; it never changes scheduling, only observation.
+    waiting_deadline: AtomicI64,
+    /// How many replacement workers have been spawned since construction.
+    worker_restarts: AtomicU32,
     /// Serializes starts, stop requests, and the worker's final state
     /// transition. Never locked inside the active click loop.
     session_gate: Mutex<()>,
@@ -146,8 +194,11 @@ struct Shared {
 
 pub struct ClickEngine {
     shared: Arc<Shared>,
-    worker: Option<JoinHandle<()>>,
+    /// Interior mutability so a lost worker can be replaced through `&self`
+    /// from the UI's watchdog without making the engine `&mut` everywhere.
+    worker: Mutex<Option<JoinHandle<()>>>,
     wake_handle: isize,
+    abort_handle: isize,
 }
 
 impl Default for ClickEngine {
@@ -165,13 +216,27 @@ impl ClickEngine {
                 Some(format!("Could not create click-worker event: {error}")),
             ),
         };
+        // A second event is dedicated to cancellation. Sharing the wake
+        // event would make a start signal indistinguishable from a stop.
+        let (abort_handle, initial_error) = match win32::create_manual_reset_event() {
+            Ok(handle) => (handle, initial_error),
+            Err(error) => (
+                0,
+                Some(initial_error.unwrap_or_else(|| {
+                    format!("Could not create click-worker stop event: {error}")
+                })),
+            ),
+        };
         let shared = Arc::new(Shared {
             wake_event: wake_handle as i64,
+            abort_event: abort_handle as i64,
             terminate: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
             panic: Arc::new(AtomicBool::new(false)),
             state: Arc::new(AtomicI32::new(STATE_IDLE)),
             outcome: AtomicU8::new(SessionOutcome::Pending as u8),
+            waiting_deadline: AtomicI64::new(0),
+            worker_restarts: AtomicU32::new(0),
             session_gate: Mutex::new(()),
             config: Arc::new(AtomicConfigSnapshot::default()),
             session_config: Mutex::new(EngineConfig::default()),
@@ -185,26 +250,56 @@ impl ClickEngine {
             rect_cache: Arc::new(RectCache::new()),
             macro_steps: Mutex::new(Arc::from(Vec::new())),
         });
-        let worker = if wake_handle == 0 {
+        let worker = if wake_handle == 0 || abort_handle == 0 {
             None
         } else {
-            let worker_shared = Arc::clone(&shared);
-            match thread::Builder::new()
-                .name("macroclicker-click-worker".to_string())
-                .spawn(move || worker_loop(worker_shared))
-            {
+            match spawn_worker(&shared) {
                 Ok(handle) => Some(handle),
                 Err(error) => {
-                    publish_error(&shared, format!("Could not start click worker: {error}"));
+                    publish_error(&shared, error);
                     None
                 }
             }
         };
         Self {
             shared,
-            worker,
+            worker: Mutex::new(worker),
             wake_handle,
+            abort_handle,
         }
+    }
+
+    /// Publishes a dispatch deadline the worker is already late for, so the
+    /// UI's stall detector can be exercised without a real blocked input
+    /// call. Test-only.
+    #[cfg(test)]
+    pub(crate) fn publish_dispatch_deadline_for_test(&self, tick: i64) {
+        self.shared.waiting_deadline.store(tick, Ordering::Release);
+    }
+
+    /// Clears the published dispatch deadline. Test-only counterpart of
+    /// [`ClickEngine::publish_dispatch_deadline_for_test`].
+    #[cfg(test)]
+    pub(crate) fn clear_dispatch_deadline_for_test(&self) {
+        self.shared.waiting_deadline.store(0, Ordering::Release);
+    }
+
+    /// Ends the worker thread the way an unexpected exit would, leaving the
+    /// engine holding a finished handle. Test-only: production code never
+    /// kills the worker, it replaces it through [`ClickEngine::ensure_worker`].
+    #[cfg(test)]
+    pub(crate) fn simulate_worker_loss_for_test(&self) {
+        self.shared.terminate.store(true, Ordering::Release);
+        if self.wake_handle != 0 {
+            let _ = win32::set_event(self.wake_handle);
+        }
+        if self.abort_handle != 0 {
+            let _ = win32::set_event(self.abort_handle);
+        }
+        if let Some(handle) = lock_recovering(&self.worker).take() {
+            let _ = handle.join();
+        }
+        self.shared.terminate.store(false, Ordering::Release);
     }
 
     pub fn start(&self, config: &EngineConfig) -> Result<(), String> {
@@ -272,6 +367,12 @@ impl ClickEngine {
         *lock_recovering(&self.shared.error) = None;
         self.shared.stop.store(false, Ordering::Release);
         self.shared.panic.store(false, Ordering::Release);
+        self.shared.waiting_deadline.store(0, Ordering::Release);
+        // Clear any stop signal left by the previous session before the new
+        // one parks; otherwise its first long wait would return immediately.
+        if self.abort_handle != 0 {
+            let _ = win32::reset_event(self.abort_handle);
+        }
         *lock_recovering(&self.shared.session_config) = config.clone();
         self.shared
             .session_duration_ms
@@ -306,6 +407,7 @@ impl ClickEngine {
         if self.is_running() {
             self.shared.stop.store(true, Ordering::Release);
             self.shared.state.store(STATE_STOPPING, Ordering::Release);
+            self.signal_abort();
         }
     }
 
@@ -316,6 +418,15 @@ impl ClickEngine {
             self.shared.stop.store(true, Ordering::Release);
             // PANIC is terminal only after the worker has fully drained.
             self.shared.state.store(STATE_STOPPING, Ordering::Release);
+            self.signal_abort();
+        }
+    }
+
+    /// Wakes a worker that is parked for a long interval. The stop flags are
+    /// set first, so a park that begins after this call still sees them.
+    fn signal_abort(&self) {
+        if self.abort_handle != 0 {
+            let _ = win32::set_event(self.abort_handle);
         }
     }
 
@@ -376,10 +487,95 @@ impl ClickEngine {
     /// thread died (a defensive check — the worker contains no panicking
     /// paths by design) and the engine can no longer deliver clicks.
     pub fn worker_alive(&self) -> bool {
-        self.worker
+        lock_recovering(&self.worker)
             .as_ref()
-            .map(|handle| !handle.is_finished())
-            .unwrap_or(false)
+            .is_some_and(|handle| !handle.is_finished())
+    }
+
+    /// True when a worker exists at all (alive or not) and a replacement can
+    /// legally be spawned. `false` means the engine was never able to start
+    /// one, or it has exhausted its restart budget.
+    pub fn worker_restartable(&self) -> bool {
+        self.wake_handle != 0
+            && self.abort_handle != 0
+            && self.shared.worker_restarts.load(Ordering::Relaxed) < MAX_WORKER_RESTARTS
+    }
+
+    /// How many replacement workers have been spawned since construction.
+    pub fn worker_restarts(&self) -> u32 {
+        self.shared.worker_restarts.load(Ordering::Relaxed)
+    }
+
+    /// Replaces a worker thread that ended, so one lost thread costs a single
+    /// aborted session instead of the whole application. Returns `Ok(true)`
+    /// when a replacement was actually spawned, `Ok(false)` when the current
+    /// worker is already alive, and `Err` with an honest reason when no
+    /// replacement is possible (no kernel handles, or the restart budget is
+    /// spent, so a process that keeps losing its worker is reported rather
+    /// than respawned forever).
+    pub fn ensure_worker(&self) -> Result<bool, String> {
+        let mut worker = lock_recovering(&self.worker);
+        let alive = worker.as_ref().is_some_and(|handle| !handle.is_finished());
+        if alive {
+            return Ok(false);
+        }
+        if !self.worker_restartable() {
+            return Err(if self.wake_handle == 0 || self.abort_handle == 0 {
+                "Click worker is unavailable: its start and stop events could not be created. \
+                 Restart MacroClicker."
+                    .to_string()
+            } else {
+                format!(
+                    "Click worker stopped {MAX_WORKER_RESTARTS} times; it will not be restarted \
+                     again in this session. Restart MacroClicker before clicking again."
+                )
+            });
+        }
+        // The old handle is finished by definition, so joining it only
+        // reclaims the thread; it can never block on live click code.
+        if let Some(handle) = worker.take() {
+            let _ = handle.join();
+        }
+        // Any session the dead worker was driving is over and its terminal
+        // transition never ran, so publish the outcome here instead of
+        // leaving the UI reporting a running session nobody is driving.
+        recover_after_worker_failure(
+            &self.shared,
+            "Click worker stopped unexpectedly; the session was aborted and the worker was \
+             replaced."
+                .to_string(),
+        );
+        self.shared.worker_restarts.fetch_add(1, Ordering::Relaxed);
+        let replacement = spawn_worker(&self.shared).map_err(|error| {
+            // The budget was spent on this attempt; do not let a transient
+            // spawn failure consume one of the remaining restarts.
+            self.shared.worker_restarts.fetch_sub(1, Ordering::Relaxed);
+            format!("{error} Restart MacroClicker before clicking again.")
+        })?;
+        *worker = Some(replacement);
+        // Clear the stop flags the recovery raised, so the fresh worker can
+        // accept the next start instead of draining a session it never ran.
+        self.shared.stop.store(false, Ordering::Release);
+        self.shared.panic.store(false, Ordering::Release);
+        self.shared.state.store(STATE_IDLE, Ordering::Release);
+        Ok(true)
+    }
+
+    /// How long the worker has been overdue for the dispatch it currently
+    /// owes, or `None` when it is idle, between cycles, or on time. The UI
+    /// uses this to admit a stalled session instead of reporting a healthy
+    /// one: a worker blocked inside an input call is the one failure the
+    /// stop flags cannot interrupt.
+    pub fn dispatch_overdue_ms(&self) -> Option<f64> {
+        if !self.is_running() {
+            return None;
+        }
+        let deadline = self.shared.waiting_deadline.load(Ordering::Acquire);
+        if deadline == 0 {
+            return None;
+        }
+        let late = timing::ticks_to_ms(timing::qpc_now().saturating_sub(deadline));
+        (late > 0.0).then_some(late)
     }
 
     /// Forces the engine back to the idle state after the UI detects a
@@ -388,6 +584,7 @@ impl ClickEngine {
     pub fn force_idle(&self) {
         let _gate = lock_recovering(&self.shared.session_gate);
         self.shared.stop.store(true, Ordering::Release);
+        self.shared.waiting_deadline.store(0, Ordering::Relaxed);
         self.shared
             .outcome
             .store(SessionOutcome::WorkerLost as u8, Ordering::Release);
@@ -411,10 +608,17 @@ impl Drop for ClickEngine {
         if self.wake_handle != 0 {
             let _ = win32::set_event(self.wake_handle);
         }
-        if let Some(handle) = self.worker.take() {
+        // Wake any parked long-interval wait first: without this a worker
+        // waiting out a one-hour interval would only notice termination when
+        // it chose to stop parking, which is never how a shutdown must read.
+        if self.abort_handle != 0 {
+            let _ = win32::set_event(self.abort_handle);
+        }
+        if let Some(handle) = lock_recovering(&self.worker).take() {
             let _ = handle.join();
         }
         win32::close_handle(self.wake_handle);
+        win32::close_handle(self.abort_handle);
     }
 }
 
@@ -431,6 +635,68 @@ fn lock_recovering<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, 
 
 fn publish_error(shared: &Shared, message: impl Into<String>) {
     *lock_recovering(&shared.error) = Some(message.into());
+}
+
+/// Spawns the dedicated click worker. Called once at construction and again
+/// by [`ClickEngine::ensure_worker`] if the thread is ever lost, so a single
+/// worker failure degrades to one aborted session instead of an app restart.
+fn spawn_worker(shared: &Arc<Shared>) -> Result<JoinHandle<()>, String> {
+    let worker_shared = Arc::clone(shared);
+    let mut builder = thread::Builder::new();
+    let generation = shared.worker_restarts.load(Ordering::Relaxed);
+    if generation > 0 {
+        // The name carries the generation so a debugger or a dump can tell
+        // the original worker from a replacement.
+        builder = builder.name(format!("macroclicker-click-worker-{generation}"));
+    } else {
+        builder = builder.name("macroclicker-click-worker".to_string());
+    }
+    builder
+        .spawn(move || worker_loop(worker_shared))
+        .map_err(|error| format!("Could not start click worker: {error}"))
+}
+
+/// Pulls the payload of a caught panic into a readable, bounded string. A
+/// panic message is untrusted input as far as the status strip is concerned:
+/// it is truncated so one pathological message cannot bloat the UI state.
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    const MAX_PANIC_CHARS: usize = 200;
+    let text = if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "an unexpected worker error".to_string()
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return "an unexpected worker error".to_string();
+    }
+    let mut bounded = String::with_capacity(MAX_PANIC_CHARS.min(trimmed.len()));
+    for (index, character) in trimmed.chars().enumerate() {
+        if index >= MAX_PANIC_CHARS {
+            bounded.push('…');
+            break;
+        }
+        bounded.push(character);
+    }
+    bounded
+}
+
+/// Ends the session after the worker thread failed in a way that left the
+/// shared state mid-session: an unwound panic or a thread that ended without
+/// its own terminal transition. The next start is always possible, and the
+/// outcome is reported as [`SessionOutcome::WorkerLost`] so the UI never
+/// claims a clean finish.
+fn recover_after_worker_failure(shared: &Shared, error: String) {
+    let _gate = lock_recovering(&shared.session_gate);
+    shared.stop.store(true, Ordering::Release);
+    shared.waiting_deadline.store(0, Ordering::Relaxed);
+    shared
+        .outcome
+        .store(SessionOutcome::WorkerLost as u8, Ordering::Release);
+    shared.state.store(STATE_IDLE, Ordering::Release);
+    publish_error(shared, error);
 }
 
 fn worker_loop(shared: Arc<Shared>) {
@@ -459,8 +725,65 @@ fn worker_loop(shared: Arc<Shared>) {
             );
             return;
         }
-        run_click_session(&shared);
+        // A panic inside the click loop must never take the worker thread
+        // with it: an unwound session is contained here, reported as a lost
+        // worker, and the thread goes back to parking so the next Start
+        // still works (see `ClickEngine::ensure_worker`). This is why the
+        // release profile unwinds instead of aborting.
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_click_session(&shared)));
+        if let Err(payload) = outcome {
+            recover_after_worker_failure(
+                &shared,
+                format!(
+                    "Click worker stopped after an unexpected error ({}) — the session was \
+                     aborted.",
+                    panic_message(payload)
+                ),
+            );
+        }
     }
+}
+
+/// Waits for `deadline_tick` without holding a CPU for the whole interval.
+///
+/// The portion of the wait that cannot affect click precision is parked on
+/// the abort event — a kernel wait, never a sleep, and never a busy loop —
+/// issued in slices of at most [`MAX_PARK_MS`] so a stop, a panic or a
+/// session deadline always lands inside one slice. The final
+/// [`SPIN_TAIL_MS`] is spun on QPC exactly as before, so the dispatch
+/// instant is unchanged and intervals below the park threshold keep the
+/// pure spin schedule they have always had.
+fn wait_for_deadline(shared: &Shared, deadline_tick: i64) -> SpinResult {
+    loop {
+        if shared.panic.load(Ordering::Acquire) {
+            return SpinResult::PanicRequested;
+        }
+        if shared.stop.load(Ordering::Acquire) {
+            return SpinResult::StopRequested;
+        }
+        let remaining_ms = timing::ticks_to_ms(deadline_tick.saturating_sub(timing::qpc_now()));
+        let park_ms = remaining_ms - SPIN_TAIL_MS;
+        if park_ms < MIN_PARK_MS {
+            break;
+        }
+        // Reset, then re-check the flags, then wait: a stop that lands
+        // between the check and the wait has signalled the event, and one
+        // that landed before the reset is caught by the check. Neither can
+        // be lost.
+        if win32::reset_event(shared.abort_event as isize).is_err() {
+            break; // Fall back to spinning rather than failing to wait.
+        }
+        if shared.panic.load(Ordering::Acquire) {
+            return SpinResult::PanicRequested;
+        }
+        if shared.stop.load(Ordering::Acquire) {
+            return SpinResult::StopRequested;
+        }
+        let slice = park_ms.min(f64::from(MAX_PARK_MS)).max(1.0) as u32;
+        let _ = win32::wait_for_event(shared.abort_event as isize, slice);
+    }
+    timing::spin_until_deadline(deadline_tick, &shared.stop, &shared.panic)
 }
 
 fn clamp_client(value: i64, low: i32, high: i32) -> i32 {
@@ -687,11 +1010,14 @@ fn run_click_session_with_dispatch(
             timing::ms_to_ticks(schedule::CATCHUP_SLACK_MS),
         );
 
-        let wait = timing::spin_until_deadline(
-            bounded_deadline(target_tick, session_end),
-            &shared.stop,
-            &shared.panic,
-        );
+        // Publish the tick this cycle owes a dispatch at, so the UI can tell
+        // a worker that is merely waiting from one that has stopped making
+        // progress (blocked inside an input call). Cleared when the cycle
+        // completes, and at every exit below.
+        shared
+            .waiting_deadline
+            .store(target_tick, Ordering::Release);
+        let wait = wait_for_deadline(shared, bounded_deadline(target_tick, session_end));
         if wait != SpinResult::DeadlineReached {
             break;
         }
@@ -809,6 +1135,8 @@ fn run_click_session_with_dispatch(
 
         sequence += 1;
         next_deadline = target_tick;
+        // This cycle is complete: the worker no longer owes a dispatch.
+        shared.waiting_deadline.store(0, Ordering::Release);
         shared
             .last_elapsed
             .store(completion - session_start, Ordering::Release);
@@ -820,6 +1148,8 @@ fn run_click_session_with_dispatch(
             Ordering::Release,
         );
     }
+    // The session no longer owes a dispatch on any exit path.
+    shared.waiting_deadline.store(0, Ordering::Release);
     let _gate = lock_recovering(&shared.session_gate);
     let panicked = shared.panic.load(Ordering::Acquire);
     let stopped = shared.stop.load(Ordering::Acquire);
@@ -1195,6 +1525,196 @@ mod tests {
         })
         .expect("empty move");
         assert!(movement.is_empty());
+    }
+
+    /// Ends the real worker thread the way an unexpected exit would, leaving
+    /// the engine holding a finished handle and no live worker.
+    fn kill_worker(engine: &ClickEngine) {
+        engine.shared.terminate.store(true, Ordering::Release);
+        let _ = win32::set_event(engine.wake_handle);
+        let _ = win32::set_event(engine.abort_handle);
+        if let Some(handle) = lock_recovering(&engine.worker).take() {
+            let _ = handle.join();
+        }
+        // Clear the flag again: the simulated loss is a thread that ended,
+        // not a request for every future worker to exit.
+        engine.shared.terminate.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn a_lost_worker_is_replaced_and_the_next_session_still_runs() {
+        let engine = ClickEngine::new();
+        assert!(engine.worker_alive());
+        assert!(engine.worker_restartable());
+        kill_worker(&engine);
+        assert!(
+            !engine.worker_alive(),
+            "the simulated worker loss must be visible"
+        );
+        assert!(matches!(engine.ensure_worker(), Ok(true)));
+        assert!(engine.worker_alive(), "the replacement must really run");
+        assert_eq!(engine.worker_restarts(), 1);
+        // The session the dead worker was driving is reported, not hidden.
+        assert_eq!(engine.state(), STATE_IDLE);
+        assert_eq!(engine.session_outcome(), SessionOutcome::WorkerLost);
+        assert!(engine
+            .last_error()
+            .is_some_and(|error| error.contains("stopped unexpectedly")));
+        // And the replacement accepts work instead of draining a stop flag.
+        assert!(engine.start(&safe_config()).is_ok());
+        wait_until(
+            || engine.shared.start_tick.load(Ordering::Acquire) != 0,
+            "replacement worker never reached the session",
+        );
+        engine.request_stop();
+        wait_until(|| !engine.is_running(), "replacement worker never stopped");
+        assert_eq!(engine.session_outcome(), SessionOutcome::Stopped);
+        assert!(matches!(engine.ensure_worker(), Ok(false)));
+    }
+
+    #[test]
+    fn the_restart_budget_is_bounded_and_reported() {
+        let engine = ClickEngine::new();
+        kill_worker(&engine);
+        engine
+            .shared
+            .worker_restarts
+            .store(MAX_WORKER_RESTARTS, Ordering::Release);
+        assert!(!engine.worker_restartable());
+        let error = engine
+            .ensure_worker()
+            .expect_err("a spent budget must be refused");
+        assert!(
+            error.contains("will not be restarted again"),
+            "unexpected message: {error}"
+        );
+        assert!(!engine.worker_alive());
+        let missing_handles = ClickEngine {
+            shared: Arc::clone(&engine.shared),
+            worker: Mutex::new(None),
+            wake_handle: 0,
+            abort_handle: 0,
+        };
+        assert!(!missing_handles.worker_restartable());
+        assert!(missing_handles
+            .ensure_worker()
+            .expect_err("no handles")
+            .contains("could not be created"));
+    }
+
+    #[test]
+    fn a_parked_long_interval_wakes_the_moment_a_stop_is_requested() {
+        let engine = ClickEngine::new();
+        // Ten minutes: without the abort event this wait would spin until
+        // the interval expired, and a stop could not be observed at all.
+        assert!(engine.start(&safe_config()).is_ok());
+        wait_until(
+            || engine.shared.start_tick.load(Ordering::Acquire) != 0,
+            "session never reached the worker",
+        );
+        engine.request_stop();
+        wait_until(
+            || !engine.is_running(),
+            "a parked worker ignored the stop request",
+        );
+        assert_eq!(engine.session_outcome(), SessionOutcome::Stopped);
+        assert_eq!(engine.dispatch_overdue_ms(), None);
+    }
+
+    #[test]
+    fn overdue_dispatch_is_reported_only_while_a_cycle_is_owed() {
+        let engine = ClickEngine::new();
+        let shared = Arc::clone(&engine.shared);
+        assert_eq!(engine.dispatch_overdue_ms(), None);
+        shared.state.store(STATE_RUNNING, Ordering::Release);
+        // Not waiting for anything: between cycles is not lateness.
+        shared.waiting_deadline.store(0, Ordering::Release);
+        assert_eq!(engine.dispatch_overdue_ms(), None);
+        // A deadline in the future is simply not overdue yet.
+        let future = timing::qpc_now().saturating_add(timing::ms_to_ticks(5_000.0));
+        shared.waiting_deadline.store(future, Ordering::Release);
+        assert_eq!(engine.dispatch_overdue_ms(), None);
+        // A deadline already passed is reported, in milliseconds.
+        let past = timing::qpc_now().saturating_sub(timing::ms_to_ticks(250.0));
+        shared.waiting_deadline.store(past, Ordering::Release);
+        let overdue = engine
+            .dispatch_overdue_ms()
+            .expect("a missed deadline must be reported");
+        assert!((250.0..5_000.0).contains(&overdue), "{overdue}");
+        // An idle engine never reports lateness.
+        shared.state.store(STATE_IDLE, Ordering::Release);
+        assert_eq!(engine.dispatch_overdue_ms(), None);
+    }
+
+    #[test]
+    fn worker_failure_recovery_ends_the_session_as_lost_and_reports_it() {
+        let engine = ClickEngine::new();
+        let shared = Arc::clone(&engine.shared);
+        shared.state.store(STATE_RUNNING, Ordering::Release);
+        shared
+            .waiting_deadline
+            .store(timing::qpc_now(), Ordering::Release);
+        recover_after_worker_failure(&shared, "simulated worker failure".to_string());
+        assert_eq!(shared.state.load(Ordering::Acquire), STATE_IDLE);
+        assert_eq!(
+            shared.outcome.load(Ordering::Acquire),
+            SessionOutcome::WorkerLost as u8
+        );
+        assert!(shared.stop.load(Ordering::Acquire));
+        assert_eq!(shared.waiting_deadline.load(Ordering::Acquire), 0);
+        assert_eq!(
+            lock_recovering(&shared.error).clone(),
+            Some("simulated worker failure".to_string())
+        );
+    }
+
+    #[test]
+    fn panic_messages_are_readable_and_bounded() {
+        assert_eq!(panic_message(Box::new("boom".to_string())), "boom");
+        assert_eq!(panic_message(Box::new("static str")), "static str");
+        assert_eq!(
+            panic_message(Box::new(42_u32)),
+            "an unexpected worker error"
+        );
+        assert_eq!(
+            panic_message(Box::new("   ".to_string())),
+            "an unexpected worker error"
+        );
+        let long = "x".repeat(10_000);
+        let bounded = panic_message(Box::new(long));
+        assert!(
+            bounded.chars().count() <= 201,
+            "{}",
+            bounded.chars().count()
+        );
+        assert!(bounded.ends_with('…'));
+    }
+
+    #[test]
+    fn long_waits_park_in_slices_and_always_spin_the_tail() {
+        // A park that would overrun the deadline must never be issued: the
+        // last SPIN_TAIL_MS is always spun, and no slice exceeds the cap.
+        let engine = ClickEngine::new();
+        let shared = Arc::clone(&engine.shared);
+        // Just past the threshold: one park, then the spun tail.
+        let near = timing::qpc_now().saturating_add(timing::ms_to_ticks(40.0));
+        assert_eq!(
+            wait_for_deadline(&shared, near),
+            SpinResult::DeadlineReached
+        );
+        // Already due: no park at all, the spin returns immediately.
+        assert_eq!(
+            wait_for_deadline(&shared, timing::qpc_now()),
+            SpinResult::DeadlineReached
+        );
+        // A stop raised before the wait is honoured without waiting.
+        shared.stop.store(true, Ordering::Release);
+        let far = timing::qpc_now().saturating_add(timing::ms_to_ticks(60_000.0));
+        assert_eq!(wait_for_deadline(&shared, far), SpinResult::StopRequested);
+        shared.stop.store(false, Ordering::Release);
+        shared.panic.store(true, Ordering::Release);
+        assert_eq!(wait_for_deadline(&shared, far), SpinResult::PanicRequested);
+        shared.panic.store(false, Ordering::Release);
     }
 
     #[test]

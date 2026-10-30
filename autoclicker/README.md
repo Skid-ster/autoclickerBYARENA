@@ -288,8 +288,11 @@ bar agree.
   **Record & Playback**.
 - A single reserved one-line status strip under the group boxes shows
   semantic colored state (Ready / Running / Stopping / Panic / Warning /
-  Error) without ever changing the window layout, and a status-bar style
-  footer row: a short key reminder on the left (it tracks the actual
+  Error) without ever changing the window layout. It is never blank: while
+  idle it states exactly what Start will do (`Ready — left single click at
+  the cursor, 10.00 CPS.`), and while running it carries the live click
+  count or elapsed time on the same row. Ellipsized text is revealed on
+  hover. Beside it, a status-bar style footer row: a short key reminder on the left (it tracks the actual
   assigned hotkey, e.g. "F6 start/stop · F8 emergency stop") and the
   **Updates…** and **Settings…** buttons on the right. The footer
   button mirrors the checker in place (**Checking…**, **Update
@@ -428,13 +431,24 @@ future uptime or guarantee universal stability.
 
 ### Timing and threading rules
 
-- The egui update/render thread never runs the timing loop. The worker parks
-  on a manual-reset Win32 event (`WaitForSingleObject`) while idle, with
+- The egui update/render thread never runs the timing loop. Two manual-reset
+  Win32 events drive the worker (`WaitForSingleObject`): one wakes it for a
+  session, one aborts it. While idle the worker parks on the wake event with
   a bounded 250 ms termination check. Session transitions are serialized
   outside the click loop; a stopping worker remains busy until fully drained.
 - Active scheduling is a rate-based QPC deadline loop; the spin body is
   `std::hint::spin_loop` and there is no `std::thread::sleep` in the active
-  click path — including inter-click gaps inside double/triple bursts.
+  click path — including inter-click gaps inside double/triple bursts. Inside
+  a session only the last 12 ms before a dispatch is spun; when the wait is
+  long enough that parking cannot move the dispatch instant, the part before
+  that tail parks on the abort event in slices of at most 250 ms, so a stop,
+  a panic or a session deadline is honoured inside one slice and an
+  hour-long interval no longer holds a logical CPU at 100 %.
+- Failure handling is explicit: a panic inside the click loop is caught and
+  reported instead of taking the worker thread with it, a worker that is lost
+  is replaced by the watchdog up to 8 times per run (and reported in recovery
+  wording), and a worker that is alive but blocked inside an input call is
+  observed and reported as late rather than assumed healthy.
 - `timeBeginPeriod(1)` is acquired by an RAII guard per session and paired
   with `timeEndPeriod(1)` on drop.
 - `SetThreadPriority(THREAD_PRIORITY_TIME_CRITICAL)` is verified; denial is
@@ -654,3 +668,22 @@ future uptime or guarantee universal stability.
     report; test a resumed or delayed run without relying on it to detect
     every stall. Confirm no button remains held. The result is not proof that
     the target received input. These are hands-on checks, not CI automation.
+23. Long intervals and idle CPU. Set 10 minutes, Left, Single, Repeat until
+    stopped, and start a session on a disposable target. Watch Task Manager:
+    the process must sit near 0 % CPU between clicks instead of holding a
+    logical core at 100 %. Then press Stop (and separately F8) mid-wait: the
+    session must end promptly rather than waiting out the interval, and it
+    must settle on its normal terminal status. Start again immediately after
+    a stop and confirm the next click is not dispatched early.
+24. Status and counters. Before any action the status strip must show the
+    idle line naming what Start will do — change the button, click type,
+    coordinate mode, repeat limit and interval and confirm the sentence
+    follows each change (including the `every H:MM:SS.mmm` form for slow
+    intervals). While running at 10 CPS, confirm the counters appear on the
+    status row without moving the layout, that a finite repeat shows
+    delivered / total, and that hovering the strip explains them.
+25. Recovery wording. If a session ever reports that the click worker stopped,
+    the message must say it was restarted and what to do next — never that
+    the app must be restarted per attempt, and never a bare failure with no
+    next step. A panic inside the loop must produce a plain error status with
+    the session ending, not a UI stuck showing a running session.

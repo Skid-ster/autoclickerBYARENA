@@ -225,9 +225,10 @@ the update before the program file is replaced.
   keeps an absolute, drift-free cadence with bounded catch-up, so an OS
   stall is absorbed instead of being repaid as a burst of fast clicks.
 - 153 standalone tests over platform-independent modules in the current
-  source, plus app and worker tests and a Windows CI workflow (format check,
-  Clippy with warnings denied, tests, release build and binary artifact), and
-  a generated crosshair application icon.
+  source, plus 120 app and worker tests in an actual-egui harness and a
+  Windows CI workflow (format check, Clippy with warnings denied, tests,
+  release build and binary artifact), and a generated crosshair application
+  icon.
 
 The GUI, input injection and worker threads are Windows-specific and need
 hands-on Windows acceptance; see [`autoclicker/README.md`](autoclicker/README.md)
